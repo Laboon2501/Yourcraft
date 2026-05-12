@@ -14,6 +14,7 @@ public sealed unsafe class LocalLayoutObjectService
     private const int VisualMatrixOffset = 0x20;
 
     private readonly LayoutObjectTransformService transformService = new();
+    private readonly BgObjectModelOverrideService modelOverrideService = new();
     private readonly List<LocalLayoutObjectInstance> instances = [];
     private readonly Dictionary<ulong, LocalLayoutObjectInstance> occupiedSlots = [];
 
@@ -30,6 +31,8 @@ public sealed unsafe class LocalLayoutObjectService
 
     public string LastStatus { get; private set; } = "尚未创建本地场景物体。";
 
+    public string LastModelOverrideStatus => this.modelOverrideService.LastResult;
+
     public bool IsSlotOccupied(string slotAddress)
     {
         this.RebuildOccupiedSlotRegistry();
@@ -38,6 +41,12 @@ public sealed unsafe class LocalLayoutObjectService
     }
 
     public LocalLayoutObjectInstance? CreateFromCandidate(LayoutProbeInstance? candidate, Vector3 playerPosition, LocalLayoutTransformMode mode)
+        => this.CreateFromCandidate(candidate, playerPosition, mode, template: null, applyTemplateModel: false);
+
+    public LocalLayoutObjectInstance? CreateFromTemplate(LayoutProbeInstance? template, LayoutProbeInstance? targetSlot, Vector3 position, LocalLayoutTransformMode mode, bool applyTemplateModel = false)
+        => this.CreateFromCandidate(targetSlot, position, mode, template, applyTemplateModel);
+
+    private LocalLayoutObjectInstance? CreateFromCandidate(LayoutProbeInstance? candidate, Vector3 playerPosition, LocalLayoutTransformMode mode, LayoutProbeInstance? template, bool applyTemplateModel)
     {
         this.RebuildOccupiedSlotRegistry();
         if (candidate == null)
@@ -93,7 +102,12 @@ public sealed unsafe class LocalLayoutObjectService
         var instance = new LocalLayoutObjectInstance
         {
             Id = $"layout-object-{DateTimeOffset.Now.ToUnixTimeMilliseconds()}",
+            TemplateSourceSlotAddress = template?.Address ?? candidate.Address,
             SourceResourcePath = candidate.ResourcePath,
+            OriginalResourcePath = candidate.ResourcePath,
+            CurrentResourcePath = candidate.ResourcePath,
+            CustomModelPath = string.Empty,
+            OriginalModelResourcePath = candidate.ResourcePath,
             OccupiedSlotAddress = candidate.Address,
             TransformMode = mode,
             GraphicsObjectAddress = graphicsObjectAddress,
@@ -131,7 +145,58 @@ public sealed unsafe class LocalLayoutObjectService
         if (TryNormalizeSlotAddress(instance.OccupiedSlotAddress, out var occupiedSlotAddress))
             this.occupiedSlots[occupiedSlotAddress] = instance;
         this.WriteInstanceTransform(instance, playerPosition, instance.CurrentRotationEuler, instance.CurrentScale, "从候选 BgPart 创建本地物件实例");
+        if (applyTemplateModel)
+            this.LastStatus = "SetModel 当前为高风险实验，创建实例时已强制跳过自动模型替换。";
         return instance;
+    }
+
+    public IReadOnlyList<LocalLayoutObjectInstance> CreateManyFromTemplate(
+        LayoutProbeInstance? template,
+        IEnumerable<LayoutProbeInstance> candidateSlots,
+        int count,
+        Vector3 basePosition,
+        LocalLayoutTransformMode mode,
+        Vector3 spacing,
+        bool allowDifferentResourcePathSlots = false)
+    {
+        var created = new List<LocalLayoutObjectInstance>();
+        if (template == null)
+        {
+            this.LastStatus = "请先设置复制模板。";
+            return created;
+        }
+
+        var availableSlots = candidateSlots
+            .Where(slot => string.Equals(slot.Type, "BgPart", StringComparison.Ordinal))
+            .Where(slot => !this.IsSlotOccupied(slot.Address));
+
+        if (!allowDifferentResourcePathSlots)
+            availableSlots = availableSlots.Where(slot => string.Equals(slot.ResourcePath, template.ResourcePath, StringComparison.OrdinalIgnoreCase));
+
+        var slots = availableSlots
+            .Take(Math.Max(0, count))
+            .ToList();
+
+        if (slots.Count < count)
+        {
+            this.LastStatus = allowDifferentResourcePathSlots
+                ? $"当前地图可用 BgPart slot 不足，无法继续复制。需要 {count} 个，可用 {slots.Count} 个。"
+                : $"同 resourcePath 可用 slot 不足，当前只能创建 {slots.Count} 个。不同外观 slot 不能伪装为模板，除非 SetModel per-instance 跑通。";
+            return created;
+        }
+
+        for (var index = 0; index < slots.Count; index++)
+        {
+            var position = basePosition + spacing * index;
+            var instance = this.CreateFromTemplate(template, slots[index], position, mode, applyTemplateModel: false);
+            if (instance != null)
+                created.Add(instance);
+        }
+
+        this.LastStatus = allowDifferentResourcePathSlots
+            ? $"已从 {created.Count} 个不同/相同 resourcePath slot 创建实例。注意：这不是复制模板，只是移动不同物体。"
+            : $"已从模板创建 {created.Count} 个同 resourcePath 本地实例。";
+        return created;
     }
 
     public void UpdateExistingSlotToPlayer(LayoutProbeInstance? candidate, Vector3 playerPosition)
@@ -291,6 +356,48 @@ public sealed unsafe class LocalLayoutObjectService
         instance.LastReadback = FormatSnapshot(layout.Value);
         instance.LastError = string.Empty;
         this.LastStatus = $"已保存当前 transform：{instance.Id}";
+    }
+
+    public bool ApplyModelOverride(string id, string modelPath)
+    {
+        var instance = this.GetById(id);
+        if (instance == null)
+            return false;
+
+        var success = this.modelOverrideService.ApplyModel(instance, modelPath);
+        this.LastStatus = this.modelOverrideService.LastResult;
+        return success;
+    }
+
+    public string GetApplyModelBlockReason(string id, string modelPath, bool unsafeEnabled, bool confirmed)
+    {
+        var instance = this.GetById(id);
+        return instance == null
+            ? "未选中有效实例。"
+            : this.modelOverrideService.GetApplyModelBlockReason(instance, modelPath, unsafeEnabled, confirmed);
+    }
+
+    public bool RestoreModel(string id)
+    {
+        var instance = this.GetById(id);
+        if (instance == null)
+            return false;
+
+        instance.LastModelOverrideError = "SetModel 直接调用已暂停：ResourceCategory / 调用签名未确认，会崩溃。";
+        instance.LastModelOverrideResult = string.Empty;
+        this.LastStatus = instance.LastModelOverrideError;
+        return false;
+    }
+
+    public bool RefreshModel(string id)
+    {
+        var instance = this.GetById(id);
+        if (instance == null)
+            return false;
+
+        var success = this.modelOverrideService.Refresh(instance);
+        this.LastStatus = this.modelOverrideService.LastResult;
+        return success;
     }
 
     public void RestoreOriginal(string id)

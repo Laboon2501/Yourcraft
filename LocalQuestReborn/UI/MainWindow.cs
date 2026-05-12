@@ -23,11 +23,14 @@ public sealed class MainWindow : Window
     private string selectedActorRuntimeId = string.Empty;
     private string selectedLocalLayoutObjectId = string.Empty;
     private string selectedBgPartAddress = string.Empty;
+    private string templateBgPartAddress = string.Empty;
     private string bgPartSearchText = string.Empty;
-    private string glamourerSearchText = string.Empty;
-    private string gameNpcSearchText = string.Empty;
     private bool localLayoutFullCollisionMode;
     private bool confirmFullLayoutCollisionMode;
+    private bool allowDifferentResourcePathSlots;
+    private bool confirmSingleSetModelRetry;
+    private int layoutCopyCount = 1;
+    private float layoutCopySpacing = 2f;
 
     public MainWindow(
         Configuration configuration,
@@ -66,7 +69,7 @@ public sealed class MainWindow : Window
         this.reloadAction = reloadAction;
         this.SizeConstraints = new WindowSizeConstraints
         {
-            MinimumSize = new Vector2(820, 660),
+            MinimumSize = new Vector2(860, 680),
             MaximumSize = new Vector2(float.MaxValue, float.MaxValue),
         };
     }
@@ -139,15 +142,10 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"Unsafe/native 写入：{this.realNpcSpawn.EnableUnsafeNativeWrites}");
         ImGui.TextWrapped($"Brio Assembly：{this.realNpcSpawn.BrioAssemblyStatus}");
         ImGui.TextWrapped($"Brio IPC：{this.realNpcSpawn.BrioIpcProbeMessage}");
-        ImGui.TextWrapped($"Glamourer：{this.realNpcSpawn.GlamourerIpcProbeMessage}");
-        ImGui.TextWrapped($"Glamourer ApplyDesign：{this.realNpcSpawn.GlamourerIpcBridgeMessage}");
+        ImGui.TextWrapped($"Glamourer/Penumbra：{this.realNpcSpawn.GlamourerIpcProbeMessage}");
         ImGui.TextWrapped($"外观队列：长度 {this.realNpcSpawn.AppearanceQueueLength}，当前 {this.realNpcSpawn.AppearanceQueueCurrentActor}");
-        ImGui.TextWrapped($"外观队列状态：{this.realNpcSpawn.AppearanceQueueStatus}");
-        ImGui.TextWrapped($"Actor 有效性：{this.realNpcSpawn.ActorValidityMonitorStatus}");
-        ImGui.TextWrapped($"GPose：当前={this.realNpcSpawn.CurrentIsGposing}，上一帧={this.realNpcSpawn.PreviousFrameIsGposing}，重建={this.realNpcSpawn.LastGposeRebuildResult}");
-        ImGui.Separator();
-        ImGui.TextWrapped($"本地场景物体状态：{this.localLayoutObjects.LastStatus}");
-        ImGui.TextWrapped($"占用 slot：{this.localLayoutObjects.ActiveOccupiedSlotCount}，重复 slot：{this.localLayoutObjects.DuplicateSlotCount}");
+        ImGui.TextWrapped($"本地场景物体：{this.localLayoutObjects.LastStatus}");
+        ImGui.TextWrapped($"模型 override：{this.localLayoutObjects.LastModelOverrideStatus}");
     }
 
     private void DrawNpcManagement()
@@ -162,15 +160,6 @@ public sealed class MainWindow : Window
             this.gameNpcCatalog.ReloadCatalog();
 
         ImGui.TextWrapped($"NPC 数量：{this.database.Npcs.Count} | Glamourer 设计：{this.glamourerDesignCatalog.Designs.Count} | NPC 目录：ENpc {this.gameNpcCatalog.ENpcCount} / BNpc {this.gameNpcCatalog.BNpcCount} / ModelChara {this.gameNpcCatalog.ModelCharaCount}");
-        ImGui.TextWrapped($"Glamourer 扫描：{this.glamourerDesignCatalog.LastScanMessage}");
-        ImGui.TextWrapped($"NPC 目录：{this.gameNpcCatalog.LastLoadMessage}");
-
-        if (this.database.Npcs.Count == 0)
-        {
-            ImGui.TextWrapped("还没有 NPC 配置。点击“创建 NPC”会在玩家当前位置创建一个本地 NPC。");
-            return;
-        }
-
         this.EnsureSelectedNpc();
         if (ImGui.BeginCombo("选择 NPC", this.SelectedNpcLabel()))
         {
@@ -179,8 +168,6 @@ public sealed class MainWindow : Window
                 var selected = string.Equals(this.selectedNpcId, npc.Id, StringComparison.OrdinalIgnoreCase);
                 if (ImGui.Selectable($"{npc.Name} ({npc.Id})", selected))
                     this.selectedNpcId = npc.Id;
-                if (selected)
-                    ImGui.SetItemDefaultFocus();
             }
             ImGui.EndCombo();
         }
@@ -189,11 +176,8 @@ public sealed class MainWindow : Window
         if (currentNpc == null)
             return;
 
-        ImGui.Separator();
-        ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "基础信息");
         ImGui.TextWrapped($"NPC ID：{currentNpc.Id}");
         EditString("名称", currentNpc.Name, 128, value => currentNpc.Name = value);
-        EditString("名称模板", currentNpc.NameTemplate, 128, value => currentNpc.NameTemplate = value);
         var territory = (int)currentNpc.TerritoryType;
         if (ImGui.InputInt("地图编号 territoryType", ref territory))
             currentNpc.TerritoryType = (ushort)Math.Clamp(territory, 0, ushort.MaxValue);
@@ -205,19 +189,24 @@ public sealed class MainWindow : Window
         var defaultAnimation = (int)Math.Min(currentNpc.DefaultAnimationId, int.MaxValue);
         if (ImGui.InputInt("默认动画 ID", ref defaultAnimation))
             currentNpc.DefaultAnimationId = (uint)Math.Max(0, defaultAnimation);
-        var autoPlayDefaultAnimation = currentNpc.AutoPlayDefaultAnimation;
-        if (ImGui.Checkbox("生成后自动播放默认动画", ref autoPlayDefaultAnimation))
-            currentNpc.AutoPlayDefaultAnimation = autoPlayDefaultAnimation;
-        var lookAtPlayerEnabled = currentNpc.LookAtPlayerEnabled;
-        if (ImGui.Checkbox("靠近时看向玩家", ref lookAtPlayerEnabled))
-            currentNpc.LookAtPlayerEnabled = lookAtPlayerEnabled;
-        var lookRadius = currentNpc.LookAtRadius;
-        if (ImGui.InputFloat("看向半径", ref lookRadius))
-            currentNpc.LookAtRadius = Math.Max(0.1f, lookRadius);
-        DrawEnumCombo("看向模式", currentNpc.LookAtMode, value => currentNpc.LookAtMode = value);
-        var respawnAfterGpose = currentNpc.RespawnAfterGpose;
-        if (ImGui.Checkbox("退出 GPose 后自动重建", ref respawnAfterGpose))
-            currentNpc.RespawnAfterGpose = respawnAfterGpose;
+        var autoPlay = currentNpc.AutoPlayDefaultAnimation;
+        if (ImGui.Checkbox("生成后自动播放默认动画", ref autoPlay))
+            currentNpc.AutoPlayDefaultAnimation = autoPlay;
+        var respawn = currentNpc.RespawnAfterGpose;
+        if (ImGui.Checkbox("退出 GPose 后自动重建", ref respawn))
+            currentNpc.RespawnAfterGpose = respawn;
+
+        DrawEnumCombo("外观 sourceType", currentNpc.Appearance.SourceType, value => currentNpc.Appearance.SourceType = value);
+        EditString("displayName", currentNpc.Appearance.DisplayName, 160, value => currentNpc.Appearance.DisplayName = value);
+        EditString("Glamourer design GUID", currentNpc.Appearance.GlamourerDesignId, 160, value => currentNpc.Appearance.GlamourerDesignId = value);
+        EditString("GameNpc 名称", currentNpc.Appearance.GameNpcName, 160, value => currentNpc.Appearance.GameNpcName = value);
+        DrawEnumCombo("GameNpc kind", currentNpc.Appearance.GameNpcKind, value => currentNpc.Appearance.GameNpcKind = value);
+        var gameNpcBaseId = (int)Math.Min(currentNpc.Appearance.GameNpcBaseId, int.MaxValue);
+        if (ImGui.InputInt("GameNpc baseId", ref gameNpcBaseId))
+            currentNpc.Appearance.GameNpcBaseId = (uint)Math.Max(0, gameNpcBaseId);
+        var gameNpcModelId = (int)Math.Min(currentNpc.Appearance.GameNpcModelId, int.MaxValue);
+        if (ImGui.InputInt("GameNpc modelId", ref gameNpcModelId))
+            currentNpc.Appearance.GameNpcModelId = (uint)Math.Max(0, gameNpcModelId);
 
         if (ImGui.Button("移动配置坐标到玩家当前位置") && this.runtime.PlayerPosition.HasValue)
         {
@@ -238,11 +227,6 @@ public sealed class MainWindow : Window
             return;
         }
 
-        this.DrawNpcAppearanceEditor(currentNpc);
-
-        ImGui.Separator();
-        ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "操作");
-        ImGui.TextWrapped($"当前已生成 Actor 数量：{this.realNpcSpawn.GetActorCountForNpc(currentNpc.Id)}");
         ImGui.BeginDisabled(!this.realNpcSpawn.CanSpawnRealActor);
         if (ImGui.Button("生成唯一真实 Actor 并应用此 NPC 外观"))
         {
@@ -254,160 +238,15 @@ public sealed class MainWindow : Window
         ImGui.SameLine();
         if (ImGui.Button("对已生成 Actor 应用此 NPC 外观"))
             this.realNpcSpawn.ApplyNpcAppearanceForNpc(currentNpc.Id);
-        ImGui.SameLine();
-        if (ImGui.Button("删除此 NPC 的全部 Actor"))
-            this.realNpcSpawn.DespawnAllForNpc(currentNpc.Id);
-    }
-
-    private void DrawNpcAppearanceEditor(CustomNpc npc)
-    {
-        var appearance = npc.Appearance;
-        ImGui.Separator();
-        ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "外观来源");
-        DrawEnumCombo("sourceType", appearance.SourceType, value => appearance.SourceType = value);
-        EditString("displayName", appearance.DisplayName, 160, value => appearance.DisplayName = value);
-
-        switch (appearance.SourceType)
-        {
-            case CustomNpcAppearanceSourceType.None:
-                ImGui.TextWrapped("不应用外观，保持生成时的玩家 clone 外观。");
-                break;
-            case CustomNpcAppearanceSourceType.CurrentPlayer:
-                ImGui.TextWrapped("使用生成时复制的当前玩家外观。");
-                break;
-            case CustomNpcAppearanceSourceType.GlamourerDesign:
-                this.DrawGlamourerDesignPicker(npc);
-                break;
-            case CustomNpcAppearanceSourceType.GameNpc:
-                this.DrawGameNpcPicker(npc);
-                break;
-            case CustomNpcAppearanceSourceType.MCDF:
-                EditString("MCDF 路径", appearance.McdfPath, 512, value => appearance.McdfPath = value);
-                ImGui.TextWrapped("MCDF 外观应用接口仍是占位，当前只保存配置。");
-                break;
-            case CustomNpcAppearanceSourceType.PenumbraCollection:
-                EditString("Penumbra Collection", appearance.PenumbraCollectionName, 256, value => appearance.PenumbraCollectionName = value);
-                ImGui.TextWrapped("Penumbra collection 会在后续 redraw/apply 管线里使用。");
-                break;
-        }
-
-        EditString("notes/debugInfo", appearance.Notes, 512, value => appearance.Notes = value);
-    }
-
-    private void DrawGlamourerDesignPicker(CustomNpc npc)
-    {
-        var appearance = npc.Appearance;
-        ImGui.TextWrapped($"当前 design 名称：{appearance.DisplayName}");
-        EditString("当前 design GUID", appearance.GlamourerDesignId, 128, value => appearance.GlamourerDesignId = value);
-        ImGui.InputText("设计搜索", ref this.glamourerSearchText, 128);
-        if (ImGui.Button("扫描 Glamourer 设计"))
-            this.glamourerDesignCatalog.Scan();
-        ImGui.SameLine();
-        if (ImGui.Button("探测 Glamourer IPC"))
-            this.realNpcSpawn.ProbeGlamourerIpc();
-
-        var designs = this.glamourerDesignCatalog.Search(this.glamourerSearchText, 60);
-        if (!ImGui.BeginTable("GlamourerDesigns", 4, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 180f)))
-            return;
-        ImGui.TableSetupColumn("名称");
-        ImGui.TableSetupColumn("GUID");
-        ImGui.TableSetupColumn("来源文件");
-        ImGui.TableSetupColumn("操作");
-        ImGui.TableHeadersRow();
-        foreach (var design in designs)
-        {
-            ImGui.TableNextRow();
-            ImGui.PushID($"glamourer-{design.Identifier}");
-            ImGui.TableSetColumnIndex(0);
-            ImGui.TextWrapped(design.Name);
-            ImGui.TableSetColumnIndex(1);
-            ImGui.TextWrapped(design.Identifier);
-            ImGui.TableSetColumnIndex(2);
-            ImGui.TextWrapped(design.FilePath);
-            ImGui.TableSetColumnIndex(3);
-            if (ImGui.Button("选为此 NPC 外观"))
-            {
-                this.glamourerDesignCatalog.ApplyDesignToNpc(npc, design);
-                this.database.Save();
-            }
-            ImGui.PopID();
-        }
-        ImGui.EndTable();
-    }
-
-    private void DrawGameNpcPicker(CustomNpc npc)
-    {
-        var appearance = npc.Appearance;
-        ImGui.TextWrapped($"当前 NPC 名称：{appearance.GameNpcName}");
-        ImGui.TextWrapped($"gameNpcKind：{appearance.GameNpcKind}");
-        var baseId = (int)Math.Min(appearance.GameNpcBaseId, int.MaxValue);
-        if (ImGui.InputInt("gameNpcBaseId", ref baseId))
-            appearance.GameNpcBaseId = (uint)Math.Max(0, baseId);
-        var modelId = (int)Math.Min(appearance.GameNpcModelId, int.MaxValue);
-        if (ImGui.InputInt("gameNpcModelId", ref modelId))
-            appearance.GameNpcModelId = (uint)Math.Max(0, modelId);
-        EditString("gameNpcName", appearance.GameNpcName, 160, value => appearance.GameNpcName = value);
-        DrawEnumCombo("gameNpcKind", appearance.GameNpcKind, value => appearance.GameNpcKind = value);
-
-        if (ImGui.Button("从当前 Target 读取 NPC 信息"))
-        {
-            if (this.gameNpcCatalog.SaveCurrentTargetAsGameNpcAppearance(npc, moveNpcToPlayer: false, this.runtime.PlayerPosition, out var message))
-                this.database.Save();
-            this.realNpcSpawn.SetMessage(message);
-        }
-        ImGui.InputText("NPC 目录搜索", ref this.gameNpcSearchText, 128);
-        var entries = this.gameNpcCatalog.Search(this.gameNpcSearchText, 100);
-        if (!ImGui.BeginTable("GameNpcCatalog", 6, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 220f)))
-            return;
-        ImGui.TableSetupColumn("名称");
-        ImGui.TableSetupColumn("类型");
-        ImGui.TableSetupColumn("RowId");
-        ImGui.TableSetupColumn("ModelCharaId");
-        ImGui.TableSetupColumn("解析摘要");
-        ImGui.TableSetupColumn("操作");
-        ImGui.TableHeadersRow();
-        foreach (var entry in entries)
-        {
-            ImGui.TableNextRow();
-            ImGui.PushID($"gamenpc-{entry.SourceKind}-{entry.RowId}");
-            ImGui.TableSetColumnIndex(0);
-            ImGui.TextWrapped(string.IsNullOrWhiteSpace(entry.DisplayName) ? entry.Name : entry.DisplayName);
-            ImGui.TableSetColumnIndex(1);
-            ImGui.TextUnformatted(entry.SourceKind.ToString());
-            ImGui.TableSetColumnIndex(2);
-            ImGui.TextUnformatted(entry.RowId.ToString());
-            ImGui.TableSetColumnIndex(3);
-            ImGui.TextUnformatted(entry.ModelCharaId.ToString());
-            ImGui.TableSetColumnIndex(4);
-            ImGui.TextWrapped(string.IsNullOrWhiteSpace(entry.RawDebugInfo) ? entry.DebugInfo : entry.RawDebugInfo);
-            ImGui.TableSetColumnIndex(5);
-            if (ImGui.Button("选为此 NPC 外观"))
-            {
-                this.gameNpcCatalog.ApplyCatalogEntryToNpc(npc, entry);
-                this.database.Save();
-            }
-            ImGui.PopID();
-        }
-        ImGui.EndTable();
     }
 
     private void DrawActorInstances()
     {
         this.EnsureSelectedNpc();
         var selectedNpc = this.GetSelectedNpc();
-        if (ImGui.BeginCombo("选中配置 NPC", this.SelectedNpcLabel()))
-        {
-            foreach (var npc in this.database.Npcs)
-            {
-                var selected = string.Equals(this.selectedNpcId, npc.Id, StringComparison.OrdinalIgnoreCase);
-                if (ImGui.Selectable($"{npc.Name} ({npc.Id})", selected))
-                    this.selectedNpcId = npc.Id;
-                if (selected)
-                    ImGui.SetItemDefaultFocus();
-            }
-            ImGui.EndCombo();
-        }
-
+        if (ImGui.Button("刷新有效性"))
+            this.realNpcSpawn.RefreshActors();
+        ImGui.SameLine();
         ImGui.BeginDisabled(selectedNpc == null || !this.realNpcSpawn.CanSpawnRealActor);
         if (ImGui.Button("生成选中 NPC 的唯一 Actor") && selectedNpc != null)
         {
@@ -415,35 +254,12 @@ public sealed class MainWindow : Window
             if (actor != null)
                 this.selectedActorRuntimeId = actor.RuntimeId;
         }
-        ImGui.SameLine();
-        if (ImGui.Button("生成一个新 Actor") && selectedNpc != null)
-        {
-            var actor = this.realNpcSpawn.SpawnNew(selectedNpc);
-            if (actor != null)
-                this.selectedActorRuntimeId = actor.RuntimeId;
-        }
-        ImGui.EndDisabled();
-        ImGui.SameLine();
-        ImGui.BeginDisabled(selectedNpc == null);
-        if (ImGui.Button("删除选中 NPC 的全部 Actor") && selectedNpc != null)
-            this.realNpcSpawn.DespawnAllForNpc(selectedNpc.Id);
         ImGui.EndDisabled();
         ImGui.SameLine();
         if (ImGui.Button("删除全部 Actor"))
             this.realNpcSpawn.DespawnAll();
-        ImGui.SameLine();
-        if (ImGui.Button("刷新有效性"))
-            this.realNpcSpawn.RefreshActors();
 
-        ImGui.TextWrapped($"Actor 数量：{this.realNpcSpawn.Actors.Count} | 队列长度：{this.realNpcSpawn.AppearanceQueueLength} | {this.realNpcSpawn.AppearanceQueueStatus}");
-        ImGui.TextWrapped($"SpawnIntent 数量：{this.realNpcSpawn.SpawnIntentCount}");
-        if (ImGui.CollapsingHeader("SpawnIntent 状态"))
-        {
-            foreach (var intent in this.realNpcSpawn.SpawnIntents)
-                ImGui.TextWrapped($"{intent.NpcId} | shouldBeSpawned={intent.ShouldBeSpawned} | suppressed={intent.SuppressedUntilUserSpawn} | reason={intent.LastDespawnReason}");
-        }
-
-        if (!ImGui.BeginTable("RuntimeActors", 9, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 320f)))
+        if (!ImGui.BeginTable("RuntimeActors", 8, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 320f)))
             return;
         ImGui.TableSetupColumn("选择");
         ImGui.TableSetupColumn("runtimeId");
@@ -451,7 +267,6 @@ public sealed class MainWindow : Window
         ImGui.TableSetupColumn("npcName");
         ImGui.TableSetupColumn("objectIndex");
         ImGui.TableSetupColumn("address");
-        ImGui.TableSetupColumn("source");
         ImGui.TableSetupColumn("valid");
         ImGui.TableSetupColumn("position");
         ImGui.TableHeadersRow();
@@ -461,10 +276,7 @@ public sealed class MainWindow : Window
             ImGui.PushID(actor.RuntimeId);
             ImGui.TableSetColumnIndex(0);
             if (ImGui.Selectable("选中", string.Equals(this.selectedActorRuntimeId, actor.RuntimeId, StringComparison.Ordinal)))
-            {
                 this.selectedActorRuntimeId = actor.RuntimeId;
-                this.realNpcSpawn.SelectActorForPlayerLookAt(actor.RuntimeId);
-            }
             ImGui.TableSetColumnIndex(1);
             ImGui.TextWrapped(ShortId(actor.RuntimeId));
             ImGui.TableSetColumnIndex(2);
@@ -476,83 +288,38 @@ public sealed class MainWindow : Window
             ImGui.TableSetColumnIndex(5);
             ImGui.TextWrapped(actor.Address);
             ImGui.TableSetColumnIndex(6);
-            ImGui.TextWrapped(actor.SpawnSource);
-            ImGui.TableSetColumnIndex(7);
             ImGui.TextUnformatted(actor.IsValid ? "有效" : "失效");
-            ImGui.TableSetColumnIndex(8);
+            ImGui.TableSetColumnIndex(7);
             ImGui.TextWrapped(FormatVector(actor.LastKnownPosition));
             ImGui.PopID();
         }
         ImGui.EndTable();
 
-        this.DrawSelectedActorControls();
-    }
-
-    private void DrawSelectedActorControls()
-    {
-        var actor = string.IsNullOrWhiteSpace(this.selectedActorRuntimeId) ? null : this.realNpcSpawn.GetActor(this.selectedActorRuntimeId);
-        if (actor == null)
+        var selectedActor = string.IsNullOrWhiteSpace(this.selectedActorRuntimeId) ? null : this.realNpcSpawn.GetActor(this.selectedActorRuntimeId);
+        if (selectedActor == null)
             return;
-
-        var npc = this.database.GetNpcById(actor.NpcId);
+        var npc = this.database.GetNpcById(selectedActor.NpcId);
         ImGui.Separator();
-        ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), $"选中 Actor：{ShortId(actor.RuntimeId)}");
-        ImGui.TextWrapped($"NPC：{actor.NpcName} ({actor.NpcId})");
-        ImGui.TextWrapped($"外观来源：{npc?.Appearance.SourceType.ToString() ?? "NPC 配置不存在"} | {npc?.Appearance.DisplayName}");
-        ImGui.TextWrapped($"最后外观结果：{actor.LastAppearanceApplyResult}");
-        ImGui.TextWrapped($"最后外观错误：{(string.IsNullOrWhiteSpace(actor.LastAppearanceError) ? "无" : actor.LastAppearanceError)}");
-        ImGui.TextWrapped($"最后动画：{actor.LastAnimationResult} / {actor.LastAnimationError}");
-        ImGui.TextWrapped($"最后错误：{(string.IsNullOrWhiteSpace(actor.LastError) ? "无" : actor.LastError)}");
-
-        var unsafeEnabled = this.realNpcSpawn.EnableUnsafeNativeWrites;
-        if (ImGui.Checkbox("启用 Unsafe/native 写入", ref unsafeEnabled))
-            this.realNpcSpawn.EnableUnsafeNativeWrites = unsafeEnabled;
-        var lookAtEnabled = this.realNpcSpawn.PlayerHeadLookAtSelectedActorEnabled;
-        if (ImGui.Checkbox("选中 Actor 后玩家头部看向 Actor", ref lookAtEnabled))
-            this.realNpcSpawn.PlayerHeadLookAtSelectedActorEnabled = lookAtEnabled;
-        ImGui.TextWrapped($"玩家看向 Actor：{this.realNpcSpawn.IsPlayerLookingAtSelectedActor} | {this.realNpcSpawn.LastPlayerLookAtResult} | {this.realNpcSpawn.LastPlayerLookAtError}");
-
-        ImGui.BeginDisabled(!actor.IsValid || npc == null);
+        ImGui.TextWrapped($"选中 Actor：{selectedActor.RuntimeId}");
+        ImGui.TextWrapped($"最后外观：{selectedActor.LastAppearanceApplyResult}");
+        ImGui.TextWrapped($"错误：{selectedActor.LastError}");
+        ImGui.BeginDisabled(!selectedActor.IsValid);
         if (ImGui.Button("应用 NPC 外观"))
-            this.realNpcSpawn.EnqueueNpcAppearance(actor.RuntimeId);
+            this.realNpcSpawn.EnqueueNpcAppearance(selectedActor.RuntimeId);
         ImGui.SameLine();
-        if (ImGui.Button("重新生成并应用外观"))
-        {
-            var newActor = this.realNpcSpawn.RegenerateAndApplyAppearance(actor.RuntimeId);
-            if (newActor != null)
-                this.selectedActorRuntimeId = newActor.RuntimeId;
-        }
-        ImGui.SameLine();
-        if (ImGui.Button("保存当前位置到 NPC 配置"))
-            this.realNpcSpawn.SaveActorPositionToNpc(actor.RuntimeId);
-        ImGui.EndDisabled();
-
-        ImGui.BeginDisabled(!actor.IsValid || !this.realNpcSpawn.EnableUnsafeNativeWrites);
         if (ImGui.Button("移到玩家当前位置") && this.runtime.PlayerPosition.HasValue)
-            this.realNpcSpawn.MoveActor(actor.RuntimeId, this.runtime.PlayerPosition.Value);
+            this.realNpcSpawn.MoveActor(selectedActor.RuntimeId, this.runtime.PlayerPosition.Value);
         ImGui.SameLine();
         if (ImGui.Button("移到 NPC 配置坐标") && npc != null)
-            this.realNpcSpawn.MoveActor(actor.RuntimeId, ToVector3(npc.Position));
+            this.realNpcSpawn.MoveActor(selectedActor.RuntimeId, ToVector3(npc.Position));
         ImGui.SameLine();
         if (ImGui.Button("播放默认动画") && npc != null)
-            this.realNpcSpawn.PlayAnimation(actor.RuntimeId, npc.DefaultAnimationId);
-        ImGui.SameLine();
-        if (ImGui.Button("停止动画/恢复 idle"))
-            this.realNpcSpawn.StopAnimation(actor.RuntimeId);
+            this.realNpcSpawn.PlayAnimation(selectedActor.RuntimeId, npc.DefaultAnimationId);
         ImGui.EndDisabled();
-
-        if (ImGui.Button("让玩家看向选中 Actor"))
-            this.realNpcSpawn.PlayerLookAtSelectedActorNow();
-        ImGui.SameLine();
-        if (ImGui.Button("停止玩家看向"))
-            this.realNpcSpawn.StopPlayerLookAt();
-        ImGui.SameLine();
-        if (ImGui.Button("重建此 Actor"))
-            this.realNpcSpawn.RespawnActor(actor.RuntimeId);
         ImGui.SameLine();
         if (ImGui.Button("删除此 Actor"))
         {
-            this.realNpcSpawn.Despawn(actor.RuntimeId, DespawnReason.UserRequested);
+            this.realNpcSpawn.Despawn(selectedActor.RuntimeId, DespawnReason.UserRequested);
             this.selectedActorRuntimeId = string.Empty;
         }
     }
@@ -561,13 +328,14 @@ public sealed class MainWindow : Window
     {
         ImGui.TextWrapped("正式功能：复用当前地图已有 BgPart slot。VisualOnly 写 Graphics.Scene.Object transform，不移动 collision。");
         ImGui.TextWrapped($"状态：{this.localLayoutObjects.LastStatus}");
+        ImGui.TextWrapped($"模型状态：{this.localLayoutObjects.LastModelOverrideStatus}");
+        ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "custom mdl / SetModel 当前为高风险实验，已禁用自动调用。创建、删除、恢复全部不会调用 SetModel。");
         ImGui.TextWrapped($"active occupied slot count：{this.localLayoutObjects.ActiveOccupiedSlotCount}");
         ImGui.TextWrapped($"duplicate slot count：{this.localLayoutObjects.DuplicateSlotCount}");
 
         var unsafeEnabled = this.realNpcSpawn.EnableUnsafeNativeWrites;
         if (ImGui.Checkbox("启用 Unsafe/native 写入", ref unsafeEnabled))
             this.realNpcSpawn.EnableUnsafeNativeWrites = unsafeEnabled;
-
         if (ImGui.Checkbox("模型和碰撞体一起变化（危险）", ref this.localLayoutFullCollisionMode) && !this.localLayoutFullCollisionMode)
             this.confirmFullLayoutCollisionMode = false;
         if (this.localLayoutFullCollisionMode)
@@ -577,10 +345,11 @@ public sealed class MainWindow : Window
         }
 
         this.DrawBgPartSelectionControls();
+        this.DrawLayoutTemplateControls();
+
         var candidate = this.GetSelectedBgPart();
         var mode = this.localLayoutFullCollisionMode ? LocalLayoutTransformMode.FullLayoutWithCollision : LocalLayoutTransformMode.VisualOnly;
         var fullLayoutBlocked = this.localLayoutFullCollisionMode && !this.confirmFullLayoutCollisionMode;
-
         ImGui.BeginDisabled(!this.realNpcSpawn.EnableUnsafeNativeWrites || candidate == null || !this.runtime.PlayerPosition.HasValue || fullLayoutBlocked);
         if (ImGui.Button(this.localLayoutFullCollisionMode ? "从候选创建本地物件（FullLayoutWithCollision，危险）" : "从候选创建本地物件（VisualOnly，推荐）"))
         {
@@ -589,8 +358,6 @@ public sealed class MainWindow : Window
                 this.selectedLocalLayoutObjectId = created.Id;
         }
         ImGui.EndDisabled();
-        if (fullLayoutBlocked)
-            ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "危险模式需要二次确认。");
 
         ImGui.BeginDisabled(!this.realNpcSpawn.EnableUnsafeNativeWrites || this.localLayoutObjects.Instances.Count == 0);
         if (ImGui.Button("恢复全部"))
@@ -606,16 +373,68 @@ public sealed class MainWindow : Window
         if (ImGui.Button("一键清理重复实例"))
         {
             this.localLayoutObjects.CleanupDuplicateInstances(auto: false);
-            if (!string.IsNullOrWhiteSpace(this.selectedLocalLayoutObjectId) &&
-                this.localLayoutObjects.GetById(this.selectedLocalLayoutObjectId) == null)
-            {
+            if (!string.IsNullOrWhiteSpace(this.selectedLocalLayoutObjectId) && this.localLayoutObjects.GetById(this.selectedLocalLayoutObjectId) == null)
                 this.selectedLocalLayoutObjectId = string.Empty;
-            }
         }
         ImGui.EndDisabled();
 
         this.DrawLocalLayoutObjectTable();
         this.DrawSelectedLocalLayoutObjectControls();
+    }
+
+    private void DrawLayoutTemplateControls()
+    {
+        var template = this.GetTemplateBgPart();
+        var candidate = this.GetSelectedBgPart();
+        ImGui.Separator();
+        ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "复制模板");
+        ImGui.TextWrapped(template == null ? "当前模板：无" : $"当前模板：{template.ResourcePath} | {template.Address} | {FormatVector(template.Position)}");
+        ImGui.BeginDisabled(candidate == null);
+        if (ImGui.Button("设为复制模板") && candidate != null)
+            this.templateBgPartAddress = candidate.Address;
+        ImGui.EndDisabled();
+        ImGui.InputInt("创建数量 N", ref this.layoutCopyCount);
+        this.layoutCopyCount = Math.Clamp(this.layoutCopyCount, 1, 100);
+        ImGui.InputFloat("横向间距", ref this.layoutCopySpacing);
+        var allowDifferent = this.allowDifferentResourcePathSlots;
+        if (ImGui.Checkbox("允许不同 resourcePath slot（不是复制模板，默认关闭）", ref allowDifferent))
+            this.allowDifferentResourcePathSlots = allowDifferent;
+        if (this.allowDifferentResourcePathSlots)
+            ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "警告：这不是复制模板，只是移动不同物体。SetModel per-instance 未跑通前不建议使用。");
+        var mode = this.localLayoutFullCollisionMode ? LocalLayoutTransformMode.FullLayoutWithCollision : LocalLayoutTransformMode.VisualOnly;
+        var fullLayoutBlocked = this.localLayoutFullCollisionMode && !this.confirmFullLayoutCollisionMode;
+        var basePosition = this.runtime.PlayerPosition ?? template?.Position ?? Vector3.Zero;
+        var availableNearest = this.FilteredBgParts().Where(slot => !this.localLayoutObjects.IsSlotOccupied(slot.Address)).OrderBy(slot => slot.DistanceToPlayer).ToList();
+        var availableFarthest = availableNearest.OrderByDescending(slot => slot.DistanceToPlayer).ToList();
+        var availableInvisible = availableNearest.Where(slot => !slot.Visible).Concat(availableNearest.Where(slot => slot.Visible)).ToList();
+        var sameResourceAvailable = template == null
+            ? 0
+            : availableNearest.Count(slot => string.Equals(slot.ResourcePath, template.ResourcePath, StringComparison.OrdinalIgnoreCase));
+        ImGui.TextWrapped(template == null
+            ? "同 resourcePath 可用 slot：请先设置模板。"
+            : $"模板 resourcePath：{template.ResourcePath}");
+        ImGui.TextWrapped($"同 resourcePath 可用 slot 数：{sameResourceAvailable}；当前将创建：{Math.Min(this.layoutCopyCount, sameResourceAvailable)}");
+
+        ImGui.BeginDisabled(!this.realNpcSpawn.EnableUnsafeNativeWrites || template == null || !this.runtime.PlayerPosition.HasValue || fullLayoutBlocked);
+        if (ImGui.Button("创建 N 个 VisualOnly 实例"))
+            this.CreateMany(template, availableNearest, this.layoutCopyCount, basePosition, LocalLayoutTransformMode.VisualOnly);
+        ImGui.SameLine();
+        if (ImGui.Button("创建 N 个 FullLayoutWithCollision 实例"))
+            this.CreateMany(template, availableNearest, this.layoutCopyCount, basePosition, LocalLayoutTransformMode.FullLayoutWithCollision);
+        if (ImGui.Button("从最远可用 slot 分配"))
+            this.CreateMany(template, availableFarthest, this.layoutCopyCount, basePosition, mode);
+        ImGui.SameLine();
+        if (ImGui.Button("从不可见 slot 分配"))
+            this.CreateMany(template, availableInvisible, this.layoutCopyCount, basePosition, mode);
+        ImGui.EndDisabled();
+    }
+
+    private void CreateMany(LayoutProbeInstance? template, IReadOnlyList<LayoutProbeInstance> slots, int count, Vector3 basePosition, LocalLayoutTransformMode mode)
+    {
+        var created = this.localLayoutObjects.CreateManyFromTemplate(template, slots, count, basePosition, mode, new Vector3(this.layoutCopySpacing, 0f, 0f), this.allowDifferentResourcePathSlots);
+        var last = created.LastOrDefault();
+        if (last != null)
+            this.selectedLocalLayoutObjectId = last.Id;
     }
 
     private void DrawBgPartSelectionControls()
@@ -626,10 +445,7 @@ public sealed class MainWindow : Window
         ImGui.SameLine();
         if (ImGui.Button("选择最近 BgPart"))
         {
-            var nearest = this.layoutProbe.Instances
-                .Where(instance => string.Equals(instance.Type, "BgPart", StringComparison.Ordinal))
-                .OrderBy(instance => instance.DistanceToPlayer)
-                .FirstOrDefault();
+            var nearest = this.FilteredBgParts().FirstOrDefault();
             if (nearest != null)
             {
                 this.selectedBgPartAddress = nearest.Address;
@@ -641,12 +457,11 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped(candidate == null
             ? "当前选中 BgPart：无"
             : $"当前选中 BgPart：{candidate.ResourcePath} | {candidate.Address} | 距离 {candidate.DistanceToPlayer:F1}y | {FormatVector(candidate.Position)}");
-
         ImGui.InputText("搜索 resourcePath/type", ref this.bgPartSearchText, 256);
+
         var rows = this.FilteredBgParts().Take(80).ToList();
         if (!ImGui.BeginTable("BgPartSelectionTable", 6, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 180f)))
             return;
-
         ImGui.TableSetupColumn("选择");
         ImGui.TableSetupColumn("distance");
         ImGui.TableSetupColumn("type");
@@ -681,15 +496,16 @@ public sealed class MainWindow : Window
 
     private void DrawLocalLayoutObjectTable()
     {
-        if (!ImGui.BeginTable("LocalLayoutObjects", 8, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 240f)))
+        if (!ImGui.BeginTable("LocalLayoutObjects", 10, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 260f)))
             return;
-
         ImGui.TableSetupColumn("选择");
         ImGui.TableSetupColumn("instanceId");
         ImGui.TableSetupColumn("slotAddress");
+        ImGui.TableSetupColumn("template");
         ImGui.TableSetupColumn("resourcePath");
+        ImGui.TableSetupColumn("customModel");
         ImGui.TableSetupColumn("mode");
-        ImGui.TableSetupColumn("collision moved");
+        ImGui.TableSetupColumn("model");
         ImGui.TableSetupColumn("restored");
         ImGui.TableSetupColumn("position");
         ImGui.TableHeadersRow();
@@ -701,18 +517,22 @@ public sealed class MainWindow : Window
             if (ImGui.Selectable("选中", string.Equals(this.selectedLocalLayoutObjectId, instance.Id, StringComparison.Ordinal)))
                 this.selectedLocalLayoutObjectId = instance.Id;
             ImGui.TableSetColumnIndex(1);
-            ImGui.TextWrapped(instance.Id);
+            ImGui.TextWrapped(instance.InstanceId);
             ImGui.TableSetColumnIndex(2);
             ImGui.TextWrapped(instance.OccupiedSlotAddress);
             ImGui.TableSetColumnIndex(3);
-            ImGui.TextWrapped(instance.SourceResourcePath);
+            ImGui.TextWrapped(instance.TemplateSourceSlotAddress);
             ImGui.TableSetColumnIndex(4);
-            ImGui.TextUnformatted(instance.TransformMode.ToString());
+            ImGui.TextWrapped(instance.CurrentResourcePath);
             ImGui.TableSetColumnIndex(5);
-            ImGui.TextUnformatted(instance.HasCollisionMoved ? "是" : "否");
+            ImGui.TextWrapped(instance.CustomModelPath);
             ImGui.TableSetColumnIndex(6);
-            ImGui.TextUnformatted(instance.IsRestored ? "是" : "否");
+            ImGui.TextUnformatted(instance.TransformMode.ToString());
             ImGui.TableSetColumnIndex(7);
+            ImGui.TextUnformatted(instance.ModelOverrideApplied ? "override" : "original");
+            ImGui.TableSetColumnIndex(8);
+            ImGui.TextUnformatted(instance.IsRestored ? "是" : "否");
+            ImGui.TableSetColumnIndex(9);
             ImGui.TextWrapped(FormatVector(instance.CurrentPosition));
             ImGui.PopID();
         }
@@ -729,8 +549,10 @@ public sealed class MainWindow : Window
 
         ImGui.Separator();
         ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), $"选中实例：{selected.Id}");
-        ImGui.TextWrapped($"resourcePath：{selected.SourceResourcePath}");
-        ImGui.TextWrapped($"slot address：{selected.OccupiedSlotAddress}");
+        ImGui.TextWrapped($"template slot：{selected.TemplateSourceSlotAddress}");
+        ImGui.TextWrapped($"occupied slot：{selected.OccupiedSlotAddress}");
+        ImGui.TextWrapped($"original model：{selected.OriginalModelResourcePath}");
+        ImGui.TextWrapped($"current model：{selected.CurrentResourcePath}");
         ImGui.TextWrapped($"readback：{selected.LastReadback}");
         ImGui.TextWrapped($"错误：{(string.IsNullOrWhiteSpace(selected.LastError) ? "无" : selected.LastError)}");
 
@@ -747,16 +569,36 @@ public sealed class MainWindow : Window
         if (ImGui.InputFloat("Position X", ref editPosition.X)) selected.CurrentPosition = editPosition;
         if (ImGui.InputFloat("Position Y", ref editPosition.Y)) selected.CurrentPosition = editPosition;
         if (ImGui.InputFloat("Position Z", ref editPosition.Z)) selected.CurrentPosition = editPosition;
-
         var rotationDegrees = new Vector3(RadiansToDegrees(selected.CurrentRotationEuler.X), RadiansToDegrees(selected.CurrentRotationEuler.Y), RadiansToDegrees(selected.CurrentRotationEuler.Z));
         if (ImGui.InputFloat("Pitch X (deg)", ref rotationDegrees.X)) selected.CurrentRotationEuler = new Vector3(DegreesToRadians(rotationDegrees.X), selected.CurrentRotationEuler.Y, selected.CurrentRotationEuler.Z);
         if (ImGui.InputFloat("Yaw Y (deg)", ref rotationDegrees.Y)) selected.CurrentRotationEuler = new Vector3(selected.CurrentRotationEuler.X, DegreesToRadians(rotationDegrees.Y), selected.CurrentRotationEuler.Z);
         if (ImGui.InputFloat("Roll Z (deg)", ref rotationDegrees.Z)) selected.CurrentRotationEuler = new Vector3(selected.CurrentRotationEuler.X, selected.CurrentRotationEuler.Y, DegreesToRadians(rotationDegrees.Z));
-
         var editScale = selected.CurrentScale;
         if (ImGui.InputFloat("Scale X", ref editScale.X)) selected.CurrentScale = Vector3.Max(editScale, new Vector3(0.01f));
         if (ImGui.InputFloat("Scale Y", ref editScale.Y)) selected.CurrentScale = Vector3.Max(editScale, new Vector3(0.01f));
         if (ImGui.InputFloat("Scale Z", ref editScale.Z)) selected.CurrentScale = Vector3.Max(editScale, new Vector3(0.01f));
+        EditString("custom mdl path", selected.CustomModelPath, 512, value => selected.CustomModelPath = value);
+        ImGui.TextWrapped($"model result：{selected.LastModelOverrideResult}");
+        ImGui.TextWrapped($"model error：{(string.IsNullOrWhiteSpace(selected.LastModelOverrideError) ? "无" : selected.LastModelOverrideError)}");
+        ImGui.TextWrapped($"before model path：{selected.BeforeModelPath}");
+        ImGui.TextWrapped($"target model path：{selected.TargetModelPath}");
+        ImGui.TextWrapped($"after model path：{selected.AfterModelPath}");
+        ImGui.TextWrapped($"modelResourceHandle：{selected.ModelResourceHandleAddress}");
+        ImGui.TextWrapped($"modelResourceHandle vtable/type：{selected.ModelResourceHandleVTable} / {selected.ModelResourceHandleType}");
+        ImGui.TextWrapped($"fileType / loadState / id：{selected.ModelResourceHandleFileType} / {selected.ModelResourceHandleLoadState} / {selected.ModelResourceHandleId}");
+        ImGui.TextWrapped($"ResourceCategory 读回：{selected.ModelResourceCategoryReadback}");
+        ImGui.TextWrapped($"实际 category：{selected.ModelResourceCategoryGuess}");
+        ImGui.TextWrapped($"是否可信：{selected.ModelResourceCategoryConfidence}");
+        ImGui.TextWrapped($"SetModel 签名：{selected.SetModelSignatureReadback}");
+        ImGui.TextWrapped($"ResourceHandle dump：{selected.ModelResourceHandleDump}");
+        ImGui.TextWrapped($"SetModel 返回值：{selected.SetModelReturnValue}");
+        ImGui.TextWrapped($"visible：{selected.ModelVisibilityReadback}");
+        ImGui.TextWrapped($"transform readback：{selected.ModelTransformReadback}");
+        ImGui.TextWrapped($"last exception：{(string.IsNullOrWhiteSpace(selected.LastSetModelException) ? "无" : selected.LastSetModelException)}");
+        ImGui.TextWrapped($"人工确认：{(string.IsNullOrWhiteSpace(selected.ManualVisualConfirmation) ? "未记录" : selected.ManualVisualConfirmation)}");
+        const string setModelPausedMessage = "SetModel 直接调用已暂停：ResourceCategory / 调用签名未确认，会崩溃。";
+        ImGui.TextColored(new Vector4(1f, 0.35f, 0.25f, 1f), setModelPausedMessage);
+        ImGui.TextWrapped("当前只保留 mdl path 输入框、modelResourceHandle 只读 Dump 和结果记录；创建、删除、恢复全部、批量复制都不会调用 SetModel。");
 
         var disabled = !this.realNpcSpawn.EnableUnsafeNativeWrites || selected.IsDuplicate || selected.IsRestored || fullLayoutNeedsConfirmation;
         ImGui.BeginDisabled(disabled);
@@ -779,6 +621,21 @@ public sealed class MainWindow : Window
         if (ImGui.Button("重置 rotation")) this.localLayoutObjects.ResetRotation(selected.Id);
         ImGui.SameLine();
         if (ImGui.Button("重置 scale")) this.localLayoutObjects.ResetScale(selected.Id);
+        ImGui.SameLine();
+        if (ImGui.Button("读取当前模型 path / Dump modelResourceHandle")) this.localLayoutObjects.RefreshModel(selected.Id);
+        ImGui.SameLine();
+        ImGui.BeginDisabled(true);
+        ImGui.Button("单实例 SetModel 实验（已暂停）");
+        ImGui.SameLine();
+        ImGui.Button("单实例恢复模型实验（已暂停）");
+        ImGui.EndDisabled();
+        ImGui.TextWrapped(setModelPausedMessage);
+        if (ImGui.Button("人工确认：外观已变化")) selected.ManualVisualConfirmation = "外观已变化";
+        ImGui.SameLine();
+        if (ImGui.Button("人工确认：只影响当前实例")) selected.ManualVisualConfirmation = "只影响当前实例";
+        ImGui.SameLine();
+        if (ImGui.Button("人工确认：未变化/异常")) selected.ManualVisualConfirmation = "未变化/异常";
+        if (ImGui.Button("Dump current model resource")) this.localLayoutObjects.SaveCurrentTransform(selected.Id);
         ImGui.SameLine();
         if (ImGui.Button("删除实例"))
         {
@@ -859,16 +716,69 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"Layout status：{this.layoutProbe.LastStatus}");
         ImGui.TextWrapped($"Layer status：{this.layerDump.LastStatus}");
         ImGui.TextWrapped($"Local object status：{this.localLayoutObjects.LastStatus}");
-        if (ImGui.CollapsingHeader("IPC 详情"))
+        this.DrawSingleSetModelRetryDebug();
+    }
+
+    private void DrawSingleSetModelRetryDebug()
+    {
+        if (!ImGui.CollapsingHeader("单实例 SetModel 重试（Debug，高风险）"))
+            return;
+
+        var selected = string.IsNullOrWhiteSpace(this.selectedLocalLayoutObjectId)
+            ? null
+            : this.localLayoutObjects.GetById(this.selectedLocalLayoutObjectId);
+
+        if (selected == null)
         {
-            ImGui.TextWrapped($"Brio IPC 可用：{this.realNpcSpawn.IsBrioIpcAvailable}");
-            ImGui.TextWrapped($"Brio IPC 版本：{this.realNpcSpawn.BrioIpcVersion?.ToString() ?? "未知"}");
-            ImGui.TextWrapped($"Glamourer 版本：{this.realNpcSpawn.GlamourerVersion}");
-            ImGui.TextWrapped($"Glamourer ApplyDesign 注册：{this.realNpcSpawn.IsGlamourerApplyDesignRegistered}");
-            ImGui.TextWrapped($"Glamourer 签名：{this.realNpcSpawn.SelectedGlamourerApplyDesign?.Signature ?? "未绑定"}");
-            ImGui.TextWrapped($"最后参数：{this.realNpcSpawn.GlamourerIpcBridgeLastInvocationParameters}");
-            ImGui.TextWrapped($"最后错误：{this.realNpcSpawn.GlamourerIpcBridgeLastError}");
+            ImGui.TextWrapped("请先在“本地场景物体”页选中一个 LocalLayoutObjectInstance。");
+            return;
         }
+
+        ImGui.TextColored(new Vector4(1f, 0.35f, 0.25f, 1f), "仅单实例手动实验。不会用于创建、删除、恢复全部或批量复制。");
+        ImGui.TextWrapped($"实例：{selected.Id}");
+        ImGui.TextWrapped($"GraphicsObject：{selected.GraphicsObjectAddress}");
+        ImGui.TextWrapped($"before：{selected.BeforeModelPath}");
+        ImGui.TextWrapped($"target：{selected.CustomModelPath}");
+        ImGui.TextWrapped($"after：{selected.AfterModelPath}");
+        ImGui.TextWrapped($"category：{selected.ModelResourceCategoryReadback}");
+        ImGui.TextWrapped($"loadState：{selected.ModelResourceHandleLoadState}");
+        ImGui.TextWrapped($"SetModel 返回值：{selected.SetModelReturnValue}");
+        ImGui.TextWrapped($"visible：{selected.ModelVisibilityReadback}");
+        ImGui.TextWrapped($"transform：{selected.ModelTransformReadback}");
+        ImGui.TextWrapped($"last exception：{(string.IsNullOrWhiteSpace(selected.LastSetModelException) ? "无" : selected.LastSetModelException)}");
+        ImGui.TextWrapped($"结果：{selected.LastModelOverrideResult}");
+        ImGui.TextWrapped($"错误：{(string.IsNullOrWhiteSpace(selected.LastModelOverrideError) ? "无" : selected.LastModelOverrideError)}");
+
+        EditString("Debug target mdl path", selected.CustomModelPath, 512, value => selected.CustomModelPath = value);
+        if (ImGui.Button("刷新只读 ResourceHandle / category"))
+            this.localLayoutObjects.RefreshModel(selected.Id);
+
+        var confirm = this.confirmSingleSetModelRetry;
+        if (ImGui.Checkbox("我确认单实例 SetModel 仍可能崩溃", ref confirm))
+            this.confirmSingleSetModelRetry = confirm;
+
+        var blockReason = this.localLayoutObjects.GetApplyModelBlockReason(
+            selected.Id,
+            selected.CustomModelPath,
+            this.realNpcSpawn.EnableUnsafeNativeWrites,
+            this.confirmSingleSetModelRetry);
+
+        if (!string.IsNullOrWhiteSpace(blockReason))
+            ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), $"按钮禁用原因：{blockReason}");
+
+        ImGui.BeginDisabled(!string.IsNullOrWhiteSpace(blockReason));
+        if (ImGui.Button("单实例 SetModel 实验"))
+            this.localLayoutObjects.ApplyModelOverride(selected.Id, selected.CustomModelPath);
+        ImGui.EndDisabled();
+
+        if (ImGui.Button("人工确认：外观已变化")) selected.ManualVisualConfirmation = "外观已变化";
+        ImGui.SameLine();
+        if (ImGui.Button("人工确认：只影响当前实例")) selected.ManualVisualConfirmation = "只影响当前实例";
+        ImGui.SameLine();
+        if (ImGui.Button("人工确认：外观异常")) selected.ManualVisualConfirmation = "外观异常";
+        ImGui.SameLine();
+        if (ImGui.Button("人工确认：游戏不稳定")) selected.ManualVisualConfirmation = "游戏不稳定";
+        ImGui.TextWrapped($"人工记录：{(string.IsNullOrWhiteSpace(selected.ManualVisualConfirmation) ? "未记录" : selected.ManualVisualConfirmation)}");
     }
 
     private IEnumerable<LayoutProbeInstance> FilteredBgParts()
@@ -894,6 +804,11 @@ public sealed class MainWindow : Window
         }
         return this.layerDump.ReusableCandidate;
     }
+
+    private LayoutProbeInstance? GetTemplateBgPart()
+        => string.IsNullOrWhiteSpace(this.templateBgPartAddress)
+            ? null
+            : this.layoutProbe.Instances.FirstOrDefault(instance => string.Equals(instance.Address, this.templateBgPartAddress, StringComparison.OrdinalIgnoreCase));
 
     private void CreateNpcAtPlayer()
     {

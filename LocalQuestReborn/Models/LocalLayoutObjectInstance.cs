@@ -6,7 +6,25 @@ public sealed class LocalLayoutObjectInstance
 {
     public string Id { get; set; } = string.Empty;
 
+    public string InstanceId
+    {
+        get => this.Id;
+        set => this.Id = value;
+    }
+
+    public string TemplateSourceSlotAddress { get; set; } = string.Empty;
+
     public string SourceResourcePath { get; set; } = string.Empty;
+
+    public string OriginalResourcePath { get; set; } = string.Empty;
+
+    public string CurrentResourcePath { get; set; } = string.Empty;
+
+    public string CustomModelPath { get; set; } = string.Empty;
+
+    public bool ModelOverrideApplied { get; set; }
+
+    public string OriginalModelResourcePath { get; set; } = string.Empty;
 
     public string OccupiedSlotAddress { get; set; } = string.Empty;
 
@@ -73,6 +91,50 @@ public sealed class LocalLayoutObjectInstance
     public string LastReadback { get; set; } = "未读取";
 
     public string LastError { get; set; } = string.Empty;
+
+    public string LastModelOverrideResult { get; set; } = string.Empty;
+
+    public string LastModelOverrideError { get; set; } = string.Empty;
+
+    public string BeforeModelPath { get; set; } = string.Empty;
+
+    public string TargetModelPath { get; set; } = string.Empty;
+
+    public string AfterModelPath { get; set; } = string.Empty;
+
+    public string ModelResourceHandleAddress { get; set; } = string.Empty;
+
+    public string OriginalModelResourceHandleAddress { get; set; } = string.Empty;
+
+    public string SetModelReturnValue { get; set; } = string.Empty;
+
+    public string LastSetModelException { get; set; } = string.Empty;
+
+    public string ModelVisibilityReadback { get; set; } = string.Empty;
+
+    public string ModelTransformReadback { get; set; } = string.Empty;
+
+    public string ModelResourceHandleDump { get; set; } = string.Empty;
+
+    public string ModelResourceHandleVTable { get; set; } = string.Empty;
+
+    public string ModelResourceHandleType { get; set; } = string.Empty;
+
+    public string ModelResourceHandleFileType { get; set; } = string.Empty;
+
+    public string ModelResourceHandleLoadState { get; set; } = string.Empty;
+
+    public string ModelResourceHandleId { get; set; } = string.Empty;
+
+    public string ModelResourceCategoryReadback { get; set; } = string.Empty;
+
+    public string ModelResourceCategoryGuess { get; set; } = string.Empty;
+
+    public string ModelResourceCategoryConfidence { get; set; } = string.Empty;
+
+    public string SetModelSignatureReadback { get; set; } = string.Empty;
+
+    public string ManualVisualConfirmation { get; set; } = string.Empty;
 
     public string Notes { get; set; } = string.Empty;
 }
