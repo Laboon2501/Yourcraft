@@ -30,8 +30,8 @@
       "OverrideDialogueEnabled": true,
       "appearance": {
         "sourceType": "GlamourerDesign",
-        "displayName": "其宁惟永 - 幻影群岛",
-        "glamourerDesignId": "91c3fda0-82fa-4f6c-98e0-d7e8b2da2e7c",
+        "displayName": "hal",
+        "glamourerDesignId": "e7222fd1-31cf-45f5-9c9d-febd991c56f4",
         "penumbraCollectionName": "",
         "mcdfPath": "",
         "gameNpcName": "木人",
@@ -39,7 +39,7 @@
         "gameNpcBaseId": 16841,
         "gameNpcModelId": 0,
         "gameNpcCustomizeId": 0,
-        "notes": "C:\\Users\\kiomo\\AppData\\Roaming\\XIVLauncherCN\\pluginConfigs\\Glamourer\\designs\\91c3fda0-82fa-4f6c-98e0-d7e8b2da2e7c.json"
+        "notes": "C:\\Users\\kiomo\\AppData\\Roaming\\XIVLauncherCN\\pluginConfigs\\Glamourer\\designs\\e7222fd1-31cf-45f5-9c9d-febd991c56f4.json"
       }
     }
   ],
