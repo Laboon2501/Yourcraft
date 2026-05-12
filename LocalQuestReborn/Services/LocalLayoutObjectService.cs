@@ -26,7 +26,7 @@ public sealed unsafe class LocalLayoutObjectService
         .GroupBy(item => item.OccupiedSlotAddress, StringComparer.OrdinalIgnoreCase)
         .Count(group => group.Count() > 1);
 
-    public string LastStatus { get; private set; } = "灏氭湭鍒涘缓鏈湴鍦烘櫙鐗╀綋銆?";
+    public string LastStatus { get; private set; } = "尚未创建本地场景物体。";
 
     public bool IsSlotOccupied(string slotAddress)
     {
@@ -39,32 +39,32 @@ public sealed unsafe class LocalLayoutObjectService
         this.RebuildOccupiedSlotRegistry();
         if (candidate == null)
         {
-            this.LastStatus = "璇峰厛鏌ユ壘骞堕€夋嫨涓€涓€欓€?BgPart銆?";
+            this.LastStatus = "请先查找并选择一个候选 BgPart。";
             return null;
         }
 
         if (!string.Equals(candidate.Type, "BgPart", StringComparison.Ordinal))
         {
-            this.LastStatus = $"褰撳墠鍊欓€変笉鏄?BgPart锛{candidate.Type}";
+            this.LastStatus = $"当前候选不是 BgPart：{candidate.Type}";
             return null;
         }
 
         if (this.occupiedSlots.TryGetValue(candidate.Address, out var owner))
         {
-            this.LastStatus = $"璇?BgPart slot 宸茶瀹炰緥 {owner.Id} 鍗犵敤銆?";
+            this.LastStatus = $"该 BgPart slot 已被实例 {owner.Id} 占用。";
             return owner;
         }
 
         if (!TryGetPointer(candidate.Address, out var pointer))
         {
-            this.LastStatus = $"鍊欓€夊湴鍧€瑙ｆ瀽澶辫触锛{candidate.Address}";
+            this.LastStatus = $"候选地址解析失败：{candidate.Address}";
             return null;
         }
 
         var originalLayout = ReadLayoutTransform(pointer);
         if (originalLayout == null)
         {
-            this.LastStatus = "璇诲彇鍊欓€夊師濮?layout transform 澶辫触锛屾湭鍒涘缓銆?";
+            this.LastStatus = "读取候选原始 layout transform 失败，未创建。";
             return null;
         }
 
@@ -76,7 +76,7 @@ public sealed unsafe class LocalLayoutObjectService
         {
             if (!TryGetGraphicsObjectAddress(pointer, out var graphicsAddress))
             {
-                this.LastStatus = "璇诲彇 BgPart GraphicsObject 澶辫触锛屾棤娉曞垱寤?VisualOnly 鏈湴鐗╀欢銆?";
+                this.LastStatus = "读取 BgPart GraphicsObject 失败，无法创建 VisualOnly 本地物件。";
                 return null;
             }
 
@@ -101,7 +101,7 @@ public sealed unsafe class LocalLayoutObjectService
             OriginalLayoutRotation = originalLayout.Value.Rotation,
             OriginalLayoutScale = originalLayout.Value.Scale,
             OriginalLayoutTransform = FormatSnapshot(originalLayout.Value),
-            OriginalVisualTransform = mode == LocalLayoutTransformMode.VisualOnly ? FormatSceneSnapshot(originalVisual) : "FullLayout 妯″紡涓嶄娇鐢ㄨ瑙夊瓧娈?",
+            OriginalVisualTransform = mode == LocalLayoutTransformMode.VisualOnly ? FormatSceneSnapshot(originalVisual) : "FullLayout 模式不使用视觉字段",
             OriginalVisualTranslation = originalVisualTranslation,
             OriginalVisualPosition = originalVisual.Position,
             OriginalVisualRotation = originalVisual.Rotation,
@@ -119,13 +119,13 @@ public sealed unsafe class LocalLayoutObjectService
             VisualOnlyVerified = mode == LocalLayoutTransformMode.VisualOnly,
             HasCollisionMoved = mode == LocalLayoutTransformMode.FullLayoutWithCollision,
             Notes = mode == LocalLayoutTransformMode.VisualOnly
-                ? "VisualOnly锛氬彧鍐?GraphicsObject + 0x20 visual matrix锛屼笉绉诲姩 layout/collision銆?"
-                : "鍗遍櫓锛欶ullLayoutWithCollision 浼氬啓 layout transform 骞剁Щ鍔ㄧ鎾炰綋銆?",
+                ? "VisualOnly：只写 Graphics.Scene.Object transform，不移动 layout/collision。"
+                : "危险：FullLayoutWithCollision 会写 layout transform 并移动碰撞体。",
         };
 
         this.instances.Add(instance);
         this.occupiedSlots[instance.OccupiedSlotAddress] = instance;
-        this.WriteInstanceTransform(instance, playerPosition, instance.CurrentRotationEuler, instance.CurrentScale, "浠庡€欓€?BgPart 鍒涘缓鏈湴鐗╀欢瀹炰緥");
+        this.WriteInstanceTransform(instance, playerPosition, instance.CurrentRotationEuler, instance.CurrentScale, "从候选 BgPart 创建本地物件实例");
         return instance;
     }
 
@@ -133,14 +133,14 @@ public sealed unsafe class LocalLayoutObjectService
     {
         if (candidate == null)
         {
-            this.LastStatus = "璇峰厛閫夋嫨鍊欓€?BgPart銆?";
+            this.LastStatus = "请先选择候选 BgPart。";
             return;
         }
 
         this.RebuildOccupiedSlotRegistry();
         if (!this.occupiedSlots.TryGetValue(candidate.Address, out var owner))
         {
-            this.LastStatus = "璇ュ€欓€?slot 褰撳墠鏈鏈湴瀹炰緥鍗犵敤銆?";
+            this.LastStatus = "该候选 slot 当前未被本地实例占用。";
             return;
         }
 
@@ -151,7 +151,7 @@ public sealed unsafe class LocalLayoutObjectService
     {
         if (candidate == null)
         {
-            this.LastStatus = "璇峰厛閫夋嫨鍊欓€?BgPart銆?";
+            this.LastStatus = "请先选择候选 BgPart。";
             return null;
         }
 
@@ -168,7 +168,7 @@ public sealed unsafe class LocalLayoutObjectService
         if (instance == null)
             return;
 
-        this.WriteInstanceTransform(instance, playerPosition, instance.CurrentRotationEuler, instance.CurrentScale, "绉诲姩瀹炰緥鍒扮帺瀹跺綋鍓嶄綅缃?");
+        this.WriteInstanceTransform(instance, playerPosition, instance.CurrentRotationEuler, instance.CurrentScale, "移动实例到玩家当前位置");
     }
 
     public void MoveX(string id, float delta) => this.MoveBy(id, new Vector3(delta, 0f, 0f), $"X {(delta >= 0 ? "+" : string.Empty)}{delta:F1}");
@@ -183,7 +183,7 @@ public sealed unsafe class LocalLayoutObjectService
         if (instance == null)
             return;
 
-        this.WriteInstanceTransform(instance, position, rotationEuler, scale, instance.TransformMode == LocalLayoutTransformMode.VisualOnly ? "搴旂敤 VisualOnly transform" : "搴旂敤 FullLayout transform");
+        this.WriteInstanceTransform(instance, position, rotationEuler, scale, instance.TransformMode == LocalLayoutTransformMode.VisualOnly ? "应用 VisualOnly transform" : "应用 FullLayout transform");
     }
 
     public void ResetPosition(string id)
@@ -204,7 +204,7 @@ public sealed unsafe class LocalLayoutObjectService
         if (instance == null)
             return;
 
-        this.WriteInstanceTransform(instance, instance.CurrentPosition, Vector3.Zero, instance.CurrentScale, "閲嶇疆鏃嬭浆");
+        this.WriteInstanceTransform(instance, instance.CurrentPosition, Vector3.Zero, instance.CurrentScale, "重置旋转");
     }
 
     public void ResetScale(string id)
@@ -216,7 +216,7 @@ public sealed unsafe class LocalLayoutObjectService
         var targetScale = instance.TransformMode == LocalLayoutTransformMode.VisualOnly
             ? instance.OriginalVisualScale
             : instance.OccupiedSlotOriginalScale;
-        this.WriteInstanceTransform(instance, instance.CurrentPosition, instance.CurrentRotationEuler, targetScale, "閲嶇疆缂╂斁");
+        this.WriteInstanceTransform(instance, instance.CurrentPosition, instance.CurrentRotationEuler, targetScale, "重置缩放");
     }
 
     public void AdjustScale(string id, float multiplier)
@@ -226,7 +226,7 @@ public sealed unsafe class LocalLayoutObjectService
             return;
 
         var scale = Vector3.Max(instance.CurrentScale * multiplier, new Vector3(0.01f));
-        this.WriteInstanceTransform(instance, instance.CurrentPosition, instance.CurrentRotationEuler, scale, $"缂╂斁 x{multiplier:F2}");
+        this.WriteInstanceTransform(instance, instance.CurrentPosition, instance.CurrentRotationEuler, scale, $"缩放 x{multiplier:F2}");
     }
 
     public void SaveCurrentTransform(string id)
@@ -239,7 +239,7 @@ public sealed unsafe class LocalLayoutObjectService
         {
             if (!TryParseAddress(instance.GraphicsObjectAddress, out var graphicsAddress) || graphicsAddress == 0)
             {
-                instance.LastError = "GraphicsObject 鍦板潃瑙ｆ瀽澶辫触銆?";
+                instance.LastError = "GraphicsObject 地址解析失败。";
                 this.LastStatus = instance.LastError;
                 return;
             }
@@ -247,7 +247,7 @@ public sealed unsafe class LocalLayoutObjectService
             var current = ReadSceneObjectTransform(graphicsAddress);
             if (current == null)
             {
-                instance.LastError = "璇诲彇褰撳墠 Scene.Object transform 澶辫触銆?";
+                instance.LastError = "读取当前 Scene.Object transform 失败。";
                 this.LastStatus = instance.LastError;
                 return;
             }
@@ -259,13 +259,13 @@ public sealed unsafe class LocalLayoutObjectService
             instance.CurrentVisualMatrix = ReadVisualMatrix((nint)graphicsAddress, instance.VisualTransformOffset);
             instance.LastReadback = FormatSceneSnapshot(current.Value);
             instance.LastError = string.Empty;
-            this.LastStatus = $"宸蹭繚瀛樺綋鍓?VisualOnly transform锛{instance.Id}銆?";
+            this.LastStatus = $"已保存当前 VisualOnly transform：{instance.Id}。";
             return;
         }
 
         if (!TryGetPointer(instance.OccupiedSlotAddress, out var pointer))
         {
-            instance.LastError = "slot 鍦板潃瑙ｆ瀽澶辫触銆?";
+            instance.LastError = "slot 地址解析失败。";
             this.LastStatus = instance.LastError;
             return;
         }
@@ -273,7 +273,7 @@ public sealed unsafe class LocalLayoutObjectService
         var layout = ReadLayoutTransform(pointer);
         if (layout == null)
         {
-            instance.LastError = "璇诲彇褰撳墠 layout transform 澶辫触銆?";
+            instance.LastError = "读取当前 layout transform 失败。";
             this.LastStatus = instance.LastError;
             return;
         }
@@ -283,7 +283,7 @@ public sealed unsafe class LocalLayoutObjectService
         instance.CurrentScale = layout.Value.Scale;
         instance.LastReadback = FormatSnapshot(layout.Value);
         instance.LastError = string.Empty;
-        this.LastStatus = $"宸蹭繚瀛樺綋鍓?transform锛{instance.Id}";
+        this.LastStatus = $"已保存当前 transform：{instance.Id}";
     }
 
     public void RestoreOriginal(string id)
@@ -317,9 +317,6 @@ public sealed unsafe class LocalLayoutObjectService
 
         this.RebuildOccupiedSlotRegistry();
         this.LastStatus = removeAfterRestore
-            ? "宸叉寜 slot 鍘婚噸鎭㈠骞剁Щ闄ゅ叏閮ㄦ湰鍦板満鏅墿浣撳疄渚嬨€?"
-            : "宸叉寜 slot 鍘婚噸鎭㈠鍏ㄩ儴鏈湴鍦烘櫙鐗╀綋瀹炰緥銆?";
-        this.LastStatus = removeAfterRestore
             ? $"已自动清理重复实例 {duplicateCleanupCount} 个，并恢复/移除 {restoreCount} 个 occupied slot。"
             : $"已自动清理重复实例 {duplicateCleanupCount} 个，并恢复 {restoreCount} 个 occupied slot。";
     }
@@ -335,11 +332,11 @@ public sealed unsafe class LocalLayoutObjectService
             if (instance.TransformMode != LocalLayoutTransformMode.VisualOnly)
                 continue;
 
-            this.WriteInstanceTransform(instance, playerPosition, instance.CurrentRotationEuler, instance.CurrentScale, "鍏ㄩ儴绉诲洖鐜╁鑴氫笅");
+            this.WriteInstanceTransform(instance, playerPosition, instance.CurrentRotationEuler, instance.CurrentScale, "全部移回玩家脚下");
             moved++;
         }
 
-        this.LastStatus = $"宸插皢 {moved} 涓?active VisualOnly slot 鐨勮瑙夋ā鍨嬬Щ鍥炵帺瀹惰剼涓嬨€?";
+        this.LastStatus = $"已将 {moved} 个 active VisualOnly slot 的视觉模型移回玩家脚下。";
     }
 
     public void RestoreAllActiveVisualOnlyTranslations()
@@ -360,11 +357,12 @@ public sealed unsafe class LocalLayoutObjectService
         }
 
         this.RebuildOccupiedSlotRegistry();
-        this.LastStatus = $"宸叉仮澶?{restored} 涓?active VisualOnly slot 鐨勫師 visual transform銆?";
+        this.LastStatus = $"已恢复 {restored} 个 active VisualOnly slot 的原 visual transform。";
     }
 
     public int CleanupDuplicateInstances(bool auto = false)
     {
+        this.RebuildOccupiedSlotRegistry();
         var duplicateIds = this.instances
             .Select((item, index) => new { Item = item, Index = index })
             .Where(entry => entry.Item.IsOccupied && !entry.Item.IsRestored && !string.IsNullOrWhiteSpace(entry.Item.OccupiedSlotAddress))
@@ -372,6 +370,9 @@ public sealed unsafe class LocalLayoutObjectService
             .SelectMany(group => group.OrderBy(entry => entry.Index).Skip(1))
             .Select(entry => entry.Item.Id)
             .ToHashSet(StringComparer.Ordinal);
+
+        foreach (var staleDuplicate in this.instances.Where(item => item.IsDuplicate && !string.IsNullOrWhiteSpace(item.OccupiedSlotAddress)))
+            duplicateIds.Add(staleDuplicate.Id);
 
         foreach (var instance in this.instances.Where(item => duplicateIds.Contains(item.Id)))
         {
@@ -399,7 +400,7 @@ public sealed unsafe class LocalLayoutObjectService
 
         var instance = this.instances.FirstOrDefault(item => string.Equals(item.Id, id, StringComparison.Ordinal));
         if (instance == null)
-            this.LastStatus = $"鎵句笉鍒版湰鍦板満鏅墿浣撳疄渚嬶細{id}";
+            this.LastStatus = $"找不到本地场景物体实例：{id}";
 
         return instance;
     }
@@ -424,7 +425,7 @@ public sealed unsafe class LocalLayoutObjectService
             if (this.occupiedSlots.ContainsKey(instance.OccupiedSlotAddress))
             {
                 instance.IsDuplicate = true;
-                instance.Notes = "閲嶅 slot 瀹炰緥锛屽凡鏍囪 invalid锛屼笉鍙備笌 RestoreAll銆?";
+                instance.Notes = "重复 slot 实例，已标记 invalid，不参与 RestoreAll。";
                 continue;
             }
 
@@ -437,7 +438,7 @@ public sealed unsafe class LocalLayoutObjectService
     {
         if (instance.IsDuplicate)
         {
-            instance.LastError = "閲嶅 slot 瀹炰緥涓嶅弬涓庢仮澶嶏紝閬垮厤瑕嗙洊鍘熷 transform銆?";
+            instance.LastError = "重复 slot 实例不参与恢复，避免覆盖原始 transform。";
             this.LastStatus = instance.LastError;
             if (removeAfterRestore)
                 this.instances.Remove(instance);
@@ -446,7 +447,7 @@ public sealed unsafe class LocalLayoutObjectService
 
         if (!instance.CanRestore)
         {
-            instance.LastError = "娌℃湁鍙仮澶嶇殑鍘熷 transform銆?";
+            instance.LastError = "没有可恢复的原始 transform。";
             this.LastStatus = instance.LastError;
             return;
         }
@@ -479,14 +480,14 @@ public sealed unsafe class LocalLayoutObjectService
     {
         if (instance.IsDuplicate)
         {
-            instance.LastError = "閲嶅 slot 瀹炰緥绂佹鍐欏叆銆?";
+            instance.LastError = "重复 slot 实例禁止写入。";
             this.LastStatus = instance.LastError;
             return;
         }
 
         if (!TryParseAddress(instance.GraphicsObjectAddress, out var graphicsAddress) || graphicsAddress == 0)
         {
-            instance.LastError = $"GraphicsObject 鍦板潃瑙ｆ瀽澶辫触锛{instance.GraphicsObjectAddress}";
+            instance.LastError = $"GraphicsObject 地址解析失败：{instance.GraphicsObjectAddress}";
             this.LastStatus = instance.LastError;
             return;
         }
@@ -509,11 +510,11 @@ public sealed unsafe class LocalLayoutObjectService
             instance.HasCollisionMoved = false;
             instance.VisualOnlyVerified = true;
 
-            this.LastStatus = $"{action} 瀹屾垚锛歏isualOnly 鍐?Graphics.Scene.Object Position/Rotation/Scale锛屼笉鍐?layout/collision銆?";
+            this.LastStatus = $"{action} 完成：VisualOnly 写 Graphics.Scene.Object Position/Rotation/Scale，不写 layout/collision。";
         }
         catch (Exception ex)
         {
-            instance.LastError = $"{action} 澶辫触锛{ex.Message}";
+            instance.LastError = $"{action} 失败：{ex.Message}";
             this.LastStatus = instance.LastError;
         }
     }
@@ -522,7 +523,7 @@ public sealed unsafe class LocalLayoutObjectService
     {
         if (!TryParseAddress(instance.GraphicsObjectAddress, out var graphicsAddress) || graphicsAddress == 0)
         {
-            instance.LastError = $"GraphicsObject 鍦板潃瑙ｆ瀽澶辫触锛{instance.GraphicsObjectAddress}";
+            instance.LastError = $"GraphicsObject 地址解析失败：{instance.GraphicsObjectAddress}";
             this.LastStatus = instance.LastError;
             return;
         }
@@ -542,11 +543,11 @@ public sealed unsafe class LocalLayoutObjectService
             instance.LastReadback = FormatSceneSnapshot(sceneReadback);
             instance.LastError = string.Empty;
             instance.HasCollisionMoved = false;
-            this.LastStatus = $"{action} 瀹屾垚锛氬凡鎭㈠ Scene.Object Position/Rotation/Scale銆?";
+            this.LastStatus = $"{action} 完成：已恢复 Scene.Object Position/Rotation/Scale。";
         }
         catch (Exception ex)
         {
-            instance.LastError = $"{action} 澶辫触锛{ex.Message}";
+            instance.LastError = $"{action} 失败：{ex.Message}";
             this.LastStatus = instance.LastError;
         }
     }
@@ -555,14 +556,14 @@ public sealed unsafe class LocalLayoutObjectService
     {
         if (instance.IsDuplicate)
         {
-            instance.LastError = "閲嶅 slot 瀹炰緥绂佹鍐欏叆銆?";
+            instance.LastError = "重复 slot 实例禁止写入。";
             this.LastStatus = instance.LastError;
             return;
         }
 
         if (!TryGetPointer(instance.OccupiedSlotAddress, out var pointer))
         {
-            instance.LastError = $"slot 鍦板潃瑙ｆ瀽澶辫触锛{instance.OccupiedSlotAddress}";
+            instance.LastError = $"slot 地址解析失败：{instance.OccupiedSlotAddress}";
             this.LastStatus = instance.LastError;
             return;
         }
@@ -570,7 +571,7 @@ public sealed unsafe class LocalLayoutObjectService
         var target = new LayoutTransformSnapshot(position, rotation, scale);
         if (!WriteLayoutTransform(pointer, target))
         {
-            instance.LastError = $"{action} 澶辫触锛歋etTransform 鏈垚鍔熴€?";
+            instance.LastError = $"{action} 失败：SetTransform 未成功。";
             this.LastStatus = instance.LastError;
             return;
         }
@@ -578,7 +579,7 @@ public sealed unsafe class LocalLayoutObjectService
         var after = ReadLayoutTransform(pointer);
         if (after == null)
         {
-            instance.LastError = $"{action} 鍚?readback 澶辫触銆?";
+            instance.LastError = $"{action} 后 readback 失败。";
             this.LastStatus = instance.LastError;
             return;
         }
@@ -591,7 +592,7 @@ public sealed unsafe class LocalLayoutObjectService
         instance.IsOccupied = true;
         instance.IsRestored = false;
         instance.HasCollisionMoved = true;
-        this.LastStatus = $"{action} 瀹屾垚锛欶ullLayoutWithCollision 浼氱Щ鍔ㄧ鎾炰綋銆俽eadback={FormatVector(after.Value.Position)}";
+        this.LastStatus = $"{action} 完成：FullLayoutWithCollision 会移动碰撞体。readback={FormatVector(after.Value.Position)}";
     }
 
     private static bool TryGetPointer(string? raw, out ILayoutInstance* pointer)
