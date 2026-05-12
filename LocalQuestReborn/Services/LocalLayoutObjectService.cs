@@ -15,23 +15,26 @@ public sealed unsafe class LocalLayoutObjectService
 
     private readonly LayoutObjectTransformService transformService = new();
     private readonly List<LocalLayoutObjectInstance> instances = [];
-    private readonly Dictionary<string, LocalLayoutObjectInstance> occupiedSlots = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<ulong, LocalLayoutObjectInstance> occupiedSlots = [];
 
     public IReadOnlyList<LocalLayoutObjectInstance> Instances => this.instances;
 
-    public int ActiveOccupiedSlotCount => this.occupiedSlots.Count;
+    public int ActiveOccupiedSlotCount => this.GetActiveInstances()
+        .Select(item => item.SlotAddress)
+        .Distinct()
+        .Count();
 
-    public int DuplicateSlotCount => this.instances
-        .Where(item => item.IsOccupied && !item.IsRestored)
-        .GroupBy(item => item.OccupiedSlotAddress, StringComparer.OrdinalIgnoreCase)
-        .Count(group => group.Count() > 1);
+    public int DuplicateSlotCount => this.GetActiveInstances()
+        .GroupBy(item => item.SlotAddress)
+        .Sum(group => Math.Max(0, group.Count() - 1));
 
     public string LastStatus { get; private set; } = "尚未创建本地场景物体。";
 
     public bool IsSlotOccupied(string slotAddress)
     {
         this.RebuildOccupiedSlotRegistry();
-        return this.occupiedSlots.ContainsKey(slotAddress);
+        return TryNormalizeSlotAddress(slotAddress, out var normalizedAddress)
+            && this.occupiedSlots.ContainsKey(normalizedAddress);
     }
 
     public LocalLayoutObjectInstance? CreateFromCandidate(LayoutProbeInstance? candidate, Vector3 playerPosition, LocalLayoutTransformMode mode)
@@ -49,7 +52,8 @@ public sealed unsafe class LocalLayoutObjectService
             return null;
         }
 
-        if (this.occupiedSlots.TryGetValue(candidate.Address, out var owner))
+        if (TryNormalizeSlotAddress(candidate.Address, out var candidateSlotAddress)
+            && this.occupiedSlots.TryGetValue(candidateSlotAddress, out var owner))
         {
             this.LastStatus = $"该 BgPart slot 已被实例 {owner.Id} 占用。";
             return owner;
@@ -124,7 +128,8 @@ public sealed unsafe class LocalLayoutObjectService
         };
 
         this.instances.Add(instance);
-        this.occupiedSlots[instance.OccupiedSlotAddress] = instance;
+        if (TryNormalizeSlotAddress(instance.OccupiedSlotAddress, out var occupiedSlotAddress))
+            this.occupiedSlots[occupiedSlotAddress] = instance;
         this.WriteInstanceTransform(instance, playerPosition, instance.CurrentRotationEuler, instance.CurrentScale, "从候选 BgPart 创建本地物件实例");
         return instance;
     }
@@ -138,7 +143,8 @@ public sealed unsafe class LocalLayoutObjectService
         }
 
         this.RebuildOccupiedSlotRegistry();
-        if (!this.occupiedSlots.TryGetValue(candidate.Address, out var owner))
+        if (!TryNormalizeSlotAddress(candidate.Address, out var candidateSlotAddress)
+            || !this.occupiedSlots.TryGetValue(candidateSlotAddress, out var owner))
         {
             this.LastStatus = "该候选 slot 当前未被本地实例占用。";
             return;
@@ -156,7 +162,8 @@ public sealed unsafe class LocalLayoutObjectService
         }
 
         this.RebuildOccupiedSlotRegistry();
-        if (this.occupiedSlots.TryGetValue(candidate.Address, out var owner))
+        if (TryNormalizeSlotAddress(candidate.Address, out var candidateSlotAddress)
+            && this.occupiedSlots.TryGetValue(candidateSlotAddress, out var owner))
             this.Delete(owner.Id);
 
         return this.CreateFromCandidate(candidate, playerPosition, mode);
@@ -352,7 +359,8 @@ public sealed unsafe class LocalLayoutObjectService
             instance.IsOccupied = false;
             instance.IsRestored = true;
             instance.HasCollisionMoved = false;
-            this.occupiedSlots.Remove(instance.OccupiedSlotAddress);
+            if (TryNormalizeSlotAddress(instance.OccupiedSlotAddress, out var occupiedSlotAddress))
+                this.occupiedSlots.Remove(occupiedSlotAddress);
             restored++;
         }
 
@@ -363,12 +371,15 @@ public sealed unsafe class LocalLayoutObjectService
     public int CleanupDuplicateInstances(bool auto = false)
     {
         this.RebuildOccupiedSlotRegistry();
-        var duplicateIds = this.instances
-            .Select((item, index) => new { Item = item, Index = index })
-            .Where(entry => entry.Item.IsOccupied && !entry.Item.IsRestored && !string.IsNullOrWhiteSpace(entry.Item.OccupiedSlotAddress))
-            .GroupBy(entry => entry.Item.OccupiedSlotAddress, StringComparer.OrdinalIgnoreCase)
+        var duplicateGroups = this.GetActiveInstances()
+            .GroupBy(entry => entry.SlotAddress)
+            .Where(group => group.Count() > 1)
+            .ToList();
+
+        var affectedSlotCount = duplicateGroups.Count;
+        var duplicateIds = duplicateGroups
             .SelectMany(group => group.OrderBy(entry => entry.Index).Skip(1))
-            .Select(entry => entry.Item.Id)
+            .Select(entry => entry.Instance.Id)
             .ToHashSet(StringComparer.Ordinal);
 
         foreach (var staleDuplicate in this.instances.Where(item => item.IsDuplicate && !string.IsNullOrWhiteSpace(item.OccupiedSlotAddress)))
@@ -377,6 +388,7 @@ public sealed unsafe class LocalLayoutObjectService
         foreach (var instance in this.instances.Where(item => duplicateIds.Contains(item.Id)))
         {
             instance.IsDuplicate = true;
+            instance.IsInvalid = true;
             instance.IsOccupied = false;
             instance.IsRestored = true;
             instance.LastError = "重复 slot 实例已清理，未执行 restore。";
@@ -388,7 +400,11 @@ public sealed unsafe class LocalLayoutObjectService
         var removed = this.instances.RemoveAll(item => duplicateIds.Contains(item.Id));
         this.RebuildOccupiedSlotRegistry();
         if (!auto)
-            this.LastStatus = $"已清理重复实例 {removed} 个。";
+        {
+            this.LastStatus = removed == 0
+                ? "没有重复实例需要清理。"
+                : $"已清理重复实例 {removed} 个，影响 {affectedSlotCount} 个 slot。";
+        }
 
         return removed;
     }
@@ -419,10 +435,10 @@ public sealed unsafe class LocalLayoutObjectService
         this.occupiedSlots.Clear();
         foreach (var instance in this.instances)
         {
-            if (!instance.IsOccupied || instance.IsRestored)
+            if (!IsActiveInstance(instance, out var slotAddress))
                 continue;
 
-            if (this.occupiedSlots.ContainsKey(instance.OccupiedSlotAddress))
+            if (this.occupiedSlots.ContainsKey(slotAddress))
             {
                 instance.IsDuplicate = true;
                 instance.Notes = "重复 slot 实例，已标记 invalid，不参与 RestoreAll。";
@@ -430,7 +446,7 @@ public sealed unsafe class LocalLayoutObjectService
             }
 
             instance.IsDuplicate = false;
-            this.occupiedSlots[instance.OccupiedSlotAddress] = instance;
+            this.occupiedSlots[slotAddress] = instance;
         }
     }
 
@@ -460,7 +476,8 @@ public sealed unsafe class LocalLayoutObjectService
         instance.IsOccupied = false;
         instance.IsRestored = true;
         instance.HasCollisionMoved = false;
-        this.occupiedSlots.Remove(instance.OccupiedSlotAddress);
+        if (TryNormalizeSlotAddress(instance.OccupiedSlotAddress, out var occupiedSlotAddress))
+            this.occupiedSlots.Remove(occupiedSlotAddress);
         if (removeAfterRestore)
             this.instances.Remove(instance);
 
@@ -732,6 +749,40 @@ public sealed unsafe class LocalLayoutObjectService
         }
 
         return false;
+    }
+
+    private IEnumerable<(LocalLayoutObjectInstance Instance, int Index, ulong SlotAddress)> GetActiveInstances()
+    {
+        for (var index = 0; index < this.instances.Count; index++)
+        {
+            var instance = this.instances[index];
+            if (IsActiveInstance(instance, out var slotAddress))
+                yield return (instance, index, slotAddress);
+        }
+    }
+
+    private static bool IsActiveInstance(LocalLayoutObjectInstance instance, out ulong slotAddress)
+    {
+        slotAddress = 0;
+        return instance.IsOccupied
+            && !instance.IsRestored
+            && !instance.IsInvalid
+            && TryNormalizeSlotAddress(instance.OccupiedSlotAddress, out slotAddress)
+            && slotAddress != 0;
+    }
+
+    private static bool TryNormalizeSlotAddress(string? raw, out ulong address)
+    {
+        address = 0;
+        if (string.IsNullOrWhiteSpace(raw))
+            return false;
+
+        raw = raw.Trim();
+        if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            raw = raw[2..];
+
+        return ulong.TryParse(raw, out address)
+            || ulong.TryParse(raw, System.Globalization.NumberStyles.HexNumber, null, out address);
     }
 
     private static string FormatSnapshot(LayoutTransformSnapshot snapshot)

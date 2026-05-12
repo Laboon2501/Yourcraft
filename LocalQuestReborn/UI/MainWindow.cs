@@ -604,7 +604,14 @@ public sealed class MainWindow : Window
         ImGui.SameLine();
         ImGui.BeginDisabled(this.localLayoutObjects.Instances.Count == 0);
         if (ImGui.Button("一键清理重复实例"))
+        {
             this.localLayoutObjects.CleanupDuplicateInstances(auto: false);
+            if (!string.IsNullOrWhiteSpace(this.selectedLocalLayoutObjectId) &&
+                this.localLayoutObjects.GetById(this.selectedLocalLayoutObjectId) == null)
+            {
+                this.selectedLocalLayoutObjectId = string.Empty;
+            }
+        }
         ImGui.EndDisabled();
 
         this.DrawLocalLayoutObjectTable();

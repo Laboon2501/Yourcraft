@@ -64,6 +64,8 @@ public sealed class LocalLayoutObjectInstance
 
     public bool IsDuplicate { get; set; }
 
+    public bool IsInvalid { get; set; }
+
     public bool HasCollisionMoved { get; set; }
 
     public bool CanRestore { get; set; }
