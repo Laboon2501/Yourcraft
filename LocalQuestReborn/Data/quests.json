@@ -1,0 +1,113 @@
+﻿{
+  "Npcs": [
+    {
+      "Id": "local-npc-1778403064420",
+      "Name": "本地 NPC",
+      "NameTemplate": "{name}",
+      "TerritoryType": 339,
+      "Position": {
+        "X": -65.623695,
+        "Y": 10.001682,
+        "Z": 30.71906
+      },
+      "InteractRadius": 5,
+      "DefaultAnimationId": 3,
+      "AutoPlayDefaultAnimation": true,
+      "LookAtPlayerEnabled": true,
+      "LookAtRadius": 8,
+      "LookAtMode": "NativeLookAt",
+      "RespawnAfterGpose": false,
+      "HostMode": "ExistingEventNpcHost",
+      "NativeHostMode": "ExistingEventNpcHost",
+      "HostDataId": 1002633,
+      "HostObjectIndex": "495",
+      "HostTerritoryType": 134,
+      "HostName": "格林威达",
+      "OverrideNativeName": false,
+      "InterceptNativeTalk": false,
+      "UseLocalDialogueOnInteract": true,
+      "InterceptMode": "ManualCommand",
+      "OverrideDialogueEnabled": true,
+      "appearance": {
+        "sourceType": "GlamourerDesign",
+        "displayName": "其宁惟永 - 幻影群岛",
+        "glamourerDesignId": "91c3fda0-82fa-4f6c-98e0-d7e8b2da2e7c",
+        "penumbraCollectionName": "",
+        "mcdfPath": "",
+        "gameNpcName": "木人",
+        "gameNpcKind": "BNpc",
+        "gameNpcBaseId": 16841,
+        "gameNpcModelId": 0,
+        "gameNpcCustomizeId": 0,
+        "notes": "C:\\Users\\kiomo\\AppData\\Roaming\\XIVLauncherCN\\pluginConfigs\\Glamourer\\designs\\91c3fda0-82fa-4f6c-98e0-d7e8b2da2e7c.json"
+      }
+    }
+  ],
+  "Quests": [
+    {
+      "Id": "local-quest-1778431124",
+      "Title": "本地测试任务",
+      "GiverNpcId": "local-npc-1778403064420",
+      "Summary": "用于测试 LocalQuestReborn 的本地任务。",
+      "StartDialogue": [
+        "你能看见我吗？",
+        "如果能，那说明本地 NPC 系统已经工作了。"
+      ],
+      "AcceptText": "接受任务",
+      "Objectives": [
+        {
+          "Id": "manual-1",
+          "Type": "Manual",
+          "Description": "在任务编辑器里手动完成目标。",
+          "TargetNpcId": null,
+          "TerritoryType": 0,
+          "Position": {
+            "X": 0,
+            "Y": 0,
+            "Z": 0
+          },
+          "Radius": 3
+        }
+      ],
+      "ProgressDialogue": [
+        "任务还在进行中。"
+      ],
+      "CompleteDialogue": [
+        "做得好。"
+      ],
+      "RewardsText": ""
+    }
+  ],
+  "Props": [
+    {
+      "Id": "local-prop-1778555398213",
+      "Name": "本地场景物体",
+      "TerritoryType": 134,
+      "Position": {
+        "X": 237.52287,
+        "Y": 113.064804,
+        "Z": -247.00087
+      },
+      "Rotation": 0,
+      "Scale": 1,
+      "ModelPath": "bg/ffxiv/sea_s1/fld/common/bgparts/s1f0_a0_oba03.mdl",
+      "Visible": true,
+      "Notes": ""
+    },
+    {
+      "Id": "local-prop-1778555430707",
+      "Name": "本地场景物体",
+      "TerritoryType": 134,
+      "Position": {
+        "X": 239.31645,
+        "Y": 113.01689,
+        "Z": -249.49796
+      },
+      "Rotation": 0,
+      "Scale": 1,
+      "ModelPath": "bg/ffxiv/sea_s1/fld/common/bgparts/s1f0_a0_oba03.mdl",
+      "Visible": true,
+      "Notes": ""
+    }
+  ]
+}

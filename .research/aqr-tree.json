@@ -1,0 +1,1310 @@
+﻿{
+    "sha":  "645b30c1e67da13a7ef1a43574794db9bfac914c",
+    "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/trees/645b30c1e67da13a7ef1a43574794db9bfac914c",
+    "tree":  [
+                 {
+                     "path":  ".editorconfig",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "1fd78b2cbc5f52933414a0e9d9669f8f783ff9bc",
+                     "size":  7780,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/1fd78b2cbc5f52933414a0e9d9669f8f783ff9bc"
+                 },
+                 {
+                     "path":  ".github",
+                     "mode":  "040000",
+                     "type":  "tree",
+                     "sha":  "e508754580a51e3ecf11d991c816881395d14c3a",
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/trees/e508754580a51e3ecf11d991c816881395d14c3a"
+                 },
+                 {
+                     "path":  ".github/workflows",
+                     "mode":  "040000",
+                     "type":  "tree",
+                     "sha":  "7720e8b2f7790e8df4c457aef91f9f00322f0fc9",
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/trees/7720e8b2f7790e8df4c457aef91f9f00322f0fc9"
+                 },
+                 {
+                     "path":  ".github/workflows/dotnet.yml",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "9212241010a8b244da233131f3eaec7900f402e2",
+                     "size":  694,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/9212241010a8b244da233131f3eaec7900f402e2"
+                 },
+                 {
+                     "path":  ".github/workflows/release.yml",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "d3290466ba3587e2a248a862b8b1f17e7bef4582",
+                     "size":  3001,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/d3290466ba3587e2a248a862b8b1f17e7bef4582"
+                 },
+                 {
+                     "path":  ".gitignore",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "7990fe70ab506e561052ab85fcba3d50e767bcf2",
+                     "size":  21,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/7990fe70ab506e561052ab85fcba3d50e767bcf2"
+                 },
+                 {
+                     "path":  ".gitmodules",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "ad51c0b6ca4353d30579d29486a36969c96026bb",
+                     "size":  1475,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/ad51c0b6ca4353d30579d29486a36969c96026bb"
+                 },
+                 {
+                     "path":  "AQuestReborn-C256.png",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "9f81ec99e2eb6f4b08d23820d31a567534ed5d5b",
+                     "size":  74387,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/9f81ec99e2eb6f4b08d23820d31a567534ed5d5b"
+                 },
+                 {
+                     "path":  "AQuestReborn.sln",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "bda348663736c8ec09fc8e90f6c5d4a94c38ad6a",
+                     "size":  12513,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/bda348663736c8ec09fc8e90f6c5d4a94c38ad6a"
+                 },
+                 {
+                     "path":  "AQuestReborn",
+                     "mode":  "040000",
+                     "type":  "tree",
+                     "sha":  "d0b8dacc67195f937d0fadff2a22f28fddcefcfc",
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/trees/d0b8dacc67195f937d0fadff2a22f28fddcefcfc"
+                 },
+                 {
+                     "path":  "AQuestReborn/AQuestReborn.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "b6093ac06bd5c11d2c72c72cf7e0d44ccd68c332",
+                     "size":  159942,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/b6093ac06bd5c11d2c72c72cf7e0d44ccd68c332"
+                 },
+                 {
+                     "path":  "AQuestReborn/AQuestReborn.csproj",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "8402ccf4bc250197e6316ecded6738d53ae8843b",
+                     "size":  1631,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/8402ccf4bc250197e6316ecded6738d53ae8843b"
+                 },
+                 {
+                     "path":  "AQuestReborn/AQuestReborn.json",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "9b6feff1472b9bb2084618c7d93219ab653f9dbe",
+                     "size":  331,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/9b6feff1472b9bb2084618c7d93219ab653f9dbe"
+                 },
+                 {
+                     "path":  "AQuestReborn/AnamCore",
+                     "mode":  "160000",
+                     "type":  "commit",
+                     "sha":  "726c3f8541468b3c31270de67ecfd40984495777"
+                 },
+                 {
+                     "path":  "AQuestReborn/AppearanceHelper.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "45059e81ae0de145ef490a6573449ab78614143f",
+                     "size":  2406,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/45059e81ae0de145ef490a6573449ab78614143f"
+                 },
+                 {
+                     "path":  "AQuestReborn/Configuration.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "33eaf6a9010c205eade87bfa1d141e3651496b5e",
+                     "size":  5398,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/33eaf6a9010c205eade87bfa1d141e3651496b5e"
+                 },
+                 {
+                     "path":  "AQuestReborn/CustomNpc",
+                     "mode":  "040000",
+                     "type":  "tree",
+                     "sha":  "746c85d70a53c1ec501cd92fe3779a7c320fd694",
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/trees/746c85d70a53c1ec501cd92fe3779a7c320fd694"
+                 },
+                 {
+                     "path":  "AQuestReborn/CustomNpc/CustomNpcCharacter.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "b708f17d1b6b765bd7a73e25461f0b6967fb5c83",
+                     "size":  16122,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/b708f17d1b6b765bd7a73e25461f0b6967fb5c83"
+                 },
+                 {
+                     "path":  "AQuestReborn/CustomNpc/CustomNpcWindow.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "13e1b881c87f074453da7eb81ff5d2fad2bfcb23",
+                     "size":  103256,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/13e1b881c87f074453da7eb81ff5d2fad2bfcb23"
+                 },
+                 {
+                     "path":  "AQuestReborn/CustomNpc/GPTApi",
+                     "mode":  "040000",
+                     "type":  "tree",
+                     "sha":  "5a8ecec228362192e276d0648696d220ecaf6b95",
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/trees/5a8ecec228362192e276d0648696d220ecaf6b95"
+                 },
+                 {
+                     "path":  "AQuestReborn/CustomNpc/GPTApi/AiProviderFactory.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "a539c453519429652a73c69380edc5b7e5dfee4a",
+                     "size":  2281,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/a539c453519429652a73c69380edc5b7e5dfee4a"
+                 },
+                 {
+                     "path":  "AQuestReborn/CustomNpc/GPTApi/GPTContextBuilder.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "c2695dcc958d844c71e15acfec07ab9d88a83540",
+                     "size":  9772,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/c2695dcc958d844c71e15acfec07ab9d88a83540"
+                 },
+                 {
+                     "path":  "AQuestReborn/CustomNpc/GPTApi/GPTHistory.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "ae09e88e860eb1b9a41f1b23089cc9f18e148d8b",
+                     "size":  1148,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/ae09e88e860eb1b9a41f1b23089cc9f18e148d8b"
+                 },
+                 {
+                     "path":  "AQuestReborn/CustomNpc/GPTApi/GPTOpenAIResult.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "d109d66c3b8e784971ab1761c2f26006593c7391",
+                     "size":  737,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/d109d66c3b8e784971ab1761c2f26006593c7391"
+                 },
+                 {
+                     "path":  "AQuestReborn/CustomNpc/GPTApi/GPTRequest.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "1ea0f04ea83db30155a304e3171b6bd862b3653f",
+                     "size":  3470,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/1ea0f04ea83db30155a304e3171b6bd862b3653f"
+                 },
+                 {
+                     "path":  "AQuestReborn/CustomNpc/GPTApi/GPTRequestSender.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "e967ac8370b74d67485000ab140834ac7cbb5af7",
+                     "size":  8881,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/e967ac8370b74d67485000ab140834ac7cbb5af7"
+                 },
+                 {
+                     "path":  "AQuestReborn/CustomNpc/GPTApi/GPTResult.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "9f271f6999dfdaefd5ffa2b3bd58cb3cc3fcd938",
+                     "size":  131,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/9f271f6999dfdaefd5ffa2b3bd58cb3cc3fcd938"
+                 },
+                 {
+                     "path":  "AQuestReborn/CustomNpc/GPTApi/GPTResults.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "18ab09bc17feb085da724c05fabaf0c10e4783d3",
+                     "size":  172,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/18ab09bc17feb085da724c05fabaf0c10e4783d3"
+                 },
+                 {
+                     "path":  "AQuestReborn/CustomNpc/GPTApi/GPTStreamResponse.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "07385ffe2181695cfcc9a4042ffdfa6f27974e23",
+                     "size":  222,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/07385ffe2181695cfcc9a4042ffdfa6f27974e23"
+                 },
+                 {
+                     "path":  "AQuestReborn/CustomNpc/GPTApi/GPTWrapper.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "5a2e3a3eb8788e676dd0dbe9fc09f9b8b8cf2327",
+                     "size":  16242,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/5a2e3a3eb8788e676dd0dbe9fc09f9b8b8cf2327"
+                 },
+                 {
+                     "path":  "AQuestReborn/CustomNpc/GPTApi/IAiProvider.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "74137a871567a27984a5b7ab986ceb08310274f6",
+                     "size":  2040,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/74137a871567a27984a5b7ab986ceb08310274f6"
+                 },
+                 {
+                     "path":  "AQuestReborn/CustomNpc/GPTApi/MemoryContextManager.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "4116ff745607eabae152ea434a5a1e1e3745ed4a",
+                     "size":  3331,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/4116ff745607eabae152ea434a5a1e1e3745ed4a"
+                 },
+                 {
+                     "path":  "AQuestReborn/CustomNpc/GPTApi/Providers",
+                     "mode":  "040000",
+                     "type":  "tree",
+                     "sha":  "6cf3b33885100ccea0755a2a236fe4be59888b3b",
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/trees/6cf3b33885100ccea0755a2a236fe4be59888b3b"
+                 },
+                 {
+                     "path":  "AQuestReborn/CustomNpc/GPTApi/Providers/DefaultProvider.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "5301085923b578c31f4cf0160009c85bd0522867",
+                     "size":  2730,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/5301085923b578c31f4cf0160009c85bd0522867"
+                 },
+                 {
+                     "path":  "AQuestReborn/CustomNpc/GPTApi/Providers/GeminiProvider.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "8b711693d892811d263e4938fbb1d0cddd89efc0",
+                     "size":  8537,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/8b711693d892811d263e4938fbb1d0cddd89efc0"
+                 },
+                 {
+                     "path":  "AQuestReborn/CustomNpc/GPTApi/Providers/NovelAIProvider.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "c7fe4ffb9089ebf2f9dc85fca20b4a71bc339998",
+                     "size":  5937,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/c7fe4ffb9089ebf2f9dc85fca20b4a71bc339998"
+                 },
+                 {
+                     "path":  "AQuestReborn/CustomNpc/GPTApi/Providers/OpenAICompatibleProvider.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "3481678cfdd9f0573be9285aa8935996f6d1c81f",
+                     "size":  6173,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/3481678cfdd9f0573be9285aa8935996f6d1c81f"
+                 },
+                 {
+                     "path":  "AQuestReborn/CustomNpc/NPCConversationManager.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "f60536e91a97b65676e7caf5103de63110a88584",
+                     "size":  23519,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/f60536e91a97b65676e7caf5103de63110a88584"
+                 },
+                 {
+                     "path":  "AQuestReborn/CustomNpc/SpeechBubbleManager.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "83e977c90dc1397875ac033da1decb81f9dcc10b",
+                     "size":  23353,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/83e977c90dc1397875ac033da1decb81f9dcc10b"
+                 },
+                 {
+                     "path":  "AQuestReborn/CutsceneCamera.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "61b1d6e107e59cbc967285f9c81e65c2d7fbbbc5",
+                     "size":  15552,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/61b1d6e107e59cbc967285f9c81e65c2d7fbbbc5"
+                 },
+                 {
+                     "path":  "AQuestReborn/Dalamud.Plugin.Bootstrap.targets",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "11eec9ca5d52c85a3fc08de5e569a7945aab7686",
+                     "size":  653,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/11eec9ca5d52c85a3fc08de5e569a7945aab7686"
+                 },
+                 {
+                     "path":  "AQuestReborn/DiscriminatorGenerator.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "9ef307de223880966406658490f59c2b02ad714c",
+                     "size":  1940,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/9ef307de223880966406658490f59c2b02ad714c"
+                 },
+                 {
+                     "path":  "AQuestReborn/EmoteReading",
+                     "mode":  "160000",
+                     "type":  "commit",
+                     "sha":  "66329934cc4e9b2bfc99b050e9f96cc565a6d4f5"
+                 },
+                 {
+                     "path":  "AQuestReborn/Hypostasis",
+                     "mode":  "160000",
+                     "type":  "commit",
+                     "sha":  "c230760c7bbc85a6e37b8477012dcd92ab700dc7"
+                 },
+                 {
+                     "path":  "AQuestReborn/IPC",
+                     "mode":  "040000",
+                     "type":  "tree",
+                     "sha":  "ecba03612a3c1a81358322db614f34d2b369f053",
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/trees/ecba03612a3c1a81358322db614f34d2b369f053"
+                 },
+                 {
+                     "path":  "AQuestReborn/IPC/AQuestRebornIPC.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "05680af09620628b6ce5eeca982e11a56f8f1395",
+                     "size":  1437,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/05680af09620628b6ce5eeca982e11a56f8f1395"
+                 },
+                 {
+                     "path":  "AQuestReborn/InteractiveNpc.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "3c8547932c10e23d7938e42050ad49d2ae617de3",
+                     "size":  99243,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/3c8547932c10e23d7938e42050ad49d2ae617de3"
+                 },
+                 {
+                     "path":  "AQuestReborn/MediaGameObjects",
+                     "mode":  "160000",
+                     "type":  "commit",
+                     "sha":  "5f07f1f14061f8f93646f3f621c894ae27a01b57"
+                 },
+                 {
+                     "path":  "AQuestReborn/Movement",
+                     "mode":  "040000",
+                     "type":  "tree",
+                     "sha":  "20891f9df59949c776e544d1ac36f0de6378239c",
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/trees/20891f9df59949c776e544d1ac36f0de6378239c"
+                 },
+                 {
+                     "path":  "AQuestReborn/Movement/MoveController.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "c01641db5d1eb1db75c9a546bd4abbc62a2e9908",
+                     "size":  17367,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/c01641db5d1eb1db75c9a546bd4abbc62a2e9908"
+                 },
+                 {
+                     "path":  "AQuestReborn/PenumbraAndGlamourerHelpers",
+                     "mode":  "160000",
+                     "type":  "commit",
+                     "sha":  "e11d06d0fad47fc829b94d856880255c78ac44bb"
+                 },
+                 {
+                     "path":  "AQuestReborn/PlayerBreadcrumbMap.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "686ae627847b748f85925f9bfef75ea911509d27",
+                     "size":  5203,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/686ae627847b748f85925f9bfef75ea911509d27"
+                 },
+                 {
+                     "path":  "AQuestReborn/PlayerGroundMap.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "cf11c9feac237bdbb6dca128a729497254064f8c",
+                     "size":  9240,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/cf11c9feac237bdbb6dca128a729497254064f8c"
+                 },
+                 {
+                     "path":  "AQuestReborn/Plugin.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "3ca03075354922545d13c8d372a080566d42916d",
+                     "size":  29596,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/3ca03075354922545d13c8d372a080566d42916d"
+                 },
+                 {
+                     "path":  "AQuestReborn/QuestEnd.mp3",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "5900dc9e3813782715be9bef06bc2435bdcac5d6",
+                     "size":  225737,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/5900dc9e3813782715be9bef06bc2435bdcac5d6"
+                 },
+                 {
+                     "path":  "AQuestReborn/QuestGameObject.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "c9f41dc1bce2ffaf8a4e6a199dca8cad699eaa53",
+                     "size":  1013,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/c9f41dc1bce2ffaf8a4e6a199dca8cad699eaa53"
+                 },
+                 {
+                     "path":  "AQuestReborn/QuestStart.mp3",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "cf002b9873980213d8e178e2d55dbd01cc853df9",
+                     "size":  225737,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/cf002b9873980213d8e178e2d55dbd01cc853df9"
+                 },
+                 {
+                     "path":  "AQuestReborn/ThreadSafeDalamudObjectTable",
+                     "mode":  "160000",
+                     "type":  "commit",
+                     "sha":  "ded44784fcf5ea467bed46d561c0a066071d4c17"
+                 },
+                 {
+                     "path":  "AQuestReborn/UIAtlasing",
+                     "mode":  "040000",
+                     "type":  "tree",
+                     "sha":  "e22a125fecd87b9d05c6ad38bb53b50d5f3a0bf6",
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/trees/e22a125fecd87b9d05c6ad38bb53b50d5f3a0bf6"
+                 },
+                 {
+                     "path":  "AQuestReborn/UIAtlasing/UiAtlasManager.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "178f9e15c03006f57bb12e230519c8b58ad3fd2e",
+                     "size":  16750,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/178f9e15c03006f57bb12e230519c8b58ad3fd2e"
+                 },
+                 {
+                     "path":  "AQuestReborn/UIHide",
+                     "mode":  "040000",
+                     "type":  "tree",
+                     "sha":  "ec691970a519d78d790958d2c73fb0f9be578045",
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/trees/ec691970a519d78d790958d2c73fb0f9be578045"
+                 },
+                 {
+                     "path":  "AQuestReborn/UIHide/Element.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "73de6ad87cda70cbafb8fd23218f1c8ecdfaa26e",
+                     "size":  5209,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/73de6ad87cda70cbafb8fd23218f1c8ecdfaa26e"
+                 },
+                 {
+                     "path":  "AQuestReborn/UIHide/UIManager.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "7300cfefa04653c44a571c587e06ee7be75c1775",
+                     "size":  3545,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/7300cfefa04653c44a571c587e06ee7be75c1775"
+                 },
+                 {
+                     "path":  "AQuestReborn/Utility.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "c15a34337dbc1c856f9c8742ba6b44e928bd06ef",
+                     "size":  904,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/c15a34337dbc1c856f9c8742ba6b44e928bd06ef"
+                 },
+                 {
+                     "path":  "AQuestReborn/Windows",
+                     "mode":  "040000",
+                     "type":  "tree",
+                     "sha":  "8290fe0b0d7a01d7bb9247a278fb53375eee08a6",
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/trees/8290fe0b0d7a01d7bb9247a278fb53375eee08a6"
+                 },
+                 {
+                     "path":  "AQuestReborn/Windows/ChoiceWindow.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "4ee27d37c6da838d6ae51aefea1ac29ce3fa1880",
+                     "size":  2949,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/4ee27d37c6da838d6ae51aefea1ac29ce3fa1880"
+                 },
+                 {
+                     "path":  "AQuestReborn/Windows/ConfigWindow.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "ab2c5ae0db986be9178d714db9154f484bb76f9c",
+                     "size":  1185,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/ab2c5ae0db986be9178d714db9154f484bb76f9c"
+                 },
+                 {
+                     "path":  "AQuestReborn/Windows/DialogueBackgroundWindow.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "d4127dbdd7d332860a1a01bc79836399df8a573c",
+                     "size":  13059,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/d4127dbdd7d332860a1a01bc79836399df8a573c"
+                 },
+                 {
+                     "path":  "AQuestReborn/Windows/EditorWindow.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "38a72919d463446c358b4a0d2b9f597c403fed1a",
+                     "size":  87300,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/38a72919d463446c358b4a0d2b9f597c403fed1a"
+                 },
+                 {
+                     "path":  "AQuestReborn/Windows/EventWindow.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "493c88d84a13aa630ca05f5fe75f60a6bb000487",
+                     "size":  55936,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/493c88d84a13aa630ca05f5fe75f60a6bb000487"
+                 },
+                 {
+                     "path":  "AQuestReborn/Windows/MainWindow.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "ab465d097b603ce97c23c8be003982df4714e80a",
+                     "size":  15905,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/ab465d097b603ce97c23c8be003982df4714e80a"
+                 },
+                 {
+                     "path":  "AQuestReborn/Windows/NPCEditorWindow.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "829b68670925a857c970aba321bd00b2a788a68c",
+                     "size":  6772,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/829b68670925a857c970aba321bd00b2a788a68c"
+                 },
+                 {
+                     "path":  "AQuestReborn/Windows/NPCTransformEditorWindow.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "d7a5fb8a5f62ae6788bbabd17003bb0dc9cc89ff",
+                     "size":  5367,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/d7a5fb8a5f62ae6788bbabd17003bb0dc9cc89ff"
+                 },
+                 {
+                     "path":  "AQuestReborn/Windows/NpcChatWindow.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "b5eb7e7f2c64f083807de1c08267dfc11fef6c16",
+                     "size":  17267,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/b5eb7e7f2c64f083807de1c08267dfc11fef6c16"
+                 },
+                 {
+                     "path":  "AQuestReborn/Windows/ObjectiveWindow.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "ef65df85d5c01e86af452e32170ff9d79f790868",
+                     "size":  27272,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/ef65df85d5c01e86af452e32170ff9d79f790868"
+                 },
+                 {
+                     "path":  "AQuestReborn/Windows/QuestAcceptanceWindow.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "4256ccbb77c572cc2ac2d0d93868e11d46a956e7",
+                     "size":  9743,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/4256ccbb77c572cc2ac2d0d93868e11d46a956e7"
+                 },
+                 {
+                     "path":  "AQuestReborn/Windows/RewardWindow.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "344aa9f9e71327349a5cb0555a75e53384f7abed",
+                     "size":  8042,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/344aa9f9e71327349a5cb0555a75e53384f7abed"
+                 },
+                 {
+                     "path":  "AQuestReborn/Windows/TitleCardWindow.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "c6535f11e3dae91731f8d998e67c9f3dc970381b",
+                     "size":  8168,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/c6535f11e3dae91731f8d998e67c9f3dc970381b"
+                 },
+                 {
+                     "path":  "AQuestReborn/packages.lock.json",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "190a5159d1d3e8f0f343b302edbf45a9947997d8",
+                     "size":  32731,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/190a5159d1d3e8f0f343b302edbf45a9947997d8"
+                 },
+                 {
+                     "path":  "AQuestReborn/questEnd.png",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "e71951410a2d5a4f79f180d25590f5d20aecfac6",
+                     "size":  220981,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/e71951410a2d5a4f79f180d25590f5d20aecfac6"
+                 },
+                 {
+                     "path":  "AQuestReborn/questStart.png",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "604c2d2bd1b02cb28e2420008b0b95f44c98bf21",
+                     "size":  162827,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/604c2d2bd1b02cb28e2420008b0b95f44c98bf21"
+                 },
+                 {
+                     "path":  "Brio",
+                     "mode":  "160000",
+                     "type":  "commit",
+                     "sha":  "bdab54664cafb2c5f3a7e2fe1d2bbb2dbb1d0463"
+                 },
+                 {
+                     "path":  "CLAUDE.md",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "883523d1d274b0e857e7c3f35f7ed77289b138dc",
+                     "size":  2102,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/883523d1d274b0e857e7c3f35f7ed77289b138dc"
+                 },
+                 {
+                     "path":  "Data",
+                     "mode":  "040000",
+                     "type":  "tree",
+                     "sha":  "5bf7eec721423859db846f8b8395834517f6b65c",
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/trees/5bf7eec721423859db846f8b8395834517f6b65c"
+                 },
+                 {
+                     "path":  "Data/goat.png",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "4ca06ace488f9503cff0e9e56117a7db559ae80a",
+                     "size":  19708,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/4ca06ace488f9503cff0e9e56117a7db559ae80a"
+                 },
+                 {
+                     "path":  "DependanciesAPI",
+                     "mode":  "040000",
+                     "type":  "tree",
+                     "sha":  "31a8a5e33173a8e48c416aec6ff446fafdce8a23",
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/trees/31a8a5e33173a8e48c416aec6ff446fafdce8a23"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI",
+                     "mode":  "040000",
+                     "type":  "tree",
+                     "sha":  "d8f378919fefcd3dccf933f8090d8b1dfa629114",
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/trees/d8f378919fefcd3dccf933f8090d8b1dfa629114"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Data",
+                     "mode":  "040000",
+                     "type":  "tree",
+                     "sha":  "b307c260d8a51c4ab59a7a0ba37c6a8c8bbae623",
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/trees/b307c260d8a51c4ab59a7a0ba37c6a8c8bbae623"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Data/CharacterData.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "a704dd6776cdaa55640d50f68cc211d1c0984320",
+                     "size":  1395,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/a704dd6776cdaa55640d50f68cc211d1c0984320"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Data/Comparer",
+                     "mode":  "040000",
+                     "type":  "tree",
+                     "sha":  "eb0915e3bbab0e8c037d33030cc965bf25c84689",
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/trees/eb0915e3bbab0e8c037d33030cc965bf25c84689"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Data/Comparer/GroupDataComparer.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "702e51dd9a37e8afae111f69abb08452d97c8173",
+                     "size":  550,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/702e51dd9a37e8afae111f69abb08452d97c8173"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Data/Comparer/GroupDtoComparer.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "545c1ba5e73a905bcee62328c069d6a042d33dc1",
+                     "size":  580,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/545c1ba5e73a905bcee62328c069d6a042d33dc1"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Data/Comparer/GroupPairDtoComparer.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "48e126d0158b7daf78dbd9c40c9b1beba9b84a48",
+                     "size":  690,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/48e126d0158b7daf78dbd9c40c9b1beba9b84a48"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Data/Comparer/UserDataComparer.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "f41b6ff3d5c1e7851212024a71675a94efe4d2c0",
+                     "size":  524,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/f41b6ff3d5c1e7851212024a71675a94efe4d2c0"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Data/Comparer/UserDtoComparer.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "0e053b9765b236bd8682bceecfb41a9a2284289d",
+                     "size":  563,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/0e053b9765b236bd8682bceecfb41a9a2284289d"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Data/Constants.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "474d62dd3808bfb8b9bc869ca40adab38796103c",
+                     "size":  120,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/474d62dd3808bfb8b9bc869ca40adab38796103c"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Data/Enum",
+                     "mode":  "040000",
+                     "type":  "tree",
+                     "sha":  "25db7b2a67358bcc8fe450e1718a0834ddab74bc",
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/trees/25db7b2a67358bcc8fe450e1718a0834ddab74bc"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Data/Enum/GroupPairUserInfo.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "1b615ba8b8018a8f5c60497e16190c800be50a25",
+                     "size":  136,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/1b615ba8b8018a8f5c60497e16190c800be50a25"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Data/Enum/GroupPermissions.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "44a78fece901e60ab9e05df1808432f312228b1a",
+                     "size":  216,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/44a78fece901e60ab9e05df1808432f312228b1a"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Data/Enum/GroupUserPreferredPermissions.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "9b741363cc7f70ee10e6934ce9a07f52b2457c5f",
+                     "size":  203,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/9b741363cc7f70ee10e6934ce9a07f52b2457c5f"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Data/Enum/IndividualPairStatus.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "13084da94bc2879e2e3eb558a248ec207d2cb6bd",
+                     "size":  115,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/13084da94bc2879e2e3eb558a248ec207d2cb6bd"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Data/Enum/MessageSeverity.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "ce60f55bc64b3096dbf05b4fc7f1518e0f8f762e",
+                     "size":  108,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/ce60f55bc64b3096dbf05b4fc7f1518e0f8f762e"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Data/Enum/ObjectKind.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "b4a4386156ddddc00f65eee76ab7ea7658b69003",
+                     "size":  134,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/b4a4386156ddddc00f65eee76ab7ea7658b69003"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Data/Enum/UserPermissions.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "0f9aac0d9f13a3f95daeb18415eecf8516cdbbad",
+                     "size":  196,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/0f9aac0d9f13a3f95daeb18415eecf8516cdbbad"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Data/Extensions",
+                     "mode":  "040000",
+                     "type":  "tree",
+                     "sha":  "446faa8c821ce1478971873e19a47a02f07623e8",
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/trees/446faa8c821ce1478971873e19a47a02f07623e8"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Data/Extensions/GroupPermissionsExtensions.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "5b5c53b18fd914404d46c8ea662dfa0c56d2edbe",
+                     "size":  1613,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/5b5c53b18fd914404d46c8ea662dfa0c56d2edbe"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Data/Extensions/GroupUserInfoExtensions.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "eafebad17e44da170c6494ce364acfb8dd3191be",
+                     "size":  809,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/eafebad17e44da170c6494ce364acfb8dd3191be"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Data/Extensions/GroupUserPermissionsExtensions.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "567f36f5581779e594488ec128f79e371b0ee8cc",
+                     "size":  1747,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/567f36f5581779e594488ec128f79e371b0ee8cc"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Data/Extensions/UserPermissionsExtensions.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "56cb544a4bea6e047f7243d495be50ffb402c512",
+                     "size":  1781,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/56cb544a4bea6e047f7243d495be50ffb402c512"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Data/FileReplacementData.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "c5ee6056f300dc8bc4e9b9ba04d46bd58ca0fe79",
+                     "size":  987,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/c5ee6056f300dc8bc4e9b9ba04d46bd58ca0fe79"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Data/GroupData.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "aa823a33f23a204446c69df9d1b1edaa6ef5fcce",
+                     "size":  257,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/aa823a33f23a204446c69df9d1b1edaa6ef5fcce"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Data/UserData.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "795c7ca266434852334791bae04c5493fb48aaea",
+                     "size":  256,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/795c7ca266434852334791bae04c5493fb48aaea"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dependancies.API.csproj",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "144ccb1a18a452d325f45c8c5b9aab5235a1d254",
+                     "size":  313,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/144ccb1a18a452d325f45c8c5b9aab5235a1d254"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto",
+                     "mode":  "040000",
+                     "type":  "tree",
+                     "sha":  "09203cfeabb6a043c08c7c498bf6ce4ebcedc16d",
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/trees/09203cfeabb6a043c08c7c498bf6ce4ebcedc16d"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/ConnectionDto.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "6dd88087107e14f1778e8c8263e8e1d3a6d939c2",
+                     "size":  866,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/6dd88087107e14f1778e8c8263e8e1d3a6d939c2"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/DefaultPermissionsDto.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "a8a40129f3dc2acfccbd32c836475e27fc1d90c5",
+                     "size":  557,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/a8a40129f3dc2acfccbd32c836475e27fc1d90c5"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/Files",
+                     "mode":  "040000",
+                     "type":  "tree",
+                     "sha":  "4278538a45bde6e7ad03244bada6f93dbf57a6db",
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/trees/4278538a45bde6e7ad03244bada6f93dbf57a6db"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/Files/DownloadFileDto.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "d06244958992fd8dcae2da4f1209c712b0a0a1f0",
+                     "size":  502,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/d06244958992fd8dcae2da4f1209c712b0a0a1f0"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/Files/FilesSendDto.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "a817279b76e6ce7fed7333944f0e010d396f7c5a",
+                     "size":  293,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/a817279b76e6ce7fed7333944f0e010d396f7c5a"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/Files/ITransferFileDto.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "dd4e0328f01041f31fc9af5d76bb2dceeda93f5a",
+                     "size":  176,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/dd4e0328f01041f31fc9af5d76bb2dceeda93f5a"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/Files/UploadFileDto.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "f4a874cb94c161034cca3dda31483e4d06797e8e",
+                     "size":  316,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/f4a874cb94c161034cca3dda31483e4d06797e8e"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/Group",
+                     "mode":  "040000",
+                     "type":  "tree",
+                     "sha":  "a90a50f999e3fbdbb6487ff44c209c97a67da6f0",
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/trees/a90a50f999e3fbdbb6487ff44c209c97a67da6f0"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/Group/BannedGroupUserDto.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "b5c3844d45d3ce925b4e725178fa9dae23763ae6",
+                     "size":  532,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/b5c3844d45d3ce925b4e725178fa9dae23763ae6"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/Group/GroupDto.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "d9a9540facb095ec61ca29cec42d97c64337a942",
+                     "size":  359,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/d9a9540facb095ec61ca29cec42d97c64337a942"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/Group/GroupFullInfoDto.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "e3fb1f4e551ec63a1d36e75ee81176768fce7dbd",
+                     "size":  635,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/e3fb1f4e551ec63a1d36e75ee81176768fce7dbd"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/Group/GroupInfoDto.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "ceb79e99fe8910b5383ce4aa837d6df08640dbab",
+                     "size":  710,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/ceb79e99fe8910b5383ce4aa837d6df08640dbab"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/Group/GroupJoinDto.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "9db71bec9d229f486d4f4aed7e2ccb739722e11a",
+                     "size":  449,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/9db71bec9d229f486d4f4aed7e2ccb739722e11a"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/Group/GroupPairDto.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "a51a9097510a56e651b2470eb420521759d0a7a5",
+                     "size":  341,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/a51a9097510a56e651b2470eb420521759d0a7a5"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/Group/GroupPairFullInfoDto.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "4f18f44e0369cde4cde247ad159c78f2cdf6079f",
+                     "size":  336,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/4f18f44e0369cde4cde247ad159c78f2cdf6079f"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/Group/GroupPairUserInfoDto.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "815e98a92d5a365e0c7271c85e99ed1d8e22f40f",
+                     "size":  289,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/815e98a92d5a365e0c7271c85e99ed1d8e22f40f"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/Group/GroupPairUserPermissionDto.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "341173320b913e88e358682a33a53933e03cde8c",
+                     "size":  314,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/341173320b913e88e358682a33a53933e03cde8c"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/Group/GroupPermissionDto.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "980797504f85b376e392fe6fead11ceac4a0c73d",
+                     "size":  259,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/980797504f85b376e392fe6fead11ceac4a0c73d"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/SystemInfoDto.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "d1557059f45669ea34feecb2aa6048d32a9e3446",
+                     "size":  168,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/d1557059f45669ea34feecb2aa6048d32a9e3446"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/User",
+                     "mode":  "040000",
+                     "type":  "tree",
+                     "sha":  "43d40afabf8a8a27e769c2f454bf21f11c6d0235",
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/trees/43d40afabf8a8a27e769c2f454bf21f11c6d0235"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/User/BulkPermissionsDto.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "2383ead0c3cf9659b85ec26392e6da28901930e6",
+                     "size":  284,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/2383ead0c3cf9659b85ec26392e6da28901930e6"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/User/CensusDataDto.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "6f0e55dfa3c23eb6887f5059c41c61d4a980c279",
+                     "size":  188,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/6f0e55dfa3c23eb6887f5059c41c61d4a980c279"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/User/OnlineUserCharaDataDto.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "b12265c018a606e911d6fef9b841a782f12db0c0",
+                     "size":  221,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/b12265c018a606e911d6fef9b841a782f12db0c0"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/User/OnlineUserIdentDto.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "f58dbcfe18ccd407e3050270584971899b9dda66",
+                     "size":  206,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/f58dbcfe18ccd407e3050270584971899b9dda66"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/User/UserCharaDataMessageDto.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "49f552ab1fac0d4d3c21a94ea60a7264802e1d9c",
+                     "size":  249,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/49f552ab1fac0d4d3c21a94ea60a7264802e1d9c"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/User/UserDto.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "fd59af47970ec29dc30c3b6929a061a1e1906156",
+                     "size":  165,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/fd59af47970ec29dc30c3b6929a061a1e1906156"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/User/UserIndividualPairStatusDto.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "3b81208a75102aeaf1aec053261b50b48e9fd9b3",
+                     "size":  276,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/3b81208a75102aeaf1aec053261b50b48e9fd9b3"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/User/UserPairDto.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "1cdbc9b324dd66913b90ea5d5426ad82dc16bcac",
+                     "size":  1056,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/1cdbc9b324dd66913b90ea5d5426ad82dc16bcac"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/User/UserPermissionsDto.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "ca48ab06ba2db99d776de5ada6f81159cec68f75",
+                     "size":  254,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/ca48ab06ba2db99d776de5ada6f81159cec68f75"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Dto/User/UserProfileDto.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "97d8fd15bba98d9a68a32b08eb3807f3f084dbda",
+                     "size":  268,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/97d8fd15bba98d9a68a32b08eb3807f3f084dbda"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Routes",
+                     "mode":  "040000",
+                     "type":  "tree",
+                     "sha":  "938dfcaab1abc931df52deddc66b6bd4dd8cbb39",
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/trees/938dfcaab1abc931df52deddc66b6bd4dd8cbb39"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Routes/MareAuth.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "cf78f7c4a177e2419c12d9525144e954c4c9f54c",
+                     "size":  1649,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/cf78f7c4a177e2419c12d9525144e954c4c9f54c"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/Routes/MareFiles.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "45d7c7b3111b5b32e54bad02bc8beabf5f12bece",
+                     "size":  3292,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/45d7c7b3111b5b32e54bad02bc8beabf5f12bece"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/SignalR",
+                     "mode":  "040000",
+                     "type":  "tree",
+                     "sha":  "2db93149de863483b3a75dd3d5b0a4d6c8a610f4",
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/trees/2db93149de863483b3a75dd3d5b0a4d6c8a610f4"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/SignalR/IMareHub.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "8d0982520b1686cf6b178f59e3d4d29cf06b9a60",
+                     "size":  3226,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/8d0982520b1686cf6b178f59e3d4d29cf06b9a60"
+                 },
+                 {
+                     "path":  "DependanciesAPI/DependanciesAPI/SignalR/IMareHubClient.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "fdda601e0d07d132af8458e1729531d9495c6e47",
+                     "size":  1595,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/fdda601e0d07d132af8458e1729531d9495c6e47"
+                 },
+                 {
+                     "path":  "ECommons",
+                     "mode":  "160000",
+                     "type":  "commit",
+                     "sha":  "cef7b81d04a09bbfb5555ee34197d86dedbf2bdb"
+                 },
+                 {
+                     "path":  "LICENSE.md",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "143b792055ecb7446cd45e08cab6852e3c100286",
+                     "size":  34452,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/143b792055ecb7446cd45e08cab6852e3c100286"
+                 },
+                 {
+                     "path":  "LooseTextureCompilerCore",
+                     "mode":  "160000",
+                     "type":  "commit",
+                     "sha":  "f2a265beeaf753c5097169d95a5d8cb5703b2a38"
+                 },
+                 {
+                     "path":  "MCDF-Loader",
+                     "mode":  "160000",
+                     "type":  "commit",
+                     "sha":  "d4e606dad1d5b6a60735a9332c97a513304c118b"
+                 },
+                 {
+                     "path":  "README.md",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "03e5800bf81cb7d867832782170972833d1ca40b",
+                     "size":  2169,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/03e5800bf81cb7d867832782170972833d1ca40b"
+                 },
+                 {
+                     "path":  "RoleplayingQuestCore",
+                     "mode":  "160000",
+                     "type":  "commit",
+                     "sha":  "89d54cf021265487c01bb471e9e82699462fc997"
+                 },
+                 {
+                     "path":  "RoleplayingVoiceCore",
+                     "mode":  "160000",
+                     "type":  "commit",
+                     "sha":  "d67120e801a52a10bd2b59fc511d62ea233461f0"
+                 },
+                 {
+                     "path":  "SamplePlugin",
+                     "mode":  "040000",
+                     "type":  "tree",
+                     "sha":  "c357479dc054b3e6ad8beda5cb97318341f2ad94",
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/trees/c357479dc054b3e6ad8beda5cb97318341f2ad94"
+                 },
+                 {
+                     "path":  "SamplePlugin/AQuestReborn.csproj",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "5f282702bb03ef11d7184d19c80927b47f919764",
+                     "size":  3,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/5f282702bb03ef11d7184d19c80927b47f919764"
+                 },
+                 {
+                     "path":  "dump.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "8e0627e7cc8b49c47b906c8ccc57c8988bc61dfa",
+                     "size":  134,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/8e0627e7cc8b49c47b906c8ccc57c8988bc61dfa"
+                 },
+                 {
+                     "path":  "dump2.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "8a3c116171b0381743a24acff1b56177fd3296fa",
+                     "size":  312,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/8a3c116171b0381743a24acff1b56177fd3296fa"
+                 },
+                 {
+                     "path":  "dump3.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "ed373339f889bce07009742330d9220660ffbebc",
+                     "size":  167,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/ed373339f889bce07009742330d9220660ffbebc"
+                 },
+                 {
+                     "path":  "dump4.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "8151bf2b3742d7df5cb971cee82fcfa2f941c604",
+                     "size":  140,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/8151bf2b3742d7df5cb971cee82fcfa2f941c604"
+                 },
+                 {
+                     "path":  "dump5.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "f85ab623ef1c798d7897aa87fa3f17fa0372d3f8",
+                     "size":  116,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/f85ab623ef1c798d7897aa87fa3f17fa0372d3f8"
+                 },
+                 {
+                     "path":  "repo.json",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "cf986c825e68494dd4c2a4b04c0f49ce949c70f2",
+                     "size":  992,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/cf986c825e68494dd4c2a4b04c0f49ce949c70f2"
+                 },
+                 {
+                     "path":  "test_api.ps1",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "abefe81b7a28be0bdc802fd74a982dbd27d2596f",
+                     "size":  396,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/abefe81b7a28be0bdc802fd74a982dbd27d2596f"
+                 },
+                 {
+                     "path":  "test_goose.ps1",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "2e748eac5c102902b2157a87cbca8baf2404a5b9",
+                     "size":  561,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/2e748eac5c102902b2157a87cbca8baf2404a5b9"
+                 },
+                 {
+                     "path":  "test_lumina.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "95d15833696838e2904ef42dd78da48bbe71e422",
+                     "size":  672,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/95d15833696838e2904ef42dd78da48bbe71e422"
+                 },
+                 {
+                     "path":  "test_struct.cs",
+                     "mode":  "100644",
+                     "type":  "blob",
+                     "sha":  "db24bb6145b2c6e7fc5f5244441b8e6b730b1f01",
+                     "size":  951,
+                     "url":  "https://api.github.com/repos/Sebane1/AQuestReborn/git/blobs/db24bb6145b2c6e7fc5f5244441b8e6b730b1f01"
+                 }
+             ],
+    "truncated":  false
+}
