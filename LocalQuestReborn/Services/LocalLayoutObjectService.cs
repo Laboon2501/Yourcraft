@@ -313,7 +313,7 @@ public sealed unsafe class LocalLayoutObjectService
 
     public void RestoreAll(bool removeAfterRestore = false)
     {
-        var duplicateCleanupCount = this.CleanupDuplicateInstances(auto: true);
+        var preCleanupCount = this.CleanupDuplicateInstances(auto: true);
         this.RebuildOccupiedSlotRegistry();
         var restoreCount = this.occupiedSlots.Count;
         foreach (var instance in this.occupiedSlots.Values.ToList())
@@ -322,10 +322,11 @@ public sealed unsafe class LocalLayoutObjectService
         if (removeAfterRestore)
             this.instances.RemoveAll(item => item.IsRestored || item.IsDuplicate);
 
+        var postRestoreStaleCount = this.RemoveStaleRecords();
         this.RebuildOccupiedSlotRegistry();
         this.LastStatus = removeAfterRestore
-            ? $"已自动清理重复实例 {duplicateCleanupCount} 个，并恢复/移除 {restoreCount} 个 occupied slot。"
-            : $"已自动清理重复实例 {duplicateCleanupCount} 个，并恢复 {restoreCount} 个 occupied slot。";
+            ? $"已自动清理 {preCleanupCount} 条重复/残留记录，恢复/移除 {restoreCount} 个 occupied slot，恢复后清理 {postRestoreStaleCount} 条列表记录。"
+            : $"已自动清理 {preCleanupCount} 条重复/残留记录，恢复 {restoreCount} 个 occupied slot，恢复后清理 {postRestoreStaleCount} 条列表记录。";
     }
 
     public void RestoreAllAndClear() => this.RestoreAll(removeAfterRestore: true);
@@ -385,6 +386,11 @@ public sealed unsafe class LocalLayoutObjectService
         foreach (var staleDuplicate in this.instances.Where(item => item.IsDuplicate && !string.IsNullOrWhiteSpace(item.OccupiedSlotAddress)))
             duplicateIds.Add(staleDuplicate.Id);
 
+        var staleIds = this.instances
+            .Where(item => !duplicateIds.Contains(item.Id) && IsStaleRecord(item))
+            .Select(item => item.Id)
+            .ToHashSet(StringComparer.Ordinal);
+
         foreach (var instance in this.instances.Where(item => duplicateIds.Contains(item.Id)))
         {
             instance.IsDuplicate = true;
@@ -397,16 +403,31 @@ public sealed unsafe class LocalLayoutObjectService
                 : "手动清理的重复 slot 实例，未执行 restore。";
         }
 
+        foreach (var instance in this.instances.Where(item => staleIds.Contains(item.Id)))
+        {
+            instance.IsInvalid = true;
+            instance.IsOccupied = false;
+            instance.IsRestored = true;
+            instance.LastError = "残留列表记录已清理。";
+            instance.Notes = auto
+                ? "自动恢复全部前清理的残留列表记录。"
+                : "手动清理的残留列表记录。";
+        }
+
         var removed = this.instances.RemoveAll(item => duplicateIds.Contains(item.Id));
+        var staleRemoved = this.instances.RemoveAll(item => staleIds.Contains(item.Id));
+        var totalRemoved = removed + staleRemoved;
         this.RebuildOccupiedSlotRegistry();
         if (!auto)
         {
-            this.LastStatus = removed == 0
-                ? "没有重复实例需要清理。"
-                : $"已清理重复实例 {removed} 个，影响 {affectedSlotCount} 个 slot。";
+            this.LastStatus = totalRemoved == 0
+                ? "没有任何需要清理的重复实例或残留列表记录。"
+                : removed == 0
+                    ? $"没有场景重复实例，但已清理 {staleRemoved} 条残留列表记录。"
+                    : $"已清理重复实例 {removed} 个，影响 {affectedSlotCount} 个 slot；同时清理 {staleRemoved} 条残留列表记录。";
         }
 
-        return removed;
+        return totalRemoved;
     }
 
     public LocalLayoutObjectInstance? GetById(string id)
@@ -428,6 +449,16 @@ public sealed unsafe class LocalLayoutObjectService
             return;
 
         this.WriteInstanceTransform(instance, instance.CurrentPosition + delta, instance.CurrentRotationEuler, instance.CurrentScale, action);
+    }
+
+    private int RemoveStaleRecords()
+    {
+        var staleIds = this.instances
+            .Where(IsStaleRecord)
+            .Select(item => item.Id)
+            .ToHashSet(StringComparer.Ordinal);
+
+        return this.instances.RemoveAll(item => staleIds.Contains(item.Id));
     }
 
     private void RebuildOccupiedSlotRegistry()
@@ -770,6 +801,13 @@ public sealed unsafe class LocalLayoutObjectService
             && TryNormalizeSlotAddress(instance.OccupiedSlotAddress, out slotAddress)
             && slotAddress != 0;
     }
+
+    private static bool IsStaleRecord(LocalLayoutObjectInstance instance)
+        => instance.IsRestored
+            || instance.IsInvalid
+            || !instance.IsOccupied
+            || !TryNormalizeSlotAddress(instance.OccupiedSlotAddress, out var slotAddress)
+            || slotAddress == 0;
 
     private static bool TryNormalizeSlotAddress(string? raw, out ulong address)
     {
