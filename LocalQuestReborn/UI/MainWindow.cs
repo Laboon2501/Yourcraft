@@ -794,6 +794,18 @@ public sealed class MainWindow : Window
                 this.selectedLocalLayoutObjectId = string.Empty;
         }
         ImGui.EndDisabled();
+        ImGui.SameLine();
+        ImGui.BeginDisabled(this.localLayoutObjects.IsBusy);
+        if (ImGui.Button("重建 occupied registry"))
+            this.localLayoutObjects.RebuildOccupiedSlotRegistryForUi();
+        ImGui.SameLine();
+        if (ImGui.Button("清理已恢复/无效实例"))
+        {
+            this.localLayoutObjects.ClearRestoredAndInvalidInstances();
+            if (!string.IsNullOrWhiteSpace(this.selectedLocalLayoutObjectId) && this.localLayoutObjects.GetById(this.selectedLocalLayoutObjectId) == null)
+                this.selectedLocalLayoutObjectId = string.Empty;
+        }
+        ImGui.EndDisabled();
 
         this.DrawLocalLayoutObjectTable();
         this.DrawSelectedLocalLayoutObjectControls();
@@ -1009,7 +1021,7 @@ public sealed class MainWindow : Window
 
     private void DrawLocalLayoutObjectTable()
     {
-        if (!ImGui.BeginTable("LocalLayoutObjects", 16, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 320f)))
+        if (!ImGui.BeginTable("LocalLayoutObjects", 17, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 320f)))
             return;
         ImGui.TableSetupColumn("选择");
         ImGui.TableSetupColumn("instanceId");
@@ -1018,6 +1030,7 @@ public sealed class MainWindow : Window
         ImGui.TableSetupColumn("originalSlotResourcePath");
         ImGui.TableSetupColumn("currentModelPath");
         ImGui.TableSetupColumn("custom mdl path");
+        ImGui.TableSetupColumn("state");
         ImGui.TableSetupColumn("applyMdlStatus");
         ImGui.TableSetupColumn("restoreStatus");
         ImGui.TableSetupColumn("lastError");
@@ -1051,12 +1064,14 @@ public sealed class MainWindow : Window
             if (ImGui.InputText("##rowCustomMdl", ref rowCustomPath, 320))
                 instance.CustomModelPath = rowCustomPath;
             ImGui.TableSetColumnIndex(7);
-            ImGui.TextWrapped(string.IsNullOrWhiteSpace(instance.ApplyMdlStatus) ? "未应用" : instance.ApplyMdlStatus);
+            ImGui.TextWrapped(instance.InstanceState);
             ImGui.TableSetColumnIndex(8);
-            ImGui.TextWrapped(instance.RestoreStatus);
+            ImGui.TextWrapped(string.IsNullOrWhiteSpace(instance.ApplyMdlStatus) ? "未应用" : instance.ApplyMdlStatus);
             ImGui.TableSetColumnIndex(9);
-            ImGui.TextWrapped(FirstNonEmpty(instance.ApplyMdlError, instance.LastError, instance.LastModelOverrideError));
+            ImGui.TextWrapped(instance.RestoreStatus);
             ImGui.TableSetColumnIndex(10);
+            ImGui.TextWrapped(FirstNonEmpty(instance.ApplyMdlError, instance.LastError, instance.LastModelOverrideError));
+            ImGui.TableSetColumnIndex(11);
             ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || instance.IsRestored || instance.IsInvalid || instance.IsDuplicate || !this.realNpcSpawn.EnableUnsafeNativeWrites);
             DrawEnumCombo("##rowCollisionMode", instance.TransformMode, value =>
             {
@@ -1071,19 +1086,19 @@ public sealed class MainWindow : Window
                 }
             });
             ImGui.EndDisabled();
-            ImGui.TableSetColumnIndex(11);
-            ImGui.TextUnformatted(instance.IsRestored ? "是" : "否");
             ImGui.TableSetColumnIndex(12);
-            ImGui.TextWrapped(FormatVector(instance.CurrentPosition));
+            ImGui.TextUnformatted(instance.IsRestored ? "是" : "否");
             ImGui.TableSetColumnIndex(13);
-            ImGui.TextWrapped(FormatVector(instance.CurrentScale));
+            ImGui.TextWrapped(FormatVector(instance.CurrentPosition));
             ImGui.TableSetColumnIndex(14);
+            ImGui.TextWrapped(FormatVector(instance.CurrentScale));
+            ImGui.TableSetColumnIndex(15);
             var fullLayoutNeedsConfirmation = instance.TransformMode == LocalLayoutTransformMode.FullLayoutWithCollision && !this.confirmFullLayoutCollisionMode;
             ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || !this.realNpcSpawn.EnableUnsafeNativeWrites || instance.IsRestored || instance.IsInvalid || instance.IsDuplicate || instance.IsRenderInvalid || fullLayoutNeedsConfirmation);
             if (ImGui.Button("应用 mdl"))
                 this.localLayoutObjects.ApplyMdlPath(instance.Id, instance.CustomModelPath, this.FilteredBgParts(), this.realNpcSpawn.EnableUnsafeNativeWrites, this.confirmFullLayoutCollisionMode);
             ImGui.EndDisabled();
-            ImGui.SameLine();
+            ImGui.TableSetColumnIndex(16);
             ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || !this.realNpcSpawn.EnableUnsafeNativeWrites || instance.IsRestored || instance.IsInvalid);
             if (ImGui.Button("恢复原 mdl/transform"))
                 this.localLayoutObjects.RestoreModelAndTransform(instance.Id, this.FilteredBgParts(), this.realNpcSpawn.EnableUnsafeNativeWrites, this.confirmFullLayoutCollisionMode);
@@ -1122,8 +1137,11 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"original model：{selected.OriginalModelResourcePath}");
         ImGui.TextWrapped($"current model：{selected.CurrentResourcePath}");
         ImGui.TextWrapped($"model apply status：{(string.IsNullOrWhiteSpace(selected.ModelApplyStatus) ? selected.ApplyMdlStatus : selected.ModelApplyStatus)}");
+        ImGui.TextWrapped($"instance state：{selected.InstanceState}");
+        ImGui.TextWrapped($"last operation：{(string.IsNullOrWhiteSpace(selected.LastOperation) ? "无" : selected.LastOperation)}");
         ImGui.TextWrapped($"pending recreate：{selected.PendingRecreate}");
         ImGui.TextWrapped($"pending visual transform：{selected.PendingVisualTransform}，等待帧：{selected.PendingVisualTransformFrameWait}");
+        ImGui.TextWrapped($"stabilize attempts：{selected.PendingRecreateStabilizeAttempts}/{selected.PendingRecreateStabilizeMaxAttempts}");
         ImGui.TextWrapped($"pending result：{selected.PendingVisualTransformResult}");
         ImGui.TextWrapped($"restore status：{(string.IsNullOrWhiteSpace(selected.RestoreStatus) ? "Pending" : selected.RestoreStatus)}");
         ImGui.TextWrapped($"restore step：{(string.IsNullOrWhiteSpace(selected.RestoreStep) ? "无" : selected.RestoreStep)}");
@@ -1205,7 +1223,7 @@ public sealed class MainWindow : Window
         ImGui.SameLine();
         if (ImGui.Button("把模型放到玩家脚下") && this.runtime.PlayerPosition.HasValue) this.localLayoutObjects.MoveToPlayer(selected.Id, this.runtime.PlayerPosition.Value);
         ImGui.SameLine();
-        if (ImGui.Button("恢复原始 transform")) this.localLayoutObjects.RestoreOriginal(selected.Id);
+        if (ImGui.Button("恢复 transform")) this.localLayoutObjects.RestoreTransformOnly(selected.Id);
         ImGui.SameLine();
         if (ImGui.Button("应用 mdl path"))
             this.localLayoutObjects.ApplyMdlPath(selected.Id, selected.CustomModelPath, this.FilteredBgParts(), this.realNpcSpawn.EnableUnsafeNativeWrites, this.confirmFullLayoutCollisionMode);

@@ -137,6 +137,10 @@ public sealed class LocalLayoutObjectInstance
 
     public bool IsRestoring { get; set; }
 
+    public string InstanceState { get; set; } = "Ready";
+
+    public string LastOperation { get; set; } = string.Empty;
+
     public bool ModelExperimentFailed { get; set; }
 
     public string TransformWriteDisabledReason { get; set; } = string.Empty;
@@ -258,6 +262,10 @@ public sealed class LocalLayoutObjectInstance
     public bool PendingVisualTransform { get; set; }
 
     public int PendingVisualTransformFrameWait { get; set; }
+
+    public int PendingRecreateStabilizeAttempts { get; set; }
+
+    public int PendingRecreateStabilizeMaxAttempts { get; set; } = 30;
 
     public string PendingVisualTransformResult { get; set; } = string.Empty;
 

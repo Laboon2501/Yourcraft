@@ -200,6 +200,7 @@ public sealed unsafe class LocalLayoutObjectService
             CarrierRejectReason = string.Empty,
             IsOccupied = true,
             CanRestore = true,
+            InstanceState = "Ready",
             VisualOnlyVerified = mode == LocalLayoutTransformMode.VisualOnly,
             HasCollisionMoved = mode == LocalLayoutTransformMode.FullLayoutWithCollision,
             Notes = mode == LocalLayoutTransformMode.VisualOnly
@@ -624,6 +625,38 @@ public sealed unsafe class LocalLayoutObjectService
         this.WriteInstanceTransform(instance, position, rotationEuler, scale, instance.TransformMode == LocalLayoutTransformMode.VisualOnly ? "应用 VisualOnly transform" : "应用 FullLayout transform");
     }
 
+    public void RestoreTransformOnly(string id)
+    {
+        if (this.IsBusy)
+        {
+            this.LastStatus = "当前正在恢复/清理本地场景物体，暂不能恢复 transform。";
+            return;
+        }
+
+        var instance = this.GetById(id);
+        if (instance == null)
+            return;
+
+        instance.LastOperation = "RestoreTransformOnly";
+        if (instance.TransformMode == LocalLayoutTransformMode.VisualOnly)
+        {
+            this.WriteInstanceTransform(
+                instance,
+                instance.OriginalVisualPosition,
+                Vector3.Zero,
+                instance.OriginalVisualScale,
+                "仅恢复 VisualOnly transform");
+            return;
+        }
+
+        this.WriteInstanceTransform(
+            instance,
+            instance.OriginalLayoutPosition,
+            Vector3.Zero,
+            instance.OriginalLayoutScale,
+            "仅恢复 FullLayout transform");
+    }
+
     public void ResetPosition(string id)
     {
         var instance = this.GetById(id);
@@ -765,6 +798,8 @@ public sealed unsafe class LocalLayoutObjectService
         modelPath = modelPath.Trim();
         instance.ApplyMdlStatus = "Applying";
         instance.ModelApplyStatus = "Applying";
+        instance.InstanceState = "ApplyingModel";
+        instance.LastOperation = $"ApplyMdlPath:{modelPath}";
         instance.ApplyMdlError = string.Empty;
         instance.TransformWriteDisabledReason = string.Empty;
         instance.CustomModelPath = modelPath;
@@ -795,6 +830,7 @@ public sealed unsafe class LocalLayoutObjectService
                 "AnimatedStaticOnly" => "自带动画/动态材质模型可能只显示静态外观；动画需要原 layout controller/shared group/event update 支持，暂未支持。",
                 "UnsafeComplexModel" => "复杂动态模型已 recreate，但自动 transform 写入被安全保护拦截。",
                 "UnsafeAfterRecreate" => "recreate 后 GraphicsObject 状态不安全，已停止 transform 写入。",
+                "PendingRecreateStabilize" => "VisualOnly 已 recreate，正在等待 GraphicsObject / ModelResourceHandle 稳定。",
                 _ when instance.PendingVisualTransform => "VisualOnly 已 recreate，等待数帧后安全写入 transform。",
                 _ => $"VisualOnly 已应用 mdl path：{modelPath}；collision moved=false。",
             };
@@ -807,7 +843,7 @@ public sealed unsafe class LocalLayoutObjectService
             return !instance.IsRenderInvalid;
         }
 
-        var resolve = this.collisionSourceResolver.Resolve(modelPath, bgParts);
+            var resolve = this.collisionSourceResolver.Resolve(modelPath, bgParts);
         instance.CollisionSourceResolveResult = resolve.Message;
         if (resolve.Found && resolve.SourceInstance != null)
         {
@@ -827,6 +863,7 @@ public sealed unsafe class LocalLayoutObjectService
 
         this.transformService.ApplyTransform(instance);
         instance.LastReadback = this.transformService.LastResult;
+        instance.InstanceState = "Ready";
         instance.LastModelOverrideResult = instance.CollisionApplied
             ? $"FullLayoutWithCollision 已应用 mdl path 和 target collision：{modelPath}；source={instance.CollisionSourceBgPartAddress}；type={instance.CollisionSourceColliderType}。"
             : $"FullLayoutWithCollision 已应用 mdl path：{modelPath}；{instance.CollisionError}";
@@ -1387,6 +1424,22 @@ public sealed unsafe class LocalLayoutObjectService
         return totalRemoved;
     }
 
+    public void RebuildOccupiedSlotRegistryForUi()
+    {
+        this.RebuildOccupiedSlotRegistry();
+        this.LastStatus = $"已从实例列表重建 occupied registry：active occupied slot count={this.ActiveOccupiedSlotCount}; duplicate slot count={this.DuplicateSlotCount}";
+    }
+
+    public int ClearRestoredAndInvalidInstances()
+    {
+        var removed = this.instances.RemoveAll(item => item.IsRestored || item.IsInvalid || item.IsDuplicate || !item.IsOccupied);
+        this.RebuildOccupiedSlotRegistry();
+        this.LastStatus = removed == 0
+            ? "没有已恢复/无效实例需要清理。"
+            : $"已清理已恢复/无效实例 {removed} 条，并重建 occupied registry。";
+        return removed;
+    }
+
     public LocalLayoutObjectInstance? GetById(string id)
     {
         if (string.IsNullOrWhiteSpace(id))
@@ -1457,12 +1510,15 @@ public sealed unsafe class LocalLayoutObjectService
     {
         this.DisablePlayback(instance, "恢复/删除实例前停止动画回放。");
         instance.IsRestoring = true;
+        instance.InstanceState = "Restoring";
+        instance.LastOperation = removeAfterRestore ? "Delete/RestoreInstance" : "RestoreInstance";
         instance.RestoreStatus = "Restoring";
         instance.RestoreError = string.Empty;
         instance.RestoreStep = "Stop playback";
-        instance.PendingVisualTransform = false;
-        instance.PendingVisualTransformFrameWait = 0;
-        instance.PendingVisualTransformResult = "恢复流程取消待写 VisualOnly transform。";
+            instance.PendingVisualTransform = false;
+            instance.PendingVisualTransformFrameWait = 0;
+            instance.PendingRecreateStabilizeAttempts = 0;
+            instance.PendingVisualTransformResult = "恢复流程取消待写 VisualOnly transform。";
         instance.PinTransformEnabled = false;
         instance.TransformMonitorActive = false;
         instance.PinTransformReason = "实例恢复/删除时停止 PinTransform。";
@@ -1500,6 +1556,9 @@ public sealed unsafe class LocalLayoutObjectService
             this.RestoreCarrierVisible(instance);
 
             instance.RestoreStep = "Restore original layout transform";
+            instance.PendingVisualTransform = false;
+            instance.PendingVisualTransformFrameWait = 0;
+            instance.PendingRecreateStabilizeAttempts = 0;
             var layoutRestored = this.RestoreOriginalLayoutTransformDirect(instance, out var layoutResult);
 
             instance.RestoreStep = "Restore original graphics transform";
@@ -1529,6 +1588,7 @@ public sealed unsafe class LocalLayoutObjectService
             {
                 instance.IsOccupied = false;
                 instance.IsRestored = true;
+                instance.InstanceState = "Restored";
                 instance.HasCollisionMoved = false;
                 instance.IsRenderInvalid = false;
                 if (TryNormalizeSlotAddress(instance.OccupiedSlotAddress, out var occupiedSlotAddress))
@@ -1540,6 +1600,8 @@ public sealed unsafe class LocalLayoutObjectService
             this.LastStatus = restoredOk
                 ? $"已恢复原 slot：{instance.Id}；model={originalPath}; layout={layoutResult}; graphics={graphicsResult}; collision={collisionResult}; visible={instance.OriginalVisible}"
                 : $"恢复未通过验证：{instance.Id}；{instance.RestoreError}";
+            if (!restoredOk)
+                instance.InstanceState = "Failed";
             return restoredOk;
         }
         catch (Exception ex)
@@ -1555,6 +1617,7 @@ public sealed unsafe class LocalLayoutObjectService
     private bool FailRestore(LocalLayoutObjectInstance instance, string message, bool removeAfterRestore, bool markInvalid)
     {
         instance.RestoreStatus = "Failed";
+        instance.InstanceState = "Failed";
         instance.RestoreError = message;
         instance.LastError = message;
         if (markInvalid)
@@ -1780,13 +1843,16 @@ public sealed unsafe class LocalLayoutObjectService
         instance.CurrentPosition = position;
         instance.CurrentRotationEuler = rotationEuler;
         instance.CurrentScale = scale;
+        instance.LastOperation = action;
         var applied = this.transformService.ApplyTransform(instance);
         if (applied)
         {
+            instance.InstanceState = "Ready";
             this.ScheduleTransformMonitor(instance, position, rotationEuler, scale, action);
         }
         else
         {
+            instance.InstanceState = "Failed";
             instance.TransformMonitorActive = false;
             instance.LastTransformWriteSkippedReason = this.transformService.LastResult;
             instance.TransformOverwriteDetails = "transform 写入未执行，原因见 transform disabled reason / skipped reason。";

@@ -164,14 +164,29 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
             instance.ModelResourceCategoryConfidence = "CreatePrimary path recreate；允许当前实例 category 与 target category 不同。";
             instance.RecreateLastError = string.Empty;
 
-            if (!after.IsUsable || !after.TransformValuesNormal)
+        if (!after.IsUsable || !after.TransformValuesNormal)
+        {
+            if (instance.TransformMode == LocalLayoutTransformMode.VisualOnly)
             {
-                instance.IsRenderInvalid = true;
-                instance.ModelExperimentFailed = true;
-                instance.ModelApplyStatus = FirstNonEmpty(instance.ModelApplyStatus, "UnsafeAfterRecreate");
-                instance.ApplyMdlStatus = instance.ModelApplyStatus;
-                instance.TransformWriteDisabledReason = "DestroyPrimary -> CreatePrimary 后 GraphicsObject/ModelResourceHandle/visible/transform 读回不安全；请切图或重载地图恢复。";
+                instance.PendingRecreate = false;
+                instance.PendingVisualTransform = true;
+                instance.PendingVisualTransformFrameWait = PendingVisualTransformFrames;
+                instance.PendingRecreateStabilizeAttempts = 0;
+                instance.ModelApplyStatus = "PendingRecreateStabilize";
+                instance.ApplyMdlStatus = "PendingRecreateStabilize";
+                instance.InstanceState = "PendingRecreateStabilize";
+                instance.PendingVisualTransformResult = $"recreate 后首帧暂不稳定，等待后续帧重试：{after.SafetyDump}";
+                instance.RecreateLastError = string.Empty;
+                this.LastResult = instance.PendingVisualTransformResult;
+                return true;
             }
+
+            instance.IsRenderInvalid = true;
+            instance.ModelExperimentFailed = true;
+            instance.ModelApplyStatus = FirstNonEmpty(instance.ModelApplyStatus, "UnsafeAfterRecreate");
+            instance.ApplyMdlStatus = instance.ModelApplyStatus;
+            instance.TransformWriteDisabledReason = "DestroyPrimary -> CreatePrimary 后 GraphicsObject/ModelResourceHandle/visible/transform 读回不安全；请切图或重载地图恢复。";
+        }
 
             instance.RecreateLastResult =
                 $"已执行 DestroyPrimary -> CreatePrimary：mode={instance.TransformMode}; beforeGraphics={before.GraphicsObjectAddress}; " +
@@ -226,7 +241,23 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
             return this.MarkUnsafeAfterRecreate(instance, $"高风险复杂模型，禁止延迟 transform 写入：{risk.Reason}");
 
         if (!graphicsInfo.IsUsable || !graphicsInfo.TransformValuesNormal)
-            return this.MarkUnsafeAfterRecreate(instance, $"延迟检查失败：{graphicsInfo.SafetyDump}");
+        {
+            instance.PendingRecreateStabilizeAttempts++;
+            if (instance.PendingRecreateStabilizeAttempts < instance.PendingRecreateStabilizeMaxAttempts)
+            {
+                instance.PendingVisualTransform = true;
+                instance.PendingVisualTransformFrameWait = 1;
+                instance.ModelApplyStatus = "PendingRecreateStabilize";
+                instance.ApplyMdlStatus = "PendingRecreateStabilize";
+                instance.InstanceState = "PendingRecreateStabilize";
+                instance.PendingVisualTransformResult =
+                    $"recreate 后 GraphicsObject 暂未稳定，继续等待：attempt={instance.PendingRecreateStabilizeAttempts}/{instance.PendingRecreateStabilizeMaxAttempts}; {graphicsInfo.SafetyDump}";
+                this.LastResult = instance.PendingVisualTransformResult;
+                return false;
+            }
+
+            return this.MarkUnsafeAfterRecreate(instance, $"RecreateStabilizeTimeout：{graphicsInfo.SafetyDump}");
+        }
 
         if (!TryParseAddress(graphicsInfo.GraphicsObjectAddress, out var graphicsAddress) || graphicsAddress == 0)
             return this.MarkUnsafeAfterRecreate(instance, "延迟检查失败：GraphicsObject 地址无效。");
@@ -247,6 +278,7 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
 
         instance.PendingVisualTransform = false;
         instance.PendingVisualTransformFrameWait = 0;
+        instance.PendingRecreateStabilizeAttempts = 0;
         instance.PendingVisualTransformResult = $"已延迟应用 VisualOnly transform；readback={visualReadback}";
         instance.RecreateVisualReapplyResult = instance.PendingVisualTransformResult;
         instance.LastReadback = afterWrite.Transform;
@@ -255,6 +287,7 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
         instance.VisualOnlyVerified = true;
         instance.ModelApplyStatus = risk.Level == ModelRiskLevel.AnimatedStaticOnly ? "AnimatedStaticOnly" : "VisualOnlyOk";
         instance.ApplyMdlStatus = instance.ModelApplyStatus;
+        instance.InstanceState = "Ready";
         instance.LastModelOverrideResult = risk.Level == ModelRiskLevel.AnimatedStaticOnly
             ? "自带动画/动态材质模型可能只显示静态外观；动画需要原 layout controller/shared group/event update 支持，暂未支持。"
             : "VisualOnly mdl 替换成功，transform 已延迟安全写入。";
@@ -337,13 +370,16 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
 
         if (!after.IsUsable || !after.TransformValuesNormal)
         {
-            instance.PendingVisualTransform = false;
-            instance.PendingVisualTransformFrameWait = 0;
+            instance.PendingVisualTransform = true;
+            instance.PendingVisualTransformFrameWait = PendingVisualTransformFrames;
+            instance.PendingRecreateStabilizeAttempts = 0;
             instance.PendingVisualTransformResult = "recreate 后 GraphicsObject 状态不安全，已停止 transform 写入。";
-            instance.ModelApplyStatus = "UnsafeAfterRecreate";
-            instance.ApplyMdlStatus = "UnsafeAfterRecreate";
-            instance.IsRenderInvalid = true;
-            instance.ModelExperimentFailed = true;
+            instance.ModelApplyStatus = "PendingRecreateStabilize";
+            instance.ApplyMdlStatus = "PendingRecreateStabilize";
+            instance.InstanceState = "PendingRecreateStabilize";
+            instance.IsRenderInvalid = false;
+            instance.ModelExperimentFailed = false;
+            instance.TransformWriteDisabledReason = string.Empty;
             instance.TransformWriteDisabledReason = "目标模型 recreate 后 GraphicsObject 状态不安全，已停止 transform 写入，请恢复或切图。";
             instance.RecreateVisualReapplyResult = $"VisualOnly：未立即写 Graphics.Scene.Object transform。dump={after.SafetyDump}";
             instance.RecreateCollisionModeResult = "VisualOnly：未调用 CreateSecondary，未写 Collider；Layout transform 已恢复到原始 slot。";
@@ -367,9 +403,11 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
         instance.PendingRecreate = false;
         instance.PendingVisualTransform = true;
         instance.PendingVisualTransformFrameWait = PendingVisualTransformFrames;
+        instance.PendingRecreateStabilizeAttempts = 0;
         instance.PendingVisualTransformResult = $"等待 {PendingVisualTransformFrames} 帧后重新读取 GraphicsObject，再应用 VisualOnly transform。";
         instance.ModelApplyStatus = risk.Level == ModelRiskLevel.AnimatedStaticOnly ? "AnimatedStaticOnly" : "PendingVisualTransform";
         instance.ApplyMdlStatus = instance.ModelApplyStatus;
+        instance.InstanceState = instance.ModelApplyStatus == "PendingVisualTransform" ? "PendingRecreateStabilize" : instance.ModelApplyStatus;
         instance.RecreateVisualReapplyResult = "VisualOnly：recreate 后不在同一帧写 transform；已安排延迟写入。";
         instance.HasCollisionMoved = false;
         instance.RecreateCollisionModeResult =
@@ -430,8 +468,10 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
     {
         instance.PendingVisualTransform = false;
         instance.PendingVisualTransformFrameWait = 0;
+        instance.PendingRecreateStabilizeAttempts = instance.PendingRecreateStabilizeMaxAttempts;
         instance.PendingVisualTransformResult = message;
         instance.IsRenderInvalid = true;
+        instance.InstanceState = "RenderInvalid";
         instance.ModelExperimentFailed = true;
         instance.ModelApplyStatus = "UnsafeAfterRecreate";
         instance.ApplyMdlStatus = "UnsafeAfterRecreate";
