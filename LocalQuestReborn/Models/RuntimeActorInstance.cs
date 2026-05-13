@@ -126,6 +126,10 @@ public sealed class RuntimeActorInstance
 
     public bool IsLookingAtPlayer { get; set; }
 
+    public bool LookAtRegistered { get; set; }
+
+    public string LookAtTargetDebug { get; set; } = "none";
+
     public string LastLookAtError { get; set; } = string.Empty;
 
     public DateTime LastLookAtUpdateAt { get; set; } = DateTime.MinValue;

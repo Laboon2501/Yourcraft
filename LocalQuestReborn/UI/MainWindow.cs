@@ -226,7 +226,8 @@ public sealed class MainWindow : Window
         var lookRadius = currentNpc.LookAtRadius;
         if (ImGui.InputFloat("默认看向半径", ref lookRadius))
             currentNpc.LookAtRadius = Math.Max(0.1f, lookRadius);
-        DrawEnumCombo("默认看向模式", currentNpc.LookAtMode, value => currentNpc.LookAtMode = value);
+        currentNpc.LookAtMode = NpcLookAtMode.NativeLookAt;
+        ImGui.TextDisabled("看向方式：NativeLookAt（固定）");
         var respawn = currentNpc.RespawnAfterGpose;
         if (ImGui.Checkbox("退出 GPose 后自动重建", ref respawn))
             currentNpc.RespawnAfterGpose = respawn;
@@ -583,8 +584,7 @@ public sealed class MainWindow : Window
         if (ImGui.Checkbox("此 Actor 看向玩家", ref lookAtEnabled))
         {
             actor.LookAtPlayerEnabled = lookAtEnabled;
-            if (lookAtEnabled && actor.LookAtMode == NpcLookAtMode.None)
-                actor.LookAtMode = NpcLookAtMode.BodyYaw;
+            actor.LookAtMode = NpcLookAtMode.NativeLookAt;
             lookAtChanged = true;
         }
 
@@ -595,20 +595,18 @@ public sealed class MainWindow : Window
             lookAtChanged = true;
         }
 
-        var beforeLookAtMode = actor.LookAtMode;
-        DrawEnumCombo("此 Actor 看向模式", actor.LookAtMode, value => actor.LookAtMode = value);
-        if (actor.LookAtMode != beforeLookAtMode)
-            lookAtChanged = true;
+        actor.LookAtMode = NpcLookAtMode.NativeLookAt;
+        ImGui.TextDisabled("看向方式：NativeLookAt（固定）");
 
         if (lookAtChanged)
-            this.realNpcSpawn.UpdateActorLookAtSettings(actor.RuntimeId, actor.LookAtPlayerEnabled, actor.LookAtRadius, actor.LookAtMode);
+            this.realNpcSpawn.UpdateActorLookAtSettings(actor.RuntimeId, actor.LookAtPlayerEnabled, actor.LookAtRadius);
 
         var animationId = (int)Math.Min(actor.CurrentAnimationId == 0 ? actor.DefaultAnimationId : actor.CurrentAnimationId, int.MaxValue);
         if (ImGui.InputInt("此 Actor 动画 ID", ref animationId))
             actor.CurrentAnimationId = (uint)Math.Max(0, animationId);
 
         ImGui.TextWrapped($"动画状态：enabled={actor.AnimationEnabled}, current={actor.CurrentAnimationId}, error={(string.IsNullOrWhiteSpace(actor.LastAnimationError) ? "无" : actor.LastAnimationError)}");
-        ImGui.TextWrapped($"看向状态：looking={actor.IsLookingAtPlayer}, error={(string.IsNullOrWhiteSpace(actor.LastLookAtError) ? "无" : actor.LastLookAtError)}");
+        ImGui.TextWrapped($"看向状态：enabled={actor.LookAtPlayerEnabled}, registered={actor.LookAtRegistered}, target={actor.LookAtTargetDebug}, looking={actor.IsLookingAtPlayer}, error={(string.IsNullOrWhiteSpace(actor.LastLookAtError) ? "无" : actor.LastLookAtError)}");
 
         ImGui.BeginDisabled(!actor.IsValid || actor.CharacterObject == null);
         if (ImGui.Button("播放动画"))
@@ -625,7 +623,7 @@ public sealed class MainWindow : Window
             npc.DefaultAnimationId = actor.CurrentAnimationId;
             npc.LookAtPlayerEnabled = actor.LookAtPlayerEnabled;
             npc.LookAtRadius = actor.LookAtRadius;
-            npc.LookAtMode = actor.LookAtMode;
+            npc.LookAtMode = NpcLookAtMode.NativeLookAt;
             SetVector3Data(npc.DefaultRotationEuler, actor.TransformEditRotationEuler);
             SetVector3Data(npc.DefaultScale, actor.TransformEditScale == Vector3.Zero ? Vector3.One : actor.TransformEditScale);
             this.database.Save();

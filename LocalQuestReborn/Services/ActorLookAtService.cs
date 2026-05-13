@@ -1,6 +1,8 @@
 using Dalamud.Plugin.Services;
 using LocalQuestReborn.Models;
 using System.Numerics;
+using NativeCharacter = FFXIVClientStructs.FFXIV.Client.Game.Character.Character;
+using NativeGameObjectId = FFXIVClientStructs.FFXIV.Client.Game.Object.GameObjectId;
 
 namespace LocalQuestReborn.Services;
 
@@ -28,9 +30,9 @@ public sealed class ActorLookAtService
         foreach (var actor in actors)
         {
             var lookAtRadius = actor.LookAtRadius > 0.1f ? actor.LookAtRadius : 8f;
-            if (!actor.LookAtPlayerEnabled || actor.LookAtMode == NpcLookAtMode.None || !actor.IsValid)
+            if (!actor.LookAtPlayerEnabled || !actor.IsValid)
             {
-                actor.IsLookingAtPlayer = false;
+                MarkUnregistered(actor);
                 continue;
             }
 
@@ -42,27 +44,38 @@ public sealed class ActorLookAtService
             var distance = XzDistance(actor.LastKnownPosition, player.Position);
             if (distance > lookAtRadius)
             {
-                actor.IsLookingAtPlayer = false;
+                MarkUnregistered(actor);
                 continue;
             }
 
-            var direction = player.Position - actor.LastKnownPosition;
-            var yaw = MathF.Atan2(direction.X, direction.Z);
-            var success = actor.LookAtMode == NpcLookAtMode.NativeLookAt || actor.LookAtMode == NpcLookAtMode.HeadOnly
-                ? this.TrySetNativeLookAt(actor, player, out var reason)
-                : this.TrySetBodyYaw(actor, yaw, out reason);
-
-            if (success)
+            if (this.TrySetNativeLookAt(actor, player, out var reason))
             {
                 actor.IsLookingAtPlayer = true;
+                actor.LookAtRegistered = true;
                 actor.LastLookAtError = string.Empty;
             }
             else
             {
                 actor.IsLookingAtPlayer = false;
+                actor.LookAtRegistered = false;
                 actor.LastLookAtError = reason;
             }
         }
+    }
+
+    public bool Stop(RuntimeActorInstance actor, out string reason)
+    {
+        actor.LookAtPlayerEnabled = false;
+        actor.LastLookAtUpdateAt = DateTime.MinValue;
+        MarkUnregistered(actor);
+        if (!this.ClearNativeLookAt(actor, out reason))
+        {
+            actor.LastLookAtError = reason;
+            return false;
+        }
+
+        actor.LastLookAtError = string.Empty;
+        return true;
     }
 
     private bool TrySetNativeLookAt(RuntimeActorInstance actor, object player, out string reason)
@@ -81,7 +94,7 @@ public sealed class ActorLookAtService
 
         if (!TryReadUIntMember(player, out var targetEntityId, "EntityId", "GameObjectId", "ObjectId"))
         {
-            reason = "无法读取玩家 EntityId，已回退失败。";
+            reason = "无法读取玩家 EntityId，NativeLookAt 已跳过。";
             return false;
         }
 
@@ -89,11 +102,12 @@ public sealed class ActorLookAtService
         {
             unsafe
             {
-                var character = (FFXIVClientStructs.FFXIV.Client.Game.Character.Character*)address;
+                var character = (NativeCharacter*)address;
                 character->TargetId.ObjectId = targetEntityId;
                 character->TargetId.Type = 0;
             }
 
+            actor.LookAtTargetDebug = targetEntityId.ToString();
             reason = $"已设置 NativeLookAt 目标：{targetEntityId}";
             return true;
         }
@@ -105,11 +119,11 @@ public sealed class ActorLookAtService
         }
     }
 
-    private bool TrySetBodyYaw(RuntimeActorInstance actor, float yaw, out string reason)
+    private bool ClearNativeLookAt(RuntimeActorInstance actor, out string reason)
     {
         if (!this.brioAssemblyBridge.EnableUnsafeNativeWrites)
         {
-            reason = "UnsafeMode=false，native 旋转写入已禁用。";
+            reason = "UnsafeMode=false，已清理插件侧 LookAt 状态，无法写入 native target。";
             return false;
         }
 
@@ -123,19 +137,26 @@ public sealed class ActorLookAtService
         {
             unsafe
             {
-                var character = (FFXIVClientStructs.FFXIV.Client.Game.Character.Character*)address;
-                character->GameObject.SetRotation(yaw);
+                var character = (NativeCharacter*)address;
+                character->TargetId = default(NativeGameObjectId);
             }
 
-            reason = $"已设置 BodyYaw={yaw:F3}";
+            reason = "已清除 NativeLookAt target。";
             return true;
         }
         catch (Exception ex)
         {
-            reason = $"设置 BodyYaw 失败：{ex.Message}";
-            this.log.Warning(ex, "Failed to rotate actor toward player. RuntimeId={RuntimeId}", actor.RuntimeId);
+            reason = $"清除 NativeLookAt 失败：{ex.Message}";
+            this.log.Warning(ex, "Failed to clear native look-at target. RuntimeId={RuntimeId}", actor.RuntimeId);
             return false;
         }
+    }
+
+    private static void MarkUnregistered(RuntimeActorInstance actor)
+    {
+        actor.IsLookingAtPlayer = false;
+        actor.LookAtRegistered = false;
+        actor.LookAtTargetDebug = "none";
     }
 
     private static float XzDistance(Vector3 a, Vector3 b)

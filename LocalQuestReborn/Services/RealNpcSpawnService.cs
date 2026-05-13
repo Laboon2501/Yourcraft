@@ -295,7 +295,7 @@ public sealed class RealNpcSpawnService
             instance.CurrentAnimationId = npc.DefaultAnimationId;
             instance.LookAtPlayerEnabled = npc.LookAtPlayerEnabled;
             instance.LookAtRadius = Math.Max(0.1f, npc.LookAtRadius);
-            instance.LookAtMode = npc.LookAtMode;
+            instance.LookAtMode = NpcLookAtMode.NativeLookAt;
             this.nameplateService.TryReadActorName(instance);
             this.targetabilityService.TryReadTargetability(instance);
             this.ApplyActorTransform(instance.RuntimeId, spawnPosition, spawnRotation, spawnScale);
@@ -345,9 +345,7 @@ public sealed class RealNpcSpawnService
 
     private void PrepareActorForDespawn(RuntimeActorInstance instance)
     {
-        instance.LookAtPlayerEnabled = false;
-        instance.IsLookingAtPlayer = false;
-        instance.LastLookAtUpdateAt = DateTime.MinValue;
+        this.lookAtService.Stop(instance, out _);
         this.appearanceApplyQueue.RemoveJobsForActor(instance.RuntimeId);
 
         if (instance.AnimationEnabled && instance.IsValid && instance.CharacterObject != null)
@@ -600,7 +598,7 @@ public sealed class RealNpcSpawnService
         return success;
     }
 
-    public void UpdateActorLookAtSettings(string runtimeId, bool enabled, float radius, NpcLookAtMode mode)
+    public void UpdateActorLookAtSettings(string runtimeId, bool enabled, float radius)
     {
         var instance = this.registry.GetByRuntimeId(runtimeId);
         if (instance == null)
@@ -611,18 +609,19 @@ public sealed class RealNpcSpawnService
 
         instance.LookAtPlayerEnabled = enabled;
         instance.LookAtRadius = Math.Max(0.1f, radius);
-        instance.LookAtMode = enabled && mode == NpcLookAtMode.None ? NpcLookAtMode.BodyYaw : mode;
+        instance.LookAtMode = NpcLookAtMode.NativeLookAt;
         instance.LastLookAtUpdateAt = DateTime.MinValue;
         if (!enabled)
         {
-            instance.IsLookingAtPlayer = false;
-            instance.LastLookAtError = string.Empty;
+            this.lookAtService.Stop(instance, out var stopReason);
             this.LastMessage = $"已关闭 Actor 看向玩家：{ShortRuntimeId(runtimeId)}";
+            if (!string.IsNullOrWhiteSpace(stopReason))
+                instance.LookAtTargetDebug = "none";
             return;
         }
 
         this.lookAtService.Update([instance], this.database);
-        this.LastMessage = $"已更新 Actor 看向玩家：{ShortRuntimeId(runtimeId)}，模式={instance.LookAtMode}，半径={instance.LookAtRadius:F1}";
+        this.LastMessage = $"已更新 Actor NativeLookAt：{ShortRuntimeId(runtimeId)}，半径={instance.LookAtRadius:F1}";
     }
 
     public bool SetActorName(string runtimeId)
