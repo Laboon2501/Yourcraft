@@ -15,10 +15,16 @@ using SceneObject = FFXIVClientStructs.FFXIV.Client.Graphics.Scene.Object;
 public sealed unsafe class BgPartRecreateExperimentService : IDisposable
 {
     private const int ColliderOffset = 0x38;
+    private const int CachedMatricesOffset = 0xA0;
+    private const int StainOrBgChangeDataOffset = 0xA8;
+    private const int CachedTransformOffset = 0xB0;
+    private const int AnimationDataOffset = 0xB8;
+    private const int PendingVisualTransformFrames = 3;
+    private const float MaxReasonableCoordinate = 1_000_000f;
 
     private readonly Dictionary<string, RecreatePathPin> pinnedPathBuffers = [];
 
-    public string LastResult { get; private set; } = "BgPart recreate 实验尚未执行。";
+    public string LastResult { get; private set; } = "BgPart recreate 尚未执行。";
 
     public bool SaveSnapshot(LocalLayoutObjectInstance instance, string targetPath)
     {
@@ -33,7 +39,11 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
         {
             var bgPart = (BgPartsLayoutInstance*)pointer;
             var graphicsInfo = ReadGraphicsInfo(bgPart);
-            var pin = this.PinTargetPath(instance, targetPath.Trim());
+            var normalizedTargetPath = targetPath.Trim();
+            var targetCategory = TryGetCategoryForPath(normalizedTargetPath, out var inferredTargetCategory)
+                ? FormatCategory(inferredTargetCategory)
+                : "Unknown";
+            var pin = this.PinTargetPath(instance, normalizedTargetPath);
 
             instance.RecreateSnapshotGraphicsObject = graphicsInfo.GraphicsObjectAddress;
             instance.RecreateSnapshotIndexInPool = pointer->IndexInPool;
@@ -41,22 +51,31 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
             instance.RecreateSnapshotTransformMode = instance.TransformMode.ToString();
             instance.RecreateSnapshotColliderAddress = ReadColliderAddress(bgPart);
             instance.RecreateSnapshotOriginalPath = FirstNonEmpty(graphicsInfo.Path, instance.CurrentResourcePath, instance.SourceResourcePath);
-            instance.RecreateSnapshotTargetPath = targetPath.Trim();
+            instance.RecreateSnapshotTargetPath = normalizedTargetPath;
             instance.RecreateSnapshotModelResourceHandle = graphicsInfo.ModelResourceHandleAddress;
             instance.RecreateAfterGraphicsObject = string.Empty;
             instance.RecreateAfterModelResourceHandle = string.Empty;
             instance.RecreateAfterVisible = string.Empty;
             instance.RecreateAfterTransform = string.Empty;
             instance.RecreateAfterColliderAddress = string.Empty;
+            instance.ModelResourceCategoryReadback = graphicsInfo.Category;
+            instance.ModelResourceCategoryGuess = targetCategory;
+            instance.ModelResourceCategoryConfidence = "before/target category 仅记录；允许 Bg 与 BgCommon 跨 category recreate。";
             instance.RecreateLayoutRestoreResult = string.Empty;
             instance.RecreateVisualReapplyResult = string.Empty;
             instance.RecreateCollisionModeResult = string.Empty;
             instance.RecreateLastError = string.Empty;
+            instance.PendingRecreate = true;
+            instance.PendingVisualTransform = false;
+            instance.PendingVisualTransformFrameWait = 0;
+            instance.PendingVisualTransformResult = string.Empty;
+            this.StoreGraphicsReadback(instance, graphicsInfo);
+
             instance.RecreateLastResult =
                 $"已保存 recreate 快照：GraphicsObject={graphicsInfo.GraphicsObjectAddress}; IndexInPool={instance.RecreateSnapshotIndexInPool}; " +
                 $"mode={instance.TransformMode}; collider={instance.RecreateSnapshotColliderAddress}; original={instance.RecreateSnapshotOriginalPath}; " +
-                $"target={instance.RecreateSnapshotTargetPath}; targetBuffer={instance.RecreatePinnedPathAddress}; " +
-                $"pathPointer={instance.RecreatePathPointerAddress}; pinStable={pin.IsAllocated}";
+                $"target={instance.RecreateSnapshotTargetPath}; beforeCategory={graphicsInfo.Category}; targetCategory={targetCategory}; " +
+                $"targetBuffer={instance.RecreatePinnedPathAddress}; pathPointer={instance.RecreatePathPointerAddress}; pinStable={pin.IsAllocated}";
             this.LastResult = instance.RecreateLastResult;
             return true;
         }
@@ -82,10 +101,11 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
 
         try
         {
+            var normalizedTargetPath = targetPath.Trim();
             if (!this.pinnedPathBuffers.ContainsKey(instance.Id) ||
-                !string.Equals(instance.RecreateSnapshotTargetPath, targetPath.Trim(), StringComparison.OrdinalIgnoreCase))
+                !string.Equals(instance.RecreateSnapshotTargetPath, normalizedTargetPath, StringComparison.OrdinalIgnoreCase))
             {
-                if (!this.SaveSnapshot(instance, targetPath))
+                if (!this.SaveSnapshot(instance, normalizedTargetPath))
                     return false;
             }
 
@@ -101,6 +121,9 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
                 : *transformPointer;
 
             var before = ReadGraphicsInfo((BgPartsLayoutInstance*)pointer);
+            var targetCategory = TryGetCategoryForPath(normalizedTargetPath, out var inferredTargetCategory)
+                ? FormatCategory(inferredTargetCategory)
+                : "Unknown";
             var beforeCollider = ReadColliderAddress((BgPartsLayoutInstance*)pointer);
 
             pointer->DestroyPrimary();
@@ -115,14 +138,18 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
             }
             else
             {
+                instance.PendingRecreate = false;
+                instance.PendingVisualTransform = false;
                 instance.HasCollisionMoved = true;
+                instance.ModelApplyStatus = "StaticOk";
                 instance.RecreateLayoutRestoreResult = "FullLayoutWithCollision：保留 CreatePrimary 使用的当前 Layout transform。";
                 instance.RecreateVisualReapplyResult = "FullLayoutWithCollision：不单独写 Graphics.Scene.Object transform。";
                 instance.RecreateCollisionModeResult =
-                    $"FullLayoutWithCollision：当前只重建 primary graphics；target collision / CreateSecondary 尚未实现。Collider before={beforeCollider}; after={afterCollider}";
+                    $"FullLayoutWithCollision：只重建 primary graphics，target collision 由正式流程随后处理。Collider before={beforeCollider}; after={afterCollider}";
             }
 
             after = ReadGraphicsInfo((BgPartsLayoutInstance*)pointer);
+            this.StoreGraphicsReadback(instance, after);
             instance.GraphicsObjectAddress = after.GraphicsObjectAddress;
             instance.ModelResourceHandleAddress = after.ModelResourceHandleAddress;
             instance.AfterModelPath = after.Path;
@@ -132,19 +159,26 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
             instance.RecreateAfterVisible = after.Visible;
             instance.RecreateAfterTransform = after.Transform;
             instance.RecreateAfterColliderAddress = ReadColliderAddress((BgPartsLayoutInstance*)pointer);
+            instance.ModelResourceCategoryReadback = $"before={before.Category}; target={targetCategory}; after={after.Category}";
+            instance.ModelResourceCategoryGuess = targetCategory;
+            instance.ModelResourceCategoryConfidence = "CreatePrimary path recreate；允许当前实例 category 与 target category 不同。";
             instance.RecreateLastError = string.Empty;
 
-            if (!after.IsUsable)
+            if (!after.IsUsable || !after.TransformValuesNormal)
             {
                 instance.IsRenderInvalid = true;
                 instance.ModelExperimentFailed = true;
-                instance.TransformWriteDisabledReason = "DestroyPrimary -> CreatePrimary 后 GraphicsObject/ModelResourceHandle/visible 读回不可用；请切图/重载地图恢复。";
+                instance.ModelApplyStatus = FirstNonEmpty(instance.ModelApplyStatus, "UnsafeAfterRecreate");
+                instance.ApplyMdlStatus = instance.ModelApplyStatus;
+                instance.TransformWriteDisabledReason = "DestroyPrimary -> CreatePrimary 后 GraphicsObject/ModelResourceHandle/visible/transform 读回不安全；请切图或重载地图恢复。";
             }
 
             instance.RecreateLastResult =
                 $"已执行 DestroyPrimary -> CreatePrimary：mode={instance.TransformMode}; beforeGraphics={before.GraphicsObjectAddress}; " +
-                $"afterGraphics={after.GraphicsObjectAddress}; beforePath={before.Path}; target={targetPath.Trim()}; afterPath={after.Path}; " +
-                $"visible={after.Visible}; transform={after.Transform}; {instance.RecreateCollisionModeResult}; renderInvalid={instance.IsRenderInvalid}";
+                $"afterGraphics={after.GraphicsObjectAddress}; beforePath={before.Path}; target={normalizedTargetPath}; afterPath={after.Path}; " +
+                $"beforeCategory={before.Category}; targetCategory={targetCategory}; afterCategory={after.Category}; visible={after.Visible}; " +
+                $"loadState={after.LoadState}; transform={after.Transform}; {instance.RecreateCollisionModeResult}; " +
+                $"pendingVisualTransform={instance.PendingVisualTransform}; renderInvalid={instance.IsRenderInvalid}; risk={instance.ComplexModelRisk}";
             this.LastResult = instance.RecreateLastResult;
             return after.IsUsable;
         }
@@ -152,9 +186,115 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
         {
             instance.IsRenderInvalid = true;
             instance.ModelExperimentFailed = true;
-            instance.TransformWriteDisabledReason = "recreate native 调用异常后实例视为 render 失效；请切图/重载地图恢复。";
+            instance.ModelApplyStatus = "Failed";
+            instance.ApplyMdlStatus = "Failed";
+            instance.TransformWriteDisabledReason = "recreate native 调用异常后实例视觉 render 失效；请切图/重载地图恢复。";
             return this.Fail(instance, $"DestroyPrimary -> CreatePrimary 异常：{ex}");
         }
+    }
+
+    public bool ProcessPendingVisualTransform(LocalLayoutObjectInstance instance)
+    {
+        if (!instance.PendingVisualTransform)
+            return false;
+
+        if (instance.IsInvalid || instance.IsRestored || instance.IsRenderInvalid)
+        {
+            instance.PendingVisualTransform = false;
+            instance.PendingVisualTransformResult = "实例已失效/已恢复/render invalid，取消待写 transform。";
+            return false;
+        }
+
+        if (instance.PendingVisualTransformFrameWait > 0)
+        {
+            instance.PendingVisualTransformFrameWait--;
+            instance.PendingVisualTransformResult = $"等待 recreate 后 GraphicsObject 稳定：剩余 {instance.PendingVisualTransformFrameWait} 帧。";
+            return false;
+        }
+
+        if (!TryGetPointer(instance.OccupiedSlotAddress, out var pointer))
+            return this.MarkUnsafeAfterRecreate(instance, $"slot 地址解析失败：{instance.OccupiedSlotAddress}");
+
+        var graphicsInfo = ReadGraphicsInfo((BgPartsLayoutInstance*)pointer);
+        this.StoreGraphicsReadback(instance, graphicsInfo);
+        instance.GraphicsObjectAddress = graphicsInfo.GraphicsObjectAddress;
+
+        var risk = ClassifyModelRisk(FirstNonEmpty(graphicsInfo.Path, instance.TargetModelPath, instance.CustomModelPath));
+        instance.ComplexModelRisk = risk.Status;
+        instance.ComplexModelRiskReason = risk.Reason;
+        if (risk.Level == ModelRiskLevel.UnsafeComplex)
+            return this.MarkUnsafeAfterRecreate(instance, $"高风险复杂模型，禁止延迟 transform 写入：{risk.Reason}");
+
+        if (!graphicsInfo.IsUsable || !graphicsInfo.TransformValuesNormal)
+            return this.MarkUnsafeAfterRecreate(instance, $"延迟检查失败：{graphicsInfo.SafetyDump}");
+
+        if (!TryParseAddress(graphicsInfo.GraphicsObjectAddress, out var graphicsAddress) || graphicsAddress == 0)
+            return this.MarkUnsafeAfterRecreate(instance, "延迟检查失败：GraphicsObject 地址无效。");
+
+        var targetRotation = NormalizeRotation(instance.CurrentRotation);
+        var targetScale = NormalizeScale(instance.CurrentScale);
+        if (!IsTransformNormal(instance.CurrentPosition, targetRotation, targetScale))
+            return this.MarkUnsafeAfterRecreate(instance, $"目标 transform 数值异常：position=({FormatVector(instance.CurrentPosition)}), rotation={targetRotation}, scale=({FormatVector(targetScale)})");
+
+        var visualApplied = WriteSceneObjectTransform(graphicsAddress, instance.CurrentPosition, targetRotation, targetScale, out var visualReadback);
+        if (!visualApplied)
+            return this.MarkUnsafeAfterRecreate(instance, $"延迟写入 VisualOnly transform 失败：{visualReadback}");
+
+        var afterWrite = ReadGraphicsInfo((BgPartsLayoutInstance*)pointer);
+        this.StoreGraphicsReadback(instance, afterWrite);
+        if (!afterWrite.TransformValuesNormal)
+            return this.MarkUnsafeAfterRecreate(instance, $"延迟写入后 transform 读回异常：{afterWrite.SafetyDump}");
+
+        instance.PendingVisualTransform = false;
+        instance.PendingVisualTransformFrameWait = 0;
+        instance.PendingVisualTransformResult = $"已延迟应用 VisualOnly transform；readback={visualReadback}";
+        instance.RecreateVisualReapplyResult = instance.PendingVisualTransformResult;
+        instance.LastReadback = afterWrite.Transform;
+        instance.LastError = string.Empty;
+        instance.HasCollisionMoved = false;
+        instance.VisualOnlyVerified = true;
+        instance.ModelApplyStatus = risk.Level == ModelRiskLevel.AnimatedStaticOnly ? "AnimatedStaticOnly" : "VisualOnlyOk";
+        instance.ApplyMdlStatus = instance.ModelApplyStatus;
+        instance.LastModelOverrideResult = risk.Level == ModelRiskLevel.AnimatedStaticOnly
+            ? "自带动画/动态材质模型可能只显示静态外观；动画需要原 layout controller/shared group/event update 支持，暂未支持。"
+            : "VisualOnly mdl 替换成功，transform 已延迟安全写入。";
+        this.LastResult = instance.PendingVisualTransformResult;
+        return true;
+    }
+
+    public string BuildAnimationCapabilityDump(LocalLayoutObjectInstance? instance, LayoutProbeInstance? reference)
+    {
+        var lines = new List<string>
+        {
+            "自带动画/动态材质模型可能只显示静态外观；动画需要原 layout controller/shared group/event update 支持，暂未支持。",
+        };
+
+        if (reference != null && TryGetPointer(reference.Address, out var referencePointer))
+        {
+            var referenceInfo = ReadGraphicsInfo((BgPartsLayoutInstance*)referencePointer);
+            lines.Add($"参考 BgPart: type={reference.Type}; path={reference.ResourcePath}; address={reference.Address}; {referenceInfo.SafetyDump}; renderPointers={referenceInfo.RenderPointers}");
+        }
+        else
+        {
+            lines.Add("参考 BgPart: 未选择或地址不可读。");
+        }
+
+        if (instance != null && TryGetPointer(instance.OccupiedSlotAddress, out var instancePointer))
+        {
+            var instanceInfo = ReadGraphicsInfo((BgPartsLayoutInstance*)instancePointer);
+            this.StoreGraphicsReadback(instance, instanceInfo);
+            lines.Add($"本地实例: id={instance.Id}; path={instance.CurrentResourcePath}; slot={instance.OccupiedSlotAddress}; {instanceInfo.SafetyDump}; renderPointers={instanceInfo.RenderPointers}");
+            lines.Add($"状态: modelApplyStatus={instance.ModelApplyStatus}; risk={instance.ComplexModelRisk}; pendingVisualTransform={instance.PendingVisualTransform}; renderInvalid={instance.IsRenderInvalid}");
+        }
+        else
+        {
+            lines.Add("本地实例: 未选择或地址不可读。");
+        }
+
+        var result = string.Join(Environment.NewLine, lines);
+        if (instance != null)
+            instance.AnimationCapabilityDump = result;
+        return result;
     }
 
     public string GetExecuteBlockReason(
@@ -190,26 +330,50 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
             : $"VisualOnly：恢复 LayoutInstance 原始 transform 失败；readback={layoutReadback}";
 
         after = ReadGraphicsInfo((BgPartsLayoutInstance*)pointer);
-        if (!TryParseAddress(after.GraphicsObjectAddress, out var graphicsAddress) || graphicsAddress == 0)
+        this.StoreGraphicsReadback(instance, after);
+        var risk = ClassifyModelRisk(FirstNonEmpty(after.Path, instance.TargetModelPath, instance.CustomModelPath));
+        instance.ComplexModelRisk = risk.Status;
+        instance.ComplexModelRiskReason = risk.Reason;
+
+        if (!after.IsUsable || !after.TransformValuesNormal)
         {
-            instance.RecreateVisualReapplyResult = "VisualOnly：CreatePrimary 后 GraphicsObject 无效，未写视觉 transform。";
-            instance.RecreateCollisionModeResult = "VisualOnly：未调用 CreateSecondary，未写 Collider；但 GraphicsObject 无效。";
+            instance.PendingVisualTransform = false;
+            instance.PendingVisualTransformFrameWait = 0;
+            instance.PendingVisualTransformResult = "recreate 后 GraphicsObject 状态不安全，已停止 transform 写入。";
+            instance.ModelApplyStatus = "UnsafeAfterRecreate";
+            instance.ApplyMdlStatus = "UnsafeAfterRecreate";
+            instance.IsRenderInvalid = true;
+            instance.ModelExperimentFailed = true;
+            instance.TransformWriteDisabledReason = "目标模型 recreate 后 GraphicsObject 状态不安全，已停止 transform 写入，请恢复或切图。";
+            instance.RecreateVisualReapplyResult = $"VisualOnly：未立即写 Graphics.Scene.Object transform。dump={after.SafetyDump}";
+            instance.RecreateCollisionModeResult = "VisualOnly：未调用 CreateSecondary，未写 Collider；Layout transform 已恢复到原始 slot。";
             return;
         }
 
-        var visualApplied = WriteSceneObjectTransform(
-            graphicsAddress,
-            instance.CurrentPosition,
-            NormalizeRotation(instance.CurrentRotation),
-            NormalizeScale(instance.CurrentScale),
-            out var visualReadback);
+        if (risk.Level == ModelRiskLevel.UnsafeComplex)
+        {
+            instance.PendingVisualTransform = false;
+            instance.PendingVisualTransformFrameWait = 0;
+            instance.PendingVisualTransformResult = "复杂/动态模型 recreate 后已禁止自动写 transform。";
+            instance.ModelApplyStatus = "UnsafeComplexModel";
+            instance.ApplyMdlStatus = "UnsafeComplexModel";
+            instance.ModelExperimentFailed = true;
+            instance.TransformWriteDisabledReason = "目标模型属于动态屏幕/灯光/VFX/事件类高风险资源，recreate 后不写 Graphics.Scene.Object transform。";
+            instance.RecreateVisualReapplyResult = $"VisualOnly：模型已尝试 recreate，但自动 transform 写入已暂停。{risk.Reason}";
+            instance.RecreateCollisionModeResult = "VisualOnly：未调用 CreateSecondary，未写 Collider；Layout transform 已恢复到原始 slot。";
+            return;
+        }
 
-        instance.RecreateVisualReapplyResult = visualApplied
-            ? $"VisualOnly：已重新应用 Graphics.Scene.Object Position/Rotation/Scale；readback={visualReadback}"
-            : $"VisualOnly：重新应用 Graphics.Scene.Object transform 失败；readback={visualReadback}";
+        instance.PendingRecreate = false;
+        instance.PendingVisualTransform = true;
+        instance.PendingVisualTransformFrameWait = PendingVisualTransformFrames;
+        instance.PendingVisualTransformResult = $"等待 {PendingVisualTransformFrames} 帧后重新读取 GraphicsObject，再应用 VisualOnly transform。";
+        instance.ModelApplyStatus = risk.Level == ModelRiskLevel.AnimatedStaticOnly ? "AnimatedStaticOnly" : "PendingVisualTransform";
+        instance.ApplyMdlStatus = instance.ModelApplyStatus;
+        instance.RecreateVisualReapplyResult = "VisualOnly：recreate 后不在同一帧写 transform；已安排延迟写入。";
         instance.HasCollisionMoved = false;
         instance.RecreateCollisionModeResult =
-            $"VisualOnly：未调用 CreateSecondary，未写 Collider，Layout transform 已恢复到原始 slot；本地脚下只移动 GraphicsObject。Collider={ReadColliderAddress((BgPartsLayoutInstance*)pointer)}";
+            $"VisualOnly：未调用 CreateSecondary，未写 Collider；Layout transform 已恢复到原始 slot。Collider={ReadColliderAddress((BgPartsLayoutInstance*)pointer)}";
     }
 
     private string GetSharedBlockReason(LocalLayoutObjectInstance? instance, string targetPath)
@@ -219,7 +383,7 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
         if (instance.IsInvalid || instance.IsRestored || instance.IsDuplicate)
             return "实例已失效、已恢复或是重复记录。";
         if (instance.IsRenderInvalid)
-            return "实例 render 已失效；请切图/重载地图恢复后再实验。";
+            return "实例 render 已失效；请切图或重载地图恢复后再实验。";
         if (string.IsNullOrWhiteSpace(instance.OccupiedSlotAddress))
             return "occupiedSlotAddress 为空。";
         if (string.IsNullOrWhiteSpace(targetPath))
@@ -228,8 +392,8 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
         targetPath = targetPath.Trim();
         if (!targetPath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase))
             return "target path 必须以 .mdl 结尾。";
-        if (!targetPath.StartsWith("bg/", StringComparison.OrdinalIgnoreCase))
-            return "本实验只允许 category=Bg 的 bg/...mdl 路径。";
+        if (!TryGetCategoryForPath(targetPath, out _))
+            return "target path 只支持 bg/...mdl 或 bgcommon/...mdl。";
         if (!TryGetPointer(instance.OccupiedSlotAddress, out var pointer))
             return $"slot 地址解析失败：{instance.OccupiedSlotAddress}";
         if (pointer->Id.Type != InstanceType.BgPart)
@@ -244,9 +408,7 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
             if (graphicsObject->ModelResourceHandle == null)
                 return "当前 ModelResourceHandle=null。";
 
-            var category = (ResourceCategory)(ushort)graphicsObject->ModelResourceHandle->Type.Category;
-            if (category != ResourceCategory.Bg)
-                return $"当前 category={category} ({(int)category})，本实验仅允许 Bg。";
+            _ = (ResourceCategory)(ushort)graphicsObject->ModelResourceHandle->Type.Category;
         }
         catch (Exception ex)
         {
@@ -260,6 +422,22 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
     {
         instance.RecreateLastError = message;
         instance.RecreateLastResult = string.Empty;
+        this.LastResult = message;
+        return false;
+    }
+
+    private bool MarkUnsafeAfterRecreate(LocalLayoutObjectInstance instance, string message)
+    {
+        instance.PendingVisualTransform = false;
+        instance.PendingVisualTransformFrameWait = 0;
+        instance.PendingVisualTransformResult = message;
+        instance.IsRenderInvalid = true;
+        instance.ModelExperimentFailed = true;
+        instance.ModelApplyStatus = "UnsafeAfterRecreate";
+        instance.ApplyMdlStatus = "UnsafeAfterRecreate";
+        instance.TransformWriteDisabledReason = "目标模型 recreate 后 GraphicsObject 状态不安全，已停止 transform 写入，请恢复或切图。";
+        instance.LastModelOverrideError = message;
+        instance.LastError = message;
         this.LastResult = message;
         return false;
     }
@@ -281,6 +459,23 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
         var pin = new RecreatePathPin(handle, pathPointerStorage);
         this.pinnedPathBuffers[instance.Id] = pin;
         return pin;
+    }
+
+    private void StoreGraphicsReadback(LocalLayoutObjectInstance instance, GraphicsInfo info)
+    {
+        instance.GraphicsObjectAddress = info.GraphicsObjectAddress;
+        instance.ModelResourceHandleAddress = info.ModelResourceHandleAddress;
+        instance.ModelResourceHandleLoadState = info.LoadState < 0 ? "不可用" : info.LoadState.ToString();
+        instance.ModelVisibilityReadback = info.Visible;
+        instance.ModelTransformReadback = info.Transform;
+        instance.ModelResourceCategoryReadback = info.Category;
+        instance.ModelResourceHandleDump = info.SafetyDump;
+        instance.GraphicsSafetyDump = info.SafetyDump;
+        instance.RecreateAfterCachedMatrices = info.CachedMatricesAddress;
+        instance.RecreateAfterStainOrBgChangeData = info.StainOrBgChangeDataAddress;
+        instance.RecreateAfterCachedTransform = info.CachedTransformAddress;
+        instance.RecreateAfterAnimationData = info.AnimationDataAddress;
+        instance.ModelPointerDiff = info.RenderPointers;
     }
 
     private static Transform BuildOriginalLayoutTransform(LocalLayoutObjectInstance instance)
@@ -314,10 +509,34 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
             return false;
         }
 
+        if (!IsTransformNormal(position, rotation, scale))
+        {
+            readback = $"目标 transform 数值异常：position=({FormatVector(position)}), rotation={rotation}, scale=({FormatVector(scale)})";
+            return false;
+        }
+
         try
         {
             var obj = (SceneObject*)graphicsObjectAddress;
             var bg = (SceneBgObject*)graphicsObjectAddress;
+            if (bg->ModelResourceHandle == null)
+            {
+                readback = "ModelResourceHandle=null";
+                return false;
+            }
+
+            if (bg->ModelResourceHandle->LoadState != 7)
+            {
+                readback = $"LoadState={bg->ModelResourceHandle->LoadState}，不是稳定完成状态 7";
+                return false;
+            }
+
+            if (!bg->IsVisible)
+            {
+                readback = "visible=false";
+                return false;
+            }
+
             obj->Position = position;
             obj->Rotation = rotation;
             obj->Scale = scale;
@@ -326,7 +545,7 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
             bg->UpdateTransforms(true);
             bg->UpdateRender();
             readback = $"position=({FormatVector(obj->Position)}), rotation={obj->Rotation}, scale=({FormatVector(obj->Scale)})";
-            return true;
+            return IsTransformNormal(obj->Position, obj->Rotation, obj->Scale);
         }
         catch (Exception ex)
         {
@@ -346,29 +565,102 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
     private static GraphicsInfo ReadGraphicsInfo(BgPartsLayoutInstance* bgPart)
     {
         if (bgPart == null || bgPart->GraphicsObject == null)
-            return new GraphicsInfo("0x0", "0x0", string.Empty, "False", "GraphicsObject=null", false);
+            return GraphicsInfo.Empty("GraphicsObject=null");
 
         var bgObject = (SceneBgObject*)bgPart->GraphicsObject;
         var graphicsAddress = $"0x{(nint)bgObject:X}";
         var handleAddress = "0x0";
         var path = string.Empty;
-        var usable = false;
+        var category = "Unknown";
+        var loadState = -1;
+        var handleAvailable = false;
+        var isVisible = false;
+        var transformReadable = false;
+        var transformValuesNormal = false;
+        var position = Vector3.Zero;
+        var rotation = Quaternion.Identity;
+        var scale = Vector3.One;
+        var renderPointers = string.Empty;
+        var cachedMatricesAddress = "0x0";
+        var stainOrBgChangeDataAddress = "0x0";
+        var cachedTransformAddress = "0x0";
+        var animationDataAddress = "0x0";
+
         try
         {
             if (bgObject->ModelResourceHandle != null)
             {
+                handleAvailable = true;
                 handleAddress = $"0x{(nint)bgObject->ModelResourceHandle:X}";
                 path = bgObject->ModelResourceHandle->FileName.ToString();
-                usable = bgObject->ModelResourceHandle->LoadState >= 7 && bgObject->IsVisible;
+                category = FormatCategory((ResourceCategory)(ushort)bgObject->ModelResourceHandle->Type.Category);
+                loadState = bgObject->ModelResourceHandle->LoadState;
             }
         }
         catch
         {
         }
 
-        var visible = SafeRead(() => bgObject->IsVisible.ToString());
-        var transform = SafeRead(() => $"position=({FormatVector(bgObject->Position)}), rotation={bgObject->Rotation}, scale=({FormatVector(bgObject->Scale)})");
-        return new GraphicsInfo(graphicsAddress, handleAddress, path, visible, transform, usable);
+        try
+        {
+            isVisible = bgObject->IsVisible;
+            position = bgObject->Position;
+            rotation = bgObject->Rotation;
+            scale = bgObject->Scale;
+            transformReadable = true;
+            transformValuesNormal = IsTransformNormal(position, rotation, scale);
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            var baseAddress = (nint)bgObject;
+            var cachedMatrices = *(nint*)(baseAddress + CachedMatricesOffset);
+            var stainOrBgChangeData = *(nint*)(baseAddress + StainOrBgChangeDataOffset);
+            var cachedTransform = *(nint*)(baseAddress + CachedTransformOffset);
+            var animationData = *(nint*)(baseAddress + AnimationDataOffset);
+            cachedMatricesAddress = $"0x{cachedMatrices:X}";
+            stainOrBgChangeDataAddress = $"0x{stainOrBgChangeData:X}";
+            cachedTransformAddress = $"0x{cachedTransform:X}";
+            animationDataAddress = $"0x{animationData:X}";
+            renderPointers = $"cachedMatrices={cachedMatricesAddress}; stainOrBgChangeData={stainOrBgChangeDataAddress}; cachedTransform={cachedTransformAddress}; animationData={animationDataAddress}";
+        }
+        catch
+        {
+        }
+
+        var visible = isVisible.ToString();
+        var transform = transformReadable
+            ? $"position=({FormatVector(position)}), rotation={rotation}, scale=({FormatVector(scale)})"
+            : "transform read failed";
+        var usable = handleAvailable && loadState == 7 && isVisible && transformReadable && transformValuesNormal;
+        var safetyDump =
+            $"graphics={graphicsAddress}; handle={handleAddress}; path={path}; category={category}; loadState={loadState}; " +
+            $"visible={visible}; transformReadable={transformReadable}; transformNormal={transformValuesNormal}; {renderPointers}";
+
+        return new GraphicsInfo(
+            graphicsAddress,
+            handleAddress,
+            path,
+            category,
+            visible,
+            transform,
+            usable,
+            loadState,
+            isVisible,
+            transformReadable,
+            transformValuesNormal,
+            position,
+            rotation,
+            scale,
+            renderPointers,
+            cachedMatricesAddress,
+            stainOrBgChangeDataAddress,
+            cachedTransformAddress,
+            animationDataAddress,
+            safetyDump);
     }
 
     private static string ReadColliderAddress(BgPartsLayoutInstance* bgPart)
@@ -426,8 +718,83 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
     private static Vector3 NormalizeScale(Vector3 scale)
         => scale.LengthSquared() < 0.0001f ? Vector3.One : scale;
 
+    private static bool IsTransformNormal(Vector3 position, Quaternion rotation, Vector3 scale)
+        => IsVectorNormal(position)
+            && IsQuaternionNormal(rotation)
+            && IsVectorNormal(scale)
+            && Math.Abs(scale.X) > 0.0001f
+            && Math.Abs(scale.Y) > 0.0001f
+            && Math.Abs(scale.Z) > 0.0001f;
+
+    private static bool IsVectorNormal(Vector3 value)
+        => float.IsFinite(value.X)
+            && float.IsFinite(value.Y)
+            && float.IsFinite(value.Z)
+            && Math.Abs(value.X) < MaxReasonableCoordinate
+            && Math.Abs(value.Y) < MaxReasonableCoordinate
+            && Math.Abs(value.Z) < MaxReasonableCoordinate;
+
+    private static bool IsQuaternionNormal(Quaternion value)
+        => float.IsFinite(value.X)
+            && float.IsFinite(value.Y)
+            && float.IsFinite(value.Z)
+            && float.IsFinite(value.W)
+            && value.LengthSquared() is > 0.0001f and < 10f;
+
     private static string FirstNonEmpty(params string[] values)
         => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
+
+    private static bool TryGetCategoryForPath(string path, out ResourceCategory category)
+    {
+        path = path.Trim();
+        if (path.StartsWith("bgcommon/", StringComparison.OrdinalIgnoreCase))
+        {
+            category = ResourceCategory.BgCommon;
+            return true;
+        }
+
+        if (path.StartsWith("bg/", StringComparison.OrdinalIgnoreCase))
+        {
+            category = ResourceCategory.Bg;
+            return true;
+        }
+
+        category = default;
+        return false;
+    }
+
+    private static string FormatCategory(ResourceCategory category)
+        => $"{category} ({(int)category})";
+
+    private static ModelRisk ClassifyModelRisk(string path)
+    {
+        var normalized = path.Replace('\\', '/').ToLowerInvariant();
+        var fileName = normalized.Split('/').LastOrDefault() ?? normalized;
+        if (string.IsNullOrWhiteSpace(normalized))
+            return new ModelRisk(ModelRiskLevel.Static, "StaticOk", "未提供 target path，按普通静态模型处理。");
+
+        if (normalized.Contains("/vfx/", StringComparison.Ordinal)
+            || normalized.Contains("/light/", StringComparison.Ordinal)
+            || normalized.Contains("/shared/", StringComparison.Ordinal)
+            || normalized.Contains("/evt/", StringComparison.Ordinal))
+        {
+            return new ModelRisk(ModelRiskLevel.UnsafeComplex, "UnsafeComplexModel", "路径属于 vfx/light/shared/evt 类资源，可能依赖额外 layout controller。");
+        }
+
+        if (normalized.Contains("/twn/", StringComparison.Ordinal)
+            && (fileName.Contains("scr", StringComparison.Ordinal)
+                || fileName.Contains("screen", StringComparison.Ordinal)
+                || fileName.Contains("monitor", StringComparison.Ordinal)
+                || fileName.Contains("ad", StringComparison.Ordinal)))
+        {
+            return new ModelRisk(ModelRiskLevel.UnsafeComplex, "UnsafeComplexModel", "城镇动态屏幕/广告类资源 recreate 后 transform 写入风险高，已软禁用自动写入。");
+        }
+
+        if (normalized.Contains("/aet/", StringComparison.Ordinal))
+            return new ModelRisk(ModelRiskLevel.AnimatedStaticOnly, "AnimatedStaticOnly", "Aetheryte/动画类模型可能只显示静态外观，动画暂未接入。");
+
+        return new ModelRisk(ModelRiskLevel.Static, "StaticOk", "普通 bg/bgcommon 静态模型路径。");
+    }
 
     private static string SafeRead(Func<string> read)
     {
@@ -444,13 +811,60 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
     private static string FormatVector(Vector3 vector)
         => $"X {vector.X:F2}, Y {vector.Y:F2}, Z {vector.Z:F2}";
 
+    private enum ModelRiskLevel
+    {
+        Static,
+        AnimatedStaticOnly,
+        UnsafeComplex,
+    }
+
+    private readonly record struct ModelRisk(ModelRiskLevel Level, string Status, string Reason);
+
     private readonly record struct GraphicsInfo(
         string GraphicsObjectAddress,
         string ModelResourceHandleAddress,
         string Path,
+        string Category,
         string Visible,
         string Transform,
-        bool IsUsable);
+        bool IsUsable,
+        int LoadState,
+        bool IsVisible,
+        bool TransformReadable,
+        bool TransformValuesNormal,
+        Vector3 Position,
+        Quaternion Rotation,
+        Vector3 Scale,
+        string RenderPointers,
+        string CachedMatricesAddress,
+        string StainOrBgChangeDataAddress,
+        string CachedTransformAddress,
+        string AnimationDataAddress,
+        string SafetyDump)
+    {
+        public static GraphicsInfo Empty(string reason)
+            => new(
+                "0x0",
+                "0x0",
+                string.Empty,
+                "Unknown",
+                "False",
+                reason,
+                false,
+                -1,
+                false,
+                false,
+                false,
+                Vector3.Zero,
+                Quaternion.Identity,
+                Vector3.One,
+                string.Empty,
+                "0x0",
+                "0x0",
+                "0x0",
+                "0x0",
+                reason);
+    }
 
     private sealed class RecreatePathPin(GCHandle bufferHandle, nint pathPointerStorage) : IDisposable
     {

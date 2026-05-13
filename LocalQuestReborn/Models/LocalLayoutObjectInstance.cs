@@ -15,11 +15,25 @@ public sealed class LocalLayoutObjectInstance
 
     public string TemplateSourceSlotAddress { get; set; } = string.Empty;
 
+    public string TemplateResourcePath { get; set; } = string.Empty;
+
     public string SourceResourcePath { get; set; } = string.Empty;
 
     public string OriginalResourcePath { get; set; } = string.Empty;
 
+    public string OriginalSlotResourcePath
+    {
+        get => this.OriginalResourcePath;
+        set => this.OriginalResourcePath = value;
+    }
+
     public string CurrentResourcePath { get; set; } = string.Empty;
+
+    public string CurrentModelPath
+    {
+        get => this.CurrentResourcePath;
+        set => this.CurrentResourcePath = value;
+    }
 
     public string CustomModelPath { get; set; } = string.Empty;
 
@@ -102,6 +116,38 @@ public sealed class LocalLayoutObjectInstance
     public string LastModelOverrideResult { get; set; } = string.Empty;
 
     public string LastModelOverrideError { get; set; } = string.Empty;
+
+    public string ApplyMdlStatus { get; set; } = "未应用";
+
+    public string ApplyMdlError { get; set; } = string.Empty;
+
+    public string ModelApplyStatus { get; set; } = string.Empty;
+
+    public string ComplexModelRisk { get; set; } = string.Empty;
+
+    public string ComplexModelRiskReason { get; set; } = string.Empty;
+
+    public bool PendingRecreate { get; set; }
+
+    public bool PendingVisualTransform { get; set; }
+
+    public int PendingVisualTransformFrameWait { get; set; }
+
+    public string PendingVisualTransformResult { get; set; } = string.Empty;
+
+    public string GraphicsSafetyDump { get; set; } = string.Empty;
+
+    public string AnimationCapabilityDump { get; set; } = string.Empty;
+
+    public string RecreateAfterCachedMatrices { get; set; } = string.Empty;
+
+    public string RecreateAfterStainOrBgChangeData { get; set; } = string.Empty;
+
+    public string RecreateAfterCachedTransform { get; set; } = string.Empty;
+
+    public string RecreateAfterAnimationData { get; set; } = string.Empty;
+
+    public string RestoreStatus { get; set; } = string.Empty;
 
     public string BeforeModelPath { get; set; } = string.Empty;
 
@@ -243,6 +289,12 @@ public sealed class LocalLayoutObjectInstance
     public string CollisionAfterColliderType { get; set; } = string.Empty;
 
     public string CollisionAfterSecondaryPath { get; set; } = string.Empty;
+
+    public bool CollisionApplied { get; set; }
+
+    public string CollisionError { get; set; } = string.Empty;
+
+    public string CollisionSourceResolveResult { get; set; } = string.Empty;
 
     public string CollisionExperimentLastResult { get; set; } = string.Empty;
 

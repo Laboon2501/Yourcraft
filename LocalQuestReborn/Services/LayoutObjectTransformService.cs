@@ -54,6 +54,11 @@ public sealed unsafe class LayoutObjectTransformService
             reason = "实例已失效。";
         else if (instance.IsRestored)
             reason = "实例已恢复。";
+        else if (instance.PendingVisualTransform)
+            reason = $"recreate 后 VisualOnly transform 仍在等待安全写入：{instance.PendingVisualTransformResult}";
+        else if (string.Equals(instance.ModelApplyStatus, "UnsafeComplexModel", StringComparison.Ordinal)
+            && !string.IsNullOrWhiteSpace(instance.TransformWriteDisabledReason))
+            reason = instance.TransformWriteDisabledReason;
         else if (instance.IsRenderInvalid)
             reason = string.IsNullOrWhiteSpace(instance.TransformWriteDisabledReason)
                 ? "当前实例 render 已失效，不能再写 Graphics.Scene.Object transform。"
@@ -97,7 +102,7 @@ public sealed unsafe class LayoutObjectTransformService
                 return "实例 render 已失效：ModelResourceHandle=null。";
             }
 
-            if (bg->ModelResourceHandle->LoadState < 7)
+            if (bg->ModelResourceHandle->LoadState != 7)
             {
                 instance.IsRenderInvalid = true;
                 return $"实例 render 未就绪：LoadState={bg->ModelResourceHandle->LoadState}。";
@@ -108,6 +113,12 @@ public sealed unsafe class LayoutObjectTransformService
             {
                 instance.IsRenderInvalid = true;
                 return "实例 render 已失效：readback transform 失败。";
+            }
+
+            if (!IsTransformNormal(readback.Value.Position, readback.Value.Rotation, readback.Value.Scale))
+            {
+                instance.IsRenderInvalid = true;
+                return $"实例 transform 读回数值异常，禁止写入：{FormatSceneSnapshot(readback.Value)}";
             }
 
             return string.Empty;
@@ -379,6 +390,29 @@ public sealed unsafe class LayoutObjectTransformService
 
     private static string FormatVector(Vector3 vector)
         => $"X {vector.X:F2}, Y {vector.Y:F2}, Z {vector.Z:F2}";
+
+    private static bool IsTransformNormal(Vector3 position, Quaternion rotation, Vector3 scale)
+        => IsVectorNormal(position)
+            && IsQuaternionNormal(rotation)
+            && IsVectorNormal(scale)
+            && Math.Abs(scale.X) > 0.0001f
+            && Math.Abs(scale.Y) > 0.0001f
+            && Math.Abs(scale.Z) > 0.0001f;
+
+    private static bool IsVectorNormal(Vector3 value)
+        => float.IsFinite(value.X)
+            && float.IsFinite(value.Y)
+            && float.IsFinite(value.Z)
+            && Math.Abs(value.X) < 1_000_000f
+            && Math.Abs(value.Y) < 1_000_000f
+            && Math.Abs(value.Z) < 1_000_000f;
+
+    private static bool IsQuaternionNormal(Quaternion value)
+        => float.IsFinite(value.X)
+            && float.IsFinite(value.Y)
+            && float.IsFinite(value.Z)
+            && float.IsFinite(value.W)
+            && value.LengthSquared() is > 0.0001f and < 10f;
 
     private readonly record struct SceneTransformSnapshot(Vector3 Position, Quaternion Rotation, Vector3 Scale, bool IsTransformChanged);
 

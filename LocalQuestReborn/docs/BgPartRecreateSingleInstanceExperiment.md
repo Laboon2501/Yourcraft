@@ -8,8 +8,8 @@ v8.2 只新增 Debug-only 高风险实验入口。默认禁用，必须同时满
 - 已选中一个 `LocalLayoutObjectInstance`
 - 显式启用 BgPart recreate 实验
 - 勾选二次确认
-- target path 为 `bg/...mdl`
-- 当前资源 category 为 `Bg`
+- target path 为 `bg/...mdl` 或 `bgcommon/...mdl`
+- 当前资源 category 仅记录，不再强制等于 `Bg`
 
 该路径不会接入创建、删除、恢复全部或批量复制。
 

@@ -62,6 +62,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly DrawObjectUpdateDirtyProbeService drawObjectUpdateDirtyProbe;
     private readonly GraphicsSceneObjectTransformService graphicsSceneObjectTransform;
     private readonly BgPartCollisionSourceProbeService bgPartCollisionSourceProbe;
+    private readonly AnimatedBgPartControllerProbeService animatedBgPartControllerProbe;
     private readonly MeddleStyleSceneProbeService meddleSceneProbe;
     private readonly GameNpcCatalogService gameNpcCatalog;
     private readonly GameNpcAppearanceResolver gameNpcAppearanceResolver;
@@ -133,11 +134,12 @@ public sealed class Plugin : IDalamudPlugin
         this.drawObjectUpdateDirtyProbe = new DrawObjectUpdateDirtyProbeService();
         this.graphicsSceneObjectTransform = new GraphicsSceneObjectTransformService(this.bgPartVisualProbe);
         this.bgPartCollisionSourceProbe = new BgPartCollisionSourceProbeService();
+        this.animatedBgPartControllerProbe = new AnimatedBgPartControllerProbeService();
         this.meddleSceneProbe = new MeddleStyleSceneProbeService(objectTable, log);
         this.glamourerDesignCatalog = new GlamourerDesignCatalogService(pluginInterface, log);
         this.lastLayoutObjectTerritoryType = clientState.TerritoryType;
 
-        this.mainWindow = new MainWindow(this.configuration, this.database, this.runtime, this.experimentalNpc, this.realNpcSpawn, this.propRuntime, this.layoutProbe, this.layoutTransform, this.layoutClone, this.layerDump, this.localLayoutObjects, this.bgPartVisualProbe, this.rotationMatrixExperiment, this.bgPartVisualRescue, this.visualOnlyRotationDeepProbe, this.drawObjectUpdateDirtyProbe, this.graphicsSceneObjectTransform, this.bgPartCollisionSourceProbe, this.meddleSceneProbe, this.gameNpcCatalog, this.gameNpcAppearanceResolver, this.glamourerDesignCatalog, this.Reload);
+        this.mainWindow = new MainWindow(this.configuration, this.database, this.runtime, this.experimentalNpc, this.realNpcSpawn, this.propRuntime, this.layoutProbe, this.layoutTransform, this.layoutClone, this.layerDump, this.localLayoutObjects, this.bgPartVisualProbe, this.rotationMatrixExperiment, this.bgPartVisualRescue, this.visualOnlyRotationDeepProbe, this.drawObjectUpdateDirtyProbe, this.graphicsSceneObjectTransform, this.bgPartCollisionSourceProbe, this.animatedBgPartControllerProbe, this.meddleSceneProbe, this.gameNpcCatalog, this.gameNpcAppearanceResolver, this.glamourerDesignCatalog, this.Reload);
 
         this.windowSystem.AddWindow(this.mainWindow);
 
@@ -224,6 +226,8 @@ public sealed class Plugin : IDalamudPlugin
     {
         this.runtime.Update();
         this.realNpcSpawn.Update();
+        this.localLayoutObjects.Update();
+        this.animatedBgPartControllerProbe.Update();
         if (this.runtime.TerritoryType != this.lastLayoutObjectTerritoryType)
         {
             this.localLayoutObjects.RestoreAllAndClear();
