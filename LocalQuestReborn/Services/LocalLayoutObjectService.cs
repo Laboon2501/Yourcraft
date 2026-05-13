@@ -15,6 +15,8 @@ public sealed unsafe class LocalLayoutObjectService
 
     private readonly LayoutObjectTransformService transformService = new();
     private readonly BgObjectModelOverrideService modelOverrideService = new();
+    private readonly BgPartRecreateExperimentService recreateExperimentService = new();
+    private readonly BgPartCollisionExperimentService collisionExperimentService = new();
     private readonly List<LocalLayoutObjectInstance> instances = [];
     private readonly Dictionary<ulong, LocalLayoutObjectInstance> occupiedSlots = [];
 
@@ -32,6 +34,10 @@ public sealed unsafe class LocalLayoutObjectService
     public string LastStatus { get; private set; } = "尚未创建本地场景物体。";
 
     public string LastModelOverrideStatus => this.modelOverrideService.LastResult;
+
+    public string LastRecreateExperimentStatus => this.recreateExperimentService.LastResult;
+
+    public string LastCollisionExperimentStatus => this.collisionExperimentService.LastResult;
 
     public bool IsSlotOccupied(string slotAddress)
     {
@@ -400,6 +406,135 @@ public sealed unsafe class LocalLayoutObjectService
         return success;
     }
 
+    public bool ExecuteModelRefreshStep(string id, string stepName)
+    {
+        var instance = this.GetById(id);
+        if (instance == null)
+            return false;
+
+        var success = this.modelOverrideService.ExecuteRefreshStep(instance, stepName);
+        this.LastStatus = this.modelOverrideService.LastResult;
+        return success;
+    }
+
+    public bool ApplyModelOverrideWithRefreshChain(string id, string modelPath, string chainName)
+    {
+        var instance = this.GetById(id);
+        if (instance == null)
+            return false;
+
+        var success = this.modelOverrideService.ApplyModelWithRefreshChain(instance, modelPath, chainName);
+        this.LastStatus = this.modelOverrideService.LastResult;
+        return success;
+    }
+
+    public bool ReapplyCurrentModelPath(string id)
+    {
+        var instance = this.GetById(id);
+        if (instance == null)
+            return false;
+
+        var currentPath = FirstNonEmpty(instance.AfterModelPath, instance.CurrentResourcePath, instance.SourceResourcePath);
+        var success = this.modelOverrideService.ApplyModel(instance, currentPath);
+        this.LastStatus = this.modelOverrideService.LastResult;
+        return success;
+    }
+
+    public void RecordLiveReloadCandidate(string id, string candidateName)
+    {
+        var instance = this.GetById(id);
+        if (instance == null)
+            return;
+
+        instance.LastModelOverrideResult = $"Live reload 候选入口已记录，未调用 native：{candidateName}";
+        instance.LastModelOverrideError = "v7.8 只做取证按钮，不执行单对象 reload/reinitialize。";
+        this.LastStatus = instance.LastModelOverrideResult;
+    }
+
+    public bool SaveRecreateSnapshot(string id, string targetPath)
+    {
+        var instance = this.GetById(id);
+        if (instance == null)
+            return false;
+
+        var success = this.recreateExperimentService.SaveSnapshot(instance, targetPath);
+        this.LastStatus = this.recreateExperimentService.LastResult;
+        return success;
+    }
+
+    public bool ExecuteRecreateExperiment(string id, string targetPath, bool unsafeEnabled, bool experimentEnabled, bool confirmed)
+    {
+        var instance = this.GetById(id);
+        if (instance == null)
+            return false;
+
+        var success = this.recreateExperimentService.ExecuteDestroyCreate(instance, targetPath, unsafeEnabled, experimentEnabled, confirmed);
+        this.LastStatus = this.recreateExperimentService.LastResult;
+        return success;
+    }
+
+    public string GetRecreateExperimentBlockReason(string id, string targetPath, bool unsafeEnabled, bool experimentEnabled, bool confirmed)
+    {
+        var instance = this.GetById(id);
+        return this.recreateExperimentService.GetExecuteBlockReason(instance, targetPath, unsafeEnabled, experimentEnabled, confirmed);
+    }
+
+    public bool CaptureCollisionSource(string id, LayoutProbeInstance? source)
+    {
+        var instance = this.GetById(id);
+        if (instance == null)
+            return false;
+
+        var success = this.collisionExperimentService.CaptureSource(instance, source);
+        this.LastStatus = this.collisionExperimentService.LastResult;
+        return success;
+    }
+
+    public bool SaveCollisionSnapshot(string id)
+    {
+        var instance = this.GetById(id);
+        if (instance == null)
+            return false;
+
+        var success = this.collisionExperimentService.SaveSnapshot(instance);
+        this.LastStatus = this.collisionExperimentService.LastResult;
+        return success;
+    }
+
+    public bool ApplyCollisionSource(string id, bool unsafeEnabled, bool fullLayoutConfirmed, bool confirmed)
+    {
+        var instance = this.GetById(id);
+        if (instance == null)
+            return false;
+
+        var success = this.collisionExperimentService.ApplySourceCollision(instance, unsafeEnabled, fullLayoutConfirmed, confirmed);
+        this.LastStatus = this.collisionExperimentService.LastResult;
+        return success;
+    }
+
+    public bool RestoreCollisionSource(string id, bool unsafeEnabled, bool fullLayoutConfirmed, bool confirmed)
+    {
+        var instance = this.GetById(id);
+        if (instance == null)
+            return false;
+
+        var success = this.collisionExperimentService.RestoreCollision(instance, unsafeEnabled, fullLayoutConfirmed, confirmed);
+        this.LastStatus = this.collisionExperimentService.LastResult;
+        return success;
+    }
+
+    public string GetApplyCollisionSourceBlockReason(string id, bool unsafeEnabled, bool fullLayoutConfirmed, bool confirmed)
+    {
+        var instance = this.GetById(id);
+        return this.collisionExperimentService.GetApplyBlockReason(instance, unsafeEnabled, fullLayoutConfirmed, confirmed);
+    }
+
+    public string GetRestoreCollisionSourceBlockReason(string id, bool unsafeEnabled, bool fullLayoutConfirmed, bool confirmed)
+    {
+        var instance = this.GetById(id);
+        return this.collisionExperimentService.GetRestoreBlockReason(instance, unsafeEnabled, fullLayoutConfirmed, confirmed);
+    }
+
     public void RestoreOriginal(string id)
     {
         var instance = this.GetById(id);
@@ -590,6 +725,21 @@ public sealed unsafe class LocalLayoutObjectService
 
     private void RestoreOriginal(LocalLayoutObjectInstance instance, bool removeAfterRestore)
     {
+        if (instance.IsRenderInvalid)
+        {
+            instance.IsOccupied = false;
+            instance.IsRestored = true;
+            instance.IsInvalid = true;
+            instance.LastError = "实例 render 已失效，无法安全恢复，请切图/重载地图恢复。";
+            instance.TransformWriteDisabledReason = instance.LastError;
+            if (TryNormalizeSlotAddress(instance.OccupiedSlotAddress, out var invalidSlotAddress))
+                this.occupiedSlots.Remove(invalidSlotAddress);
+            if (removeAfterRestore)
+                this.instances.Remove(instance);
+            this.LastStatus = instance.LastError;
+            return;
+        }
+
         if (instance.IsDuplicate)
         {
             instance.LastError = "重复 slot 实例不参与恢复，避免覆盖原始 transform。";
@@ -941,6 +1091,9 @@ public sealed unsafe class LocalLayoutObjectService
 
     private static string FormatVector(Vector3 vector)
         => $"X {vector.X:F2}, Y {vector.Y:F2}, Z {vector.Z:F2}";
+
+    private static string FirstNonEmpty(params string[] values)
+        => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
 
     private readonly record struct LayoutTransformSnapshot(Vector3 Position, Quaternion Rotation, Vector3 Scale);
 

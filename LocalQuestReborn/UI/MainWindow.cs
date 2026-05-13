@@ -1,4 +1,4 @@
-using Dalamud.Bindings.ImGui;
+﻿using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Windowing;
 using LocalQuestReborn.Models;
 using LocalQuestReborn.Services;
@@ -15,6 +15,7 @@ public sealed class MainWindow : Window
     private readonly LayoutProbeService layoutProbe;
     private readonly LayerDumpService layerDump;
     private readonly LocalLayoutObjectService localLayoutObjects;
+    private readonly BgPartCollisionSourceProbeService bgPartCollisionSourceProbe;
     private readonly GameNpcCatalogService gameNpcCatalog;
     private readonly GlamourerDesignCatalogService glamourerDesignCatalog;
     private readonly Action reloadAction;
@@ -28,9 +29,12 @@ public sealed class MainWindow : Window
     private bool localLayoutFullCollisionMode;
     private bool confirmFullLayoutCollisionMode;
     private bool allowDifferentResourcePathSlots;
-    private bool confirmSingleSetModelRetry;
+    private bool enableBgPartRecreateExperiment;
+    private bool confirmBgPartRecreateExperiment;
+    private bool confirmBgPartCollisionSourceExperiment;
     private int layoutCopyCount = 1;
     private float layoutCopySpacing = 2f;
+    private string collisionProbeTargetMdlPath = string.Empty;
 
     public MainWindow(
         Configuration configuration,
@@ -50,6 +54,7 @@ public sealed class MainWindow : Window
         VisualOnlyRotationDeepProbeService visualOnlyRotationDeepProbe,
         DrawObjectUpdateDirtyProbeService drawObjectUpdateDirtyProbe,
         GraphicsSceneObjectTransformService graphicsSceneObjectTransform,
+        BgPartCollisionSourceProbeService bgPartCollisionSourceProbe,
         MeddleStyleSceneProbeService meddleSceneProbe,
         GameNpcCatalogService gameNpcCatalog,
         GameNpcAppearanceResolver gameNpcAppearanceResolver,
@@ -64,6 +69,7 @@ public sealed class MainWindow : Window
         this.layoutProbe = layoutProbe;
         this.layerDump = layerDump;
         this.localLayoutObjects = localLayoutObjects;
+        this.bgPartCollisionSourceProbe = bgPartCollisionSourceProbe;
         this.gameNpcCatalog = gameNpcCatalog;
         this.glamourerDesignCatalog = glamourerDesignCatalog;
         this.reloadAction = reloadAction;
@@ -578,6 +584,8 @@ public sealed class MainWindow : Window
         if (ImGui.InputFloat("Scale Y", ref editScale.Y)) selected.CurrentScale = Vector3.Max(editScale, new Vector3(0.01f));
         if (ImGui.InputFloat("Scale Z", ref editScale.Z)) selected.CurrentScale = Vector3.Max(editScale, new Vector3(0.01f));
         EditString("custom mdl path", selected.CustomModelPath, 512, value => selected.CustomModelPath = value);
+        ImGui.TextWrapped($"render invalid：{selected.IsRenderInvalid}");
+        ImGui.TextWrapped($"transform disabled reason：{selected.TransformWriteDisabledReason}");
         ImGui.TextWrapped($"model result：{selected.LastModelOverrideResult}");
         ImGui.TextWrapped($"model error：{(string.IsNullOrWhiteSpace(selected.LastModelOverrideError) ? "无" : selected.LastModelOverrideError)}");
         ImGui.TextWrapped($"before model path：{selected.BeforeModelPath}");
@@ -600,7 +608,9 @@ public sealed class MainWindow : Window
         ImGui.TextColored(new Vector4(1f, 0.35f, 0.25f, 1f), setModelPausedMessage);
         ImGui.TextWrapped("当前只保留 mdl path 输入框、modelResourceHandle 只读 Dump 和结果记录；创建、删除、恢复全部、批量复制都不会调用 SetModel。");
 
-        var disabled = !this.realNpcSpawn.EnableUnsafeNativeWrites || selected.IsDuplicate || selected.IsRestored || fullLayoutNeedsConfirmation;
+        var disabled = !this.realNpcSpawn.EnableUnsafeNativeWrites || selected.IsDuplicate || selected.IsRestored || selected.IsRenderInvalid || fullLayoutNeedsConfirmation;
+        if (selected.IsRenderInvalid)
+            ImGui.TextColored(new Vector4(1f, 0.35f, 0.25f, 1f), "当前实例 render 已失效，不能再写 Graphics.Scene.Object transform。");
         ImGui.BeginDisabled(disabled);
         if (ImGui.Button("应用 transform")) this.localLayoutObjects.ApplyVisualTransform(selected.Id, selected.CurrentPosition, selected.CurrentRotationEuler, selected.CurrentScale);
         ImGui.SameLine();
@@ -717,6 +727,142 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"Layer status：{this.layerDump.LastStatus}");
         ImGui.TextWrapped($"Local object status：{this.localLayoutObjects.LastStatus}");
         this.DrawSingleSetModelRetryDebug();
+        this.DrawBgPartRecreateExperimentDebug();
+        this.DrawBgPartCollisionSourceProbeDebug();
+    }
+
+    private void DrawBgPartCollisionSourceProbeDebug()
+    {
+        if (!ImGui.CollapsingHeader("BgPart collision source / path table 取证（只读）"))
+            return;
+
+        var candidate = this.GetSelectedBgPart();
+        var selectedInstance = string.IsNullOrWhiteSpace(this.selectedLocalLayoutObjectId)
+            ? null
+            : this.localLayoutObjects.GetById(this.selectedLocalLayoutObjectId);
+
+        ImGui.TextWrapped("只读：读取 CollisionMeshPathCrc / AnalyticShapeDataCrc / GetPrimaryPath / GetSecondaryPath / LayoutManager.CrcToPath。不会调用 CreateSecondary/DestroySecondary，也不会写 CRC。");
+        ImGui.TextWrapped(candidate == null
+            ? "当前 BgPart 候选：无"
+            : $"当前 BgPart 候选：{candidate.ResourcePath} | {candidate.Address}");
+
+        if (string.IsNullOrWhiteSpace(this.collisionProbeTargetMdlPath))
+            this.collisionProbeTargetMdlPath = selectedInstance?.CustomModelPath ?? candidate?.ResourcePath ?? string.Empty;
+
+        EditString("target mdl path（用于推断同名 .pcb）", this.collisionProbeTargetMdlPath, 512, value => this.collisionProbeTargetMdlPath = value);
+        if (selectedInstance != null)
+        {
+            if (ImGui.Button("使用选中实例 custom mdl"))
+                this.collisionProbeTargetMdlPath = selectedInstance.CustomModelPath;
+            ImGui.SameLine();
+        }
+
+        ImGui.BeginDisabled(candidate == null);
+        if (ImGui.Button("Dump 当前 BgPart collision source / path table"))
+            this.bgPartCollisionSourceProbe.Probe(candidate, this.FilteredBgParts(), this.collisionProbeTargetMdlPath);
+        ImGui.EndDisabled();
+
+        ImGui.TextWrapped($"状态：{this.bgPartCollisionSourceProbe.LastStatus}");
+        if (ImGui.CollapsingHeader("当前 BgPart collision source"))
+            ImGui.TextWrapped(this.bgPartCollisionSourceProbe.SelectedDump);
+        if (ImGui.CollapsingHeader("target collision 候选"))
+            ImGui.TextWrapped(this.bgPartCollisionSourceProbe.TargetCandidateDump);
+        if (ImGui.CollapsingHeader("多个 BgPart 对比"))
+            ImGui.TextWrapped(this.bgPartCollisionSourceProbe.ComparisonDump);
+        if (ImGui.CollapsingHeader("Layout path table 预览"))
+            ImGui.TextWrapped(this.bgPartCollisionSourceProbe.PathTableDump);
+
+        this.DrawBgPartCollisionSourceExperimentDebug(candidate);
+    }
+
+    private void DrawBgPartCollisionSourceExperimentDebug(LayoutProbeInstance? candidate)
+    {
+        var selected = string.IsNullOrWhiteSpace(this.selectedLocalLayoutObjectId)
+            ? null
+            : this.localLayoutObjects.GetById(this.selectedLocalLayoutObjectId);
+
+        ImGui.Separator();
+        ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "FullLayout target collision source 单实例实验（高风险）");
+        ImGui.TextWrapped("用途：把目标 BgPart 的 collision source 字段复制到当前本地实例，然后执行 DestroySecondary -> CreateSecondary。VisualOnly 禁止使用。");
+        ImGui.TextWrapped($"服务状态：{this.localLayoutObjects.LastCollisionExperimentStatus}");
+
+        if (selected == null)
+        {
+            ImGui.TextWrapped("请先在“本地场景物体”页选中一个 LocalLayoutObjectInstance。");
+            return;
+        }
+
+        ImGui.TextWrapped($"当前实例：{selected.Id}");
+        ImGui.TextWrapped($"实例 mode：{selected.TransformMode}");
+        ImGui.TextWrapped($"source resourcePath：{selected.CollisionSourceResourcePath}");
+        ImGui.TextWrapped($"source address：{selected.CollisionSourceBgPartAddress}");
+        ImGui.TextWrapped($"source ColliderType：{selected.CollisionSourceColliderType}");
+        ImGui.TextWrapped($"source CollisionMeshPathCrc：0x{selected.CollisionSourceMeshPathCrc:X8}");
+        ImGui.TextWrapped($"source AnalyticShapeDataCrc：0x{selected.CollisionSourceAnalyticShapeDataCrc:X8}");
+        ImGui.TextWrapped($"source material low/high：id 0x{selected.CollisionSourceMaterialIdLow:X8}/0x{selected.CollisionSourceMaterialIdHigh:X8}, mask 0x{selected.CollisionSourceMaterialMaskLow:X8}/0x{selected.CollisionSourceMaterialMaskHigh:X8}");
+        ImGui.TextWrapped($"source secondary path：{selected.CollisionSourceSecondaryPath}");
+        ImGui.TextWrapped($"snapshot ColliderType：{selected.CollisionSnapshotColliderType}");
+        ImGui.TextWrapped($"snapshot mesh/analytic：0x{selected.CollisionSnapshotMeshPathCrc:X8} / 0x{selected.CollisionSnapshotAnalyticShapeDataCrc:X8}");
+        ImGui.TextWrapped($"snapshot collider：{selected.CollisionSnapshotColliderAddress}");
+        ImGui.TextWrapped($"after ColliderType：{selected.CollisionAfterColliderType}");
+        ImGui.TextWrapped($"after mesh/analytic：0x{selected.CollisionAfterMeshPathCrc:X8} / 0x{selected.CollisionAfterAnalyticShapeDataCrc:X8}");
+        ImGui.TextWrapped($"after collider：{selected.CollisionAfterColliderAddress}");
+        ImGui.TextWrapped($"after secondary path：{selected.CollisionAfterSecondaryPath}");
+        ImGui.TextWrapped($"result：{selected.CollisionExperimentLastResult}");
+        ImGui.TextWrapped($"error：{(string.IsNullOrWhiteSpace(selected.CollisionExperimentLastError) ? "无" : selected.CollisionExperimentLastError)}");
+
+        ImGui.BeginDisabled(candidate == null);
+        if (ImGui.Button("选择当前 BgPart 为 collision source") && candidate != null)
+            this.localLayoutObjects.CaptureCollisionSource(selected.Id, candidate);
+        ImGui.EndDisabled();
+        ImGui.SameLine();
+        if (ImGui.Button("保存当前实例 collision 快照"))
+            this.localLayoutObjects.SaveCollisionSnapshot(selected.Id);
+
+        var confirm = this.confirmBgPartCollisionSourceExperiment;
+        if (ImGui.Checkbox("我确认只对当前单实例执行 DestroySecondary -> CreateSecondary collision 实验", ref confirm))
+            this.confirmBgPartCollisionSourceExperiment = confirm;
+
+        var applyBlockReason = this.localLayoutObjects.GetApplyCollisionSourceBlockReason(
+            selected.Id,
+            this.realNpcSpawn.EnableUnsafeNativeWrites,
+            this.confirmFullLayoutCollisionMode,
+            this.confirmBgPartCollisionSourceExperiment);
+        if (!string.IsNullOrWhiteSpace(applyBlockReason))
+            ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), $"应用按钮禁用原因：{applyBlockReason}");
+
+        ImGui.BeginDisabled(!string.IsNullOrWhiteSpace(applyBlockReason));
+        if (ImGui.Button("应用 source collision 到当前实例（高风险）"))
+            this.localLayoutObjects.ApplyCollisionSource(
+                selected.Id,
+                this.realNpcSpawn.EnableUnsafeNativeWrites,
+                this.confirmFullLayoutCollisionMode,
+                this.confirmBgPartCollisionSourceExperiment);
+        ImGui.EndDisabled();
+
+        var restoreBlockReason = this.localLayoutObjects.GetRestoreCollisionSourceBlockReason(
+            selected.Id,
+            this.realNpcSpawn.EnableUnsafeNativeWrites,
+            this.confirmFullLayoutCollisionMode,
+            this.confirmBgPartCollisionSourceExperiment);
+        ImGui.SameLine();
+        ImGui.BeginDisabled(!string.IsNullOrWhiteSpace(restoreBlockReason));
+        if (ImGui.Button("恢复原 collision source（高风险）"))
+            this.localLayoutObjects.RestoreCollisionSource(
+                selected.Id,
+                this.realNpcSpawn.EnableUnsafeNativeWrites,
+                this.confirmFullLayoutCollisionMode,
+                this.confirmBgPartCollisionSourceExperiment);
+        ImGui.EndDisabled();
+        if (!string.IsNullOrWhiteSpace(restoreBlockReason))
+            ImGui.TextDisabled($"恢复按钮状态：{restoreBlockReason}");
+
+        if (ImGui.Button("人工确认：碰撞变成 target 碰撞")) selected.CollisionExperimentManualConfirmation = "碰撞变成 target 碰撞";
+        ImGui.SameLine();
+        if (ImGui.Button("人工确认：只影响当前实例")) selected.CollisionExperimentManualConfirmation = "只影响当前实例";
+        ImGui.SameLine();
+        if (ImGui.Button("人工确认：不稳定/异常")) selected.CollisionExperimentManualConfirmation = "不稳定/异常";
+        ImGui.TextWrapped($"人工记录：{(string.IsNullOrWhiteSpace(selected.CollisionExperimentManualConfirmation) ? "未记录" : selected.CollisionExperimentManualConfirmation)}");
     }
 
     private void DrawSingleSetModelRetryDebug()
@@ -734,7 +880,7 @@ public sealed class MainWindow : Window
             return;
         }
 
-        ImGui.TextColored(new Vector4(1f, 0.35f, 0.25f, 1f), "仅单实例手动实验。不会用于创建、删除、恢复全部或批量复制。");
+        ImGui.TextColored(new Vector4(1f, 0.35f, 0.25f, 1f), "SetModel 直接调用仍为高风险调试项；创建、删除、恢复全部、批量复制都不会调用 SetModel。");
         ImGui.TextWrapped($"实例：{selected.Id}");
         ImGui.TextWrapped($"GraphicsObject：{selected.GraphicsObjectAddress}");
         ImGui.TextWrapped($"before：{selected.BeforeModelPath}");
@@ -748,39 +894,154 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"last exception：{(string.IsNullOrWhiteSpace(selected.LastSetModelException) ? "无" : selected.LastSetModelException)}");
         ImGui.TextWrapped($"结果：{selected.LastModelOverrideResult}");
         ImGui.TextWrapped($"错误：{(string.IsNullOrWhiteSpace(selected.LastModelOverrideError) ? "无" : selected.LastModelOverrideError)}");
+        ImGui.TextWrapped($"bounds：{selected.ModelBoundsReadback}");
+        ImGui.TextWrapped($"before dump：{selected.BeforeModelResourceHandleDump}");
+        ImGui.TextWrapped($"after dump：{selected.AfterModelResourceHandleDump}");
+        ImGui.TextWrapped($"pointer diff：{selected.ModelPointerDiff}");
 
         EditString("Debug target mdl path", selected.CustomModelPath, 512, value => selected.CustomModelPath = value);
         if (ImGui.Button("刷新只读 ResourceHandle / category"))
             this.localLayoutObjects.RefreshModel(selected.Id);
 
-        var confirm = this.confirmSingleSetModelRetry;
-        if (ImGui.Checkbox("我确认单实例 SetModel 仍可能崩溃", ref confirm))
-            this.confirmSingleSetModelRetry = confirm;
+        ImGui.TextColored(new Vector4(1f, 0.35f, 0.25f, 1f), "CleanupRender 会导致模型消失并使实例 transform 写入不安全，已禁用。");
+        ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "UpdateCulling 必须在 bounds 已计算后调用，单独按钮已禁用。");
+        this.DrawModelRefreshStepButton(selected.Id, "UpdateMaterials()", "UpdateMaterials");
+        ImGui.SameLine();
+        this.DrawModelRefreshStepButton(selected.Id, "UpdateRender()", "UpdateRender");
+        ImGui.SameLine();
+        this.DrawModelRefreshStepButton(selected.Id, "UpdateTransforms(true)", "UpdateTransformsTrue");
+        this.DrawModelRefreshStepButton(selected.Id, "NotifyTransformChanged()", "NotifyTransformChanged");
+        ImGui.SameLine();
+        this.DrawModelRefreshStepButton(selected.Id, "IsTransformChanged=true", "SetIsTransformChangedTrue");
+        this.DrawModelRefreshStepButton(selected.Id, "ComputeSphereBounds()", "ComputeSphereBounds");
+        ImGui.SameLine();
+        this.DrawModelRefreshStepButton(selected.Id, "ComputeSphereBounds -> UpdateCulling", "ComputeSphereBoundsThenUpdateCulling");
+    }
 
-        var blockReason = this.localLayoutObjects.GetApplyModelBlockReason(
+    private void DrawBgPartRecreateExperimentDebug()
+    {
+        if (!ImGui.CollapsingHeader("BgPart recreate 单实例实验（Debug，默认禁用，高风险）"))
+            return;
+
+        var selected = string.IsNullOrWhiteSpace(this.selectedLocalLayoutObjectId)
+            ? null
+            : this.localLayoutObjects.GetById(this.selectedLocalLayoutObjectId);
+
+        if (selected == null)
+        {
+            ImGui.TextWrapped("请先在“本地场景物体”页选中一个 LocalLayoutObjectInstance。");
+            return;
+        }
+
+        ImGui.TextColored(new Vector4(1f, 0.35f, 0.25f, 1f), "此入口只用于单实例取证实验，不会接入创建、删除、恢复全部或批量流程。");
+        ImGui.TextWrapped("调用链：DestroyPrimary -> CreatePrimary(originalTransform, &targetPathPointer)。DestroyPrimary 内部会走 CleanupRender，失败时可能需要切图/重载地图恢复。");
+        ImGui.TextWrapped("禁止项：不调用 SetGraphics，不直接调用 BgObject.Create，不 memcpy，不批量，不碰 Collider。");
+        ImGui.TextWrapped($"Last recreate status：{this.localLayoutObjects.LastRecreateExperimentStatus}");
+        ImGui.TextWrapped($"实例：{selected.Id}");
+        ImGui.TextWrapped($"slot：{selected.OccupiedSlotAddress}");
+        ImGui.TextWrapped($"GraphicsObject：{selected.GraphicsObjectAddress}");
+        ImGui.TextWrapped($"当前 path：{selected.CurrentResourcePath}");
+        ImGui.TextWrapped($"target path：{selected.CustomModelPath}");
+        ImGui.TextWrapped($"transformMode：{selected.TransformMode}");
+        ImGui.TextWrapped($"collision mode：{(selected.TransformMode == LocalLayoutTransformMode.VisualOnly ? "VisualOnly，不移动 collider" : "FullLayoutWithCollision，允许模型和 collision 一起变化")}");
+        ImGui.TextWrapped($"render invalid：{selected.IsRenderInvalid}");
+        if (selected.IsRenderInvalid)
+            ImGui.TextColored(new Vector4(1f, 0.35f, 0.25f, 1f), "当前实例 render 已失效。transform 写入和 RestoreAll 写入会被保护跳过；请切图/重载地图恢复。");
+
+        EditString("Recreate target bg/...mdl", selected.CustomModelPath, 512, value => selected.CustomModelPath = value);
+
+        var enabled = this.enableBgPartRecreateExperiment;
+        if (ImGui.Checkbox("启用 BgPart recreate 高风险实验（默认关闭）", ref enabled))
+        {
+            this.enableBgPartRecreateExperiment = enabled;
+            if (!enabled)
+                this.confirmBgPartRecreateExperiment = false;
+        }
+
+        var confirm = this.confirmBgPartRecreateExperiment;
+        if (ImGui.Checkbox("我确认只对当前单实例执行 DestroyPrimary -> CreatePrimary，可能导致模型消失或需要切图恢复", ref confirm))
+            this.confirmBgPartRecreateExperiment = confirm;
+
+        if (selected.TransformMode == LocalLayoutTransformMode.FullLayoutWithCollision)
+        {
+            var confirmCollision = this.confirmFullLayoutCollisionMode;
+            if (ImGui.Checkbox("我确认 FullLayoutWithCollision recreate 允许模型和碰撞体一起变化", ref confirmCollision))
+                this.confirmFullLayoutCollisionMode = confirmCollision;
+        }
+
+        var blockReason = this.localLayoutObjects.GetRecreateExperimentBlockReason(
             selected.Id,
             selected.CustomModelPath,
             this.realNpcSpawn.EnableUnsafeNativeWrites,
-            this.confirmSingleSetModelRetry);
+            this.enableBgPartRecreateExperiment,
+            this.confirmBgPartRecreateExperiment);
+        if (string.IsNullOrWhiteSpace(blockReason)
+            && selected.TransformMode == LocalLayoutTransformMode.FullLayoutWithCollision
+            && !this.confirmFullLayoutCollisionMode)
+        {
+            blockReason = "FullLayoutWithCollision recreate 需要勾选“我确认启用危险碰撞模式”。";
+        }
 
         if (!string.IsNullOrWhiteSpace(blockReason))
             ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), $"按钮禁用原因：{blockReason}");
 
         ImGui.BeginDisabled(!string.IsNullOrWhiteSpace(blockReason));
-        if (ImGui.Button("单实例 SetModel 实验"))
-            this.localLayoutObjects.ApplyModelOverride(selected.Id, selected.CustomModelPath);
+        if (ImGui.Button("保存当前实例 recreate 快照"))
+            this.localLayoutObjects.SaveRecreateSnapshot(selected.Id, selected.CustomModelPath);
+        ImGui.SameLine();
+        if (ImGui.Button("DestroyPrimary -> CreatePrimary(target)"))
+            this.localLayoutObjects.ExecuteRecreateExperiment(
+                selected.Id,
+                selected.CustomModelPath,
+                this.realNpcSpawn.EnableUnsafeNativeWrites,
+                this.enableBgPartRecreateExperiment,
+                this.confirmBgPartRecreateExperiment);
         ImGui.EndDisabled();
 
-        if (ImGui.Button("人工确认：外观已变化")) selected.ManualVisualConfirmation = "外观已变化";
+        ImGui.Separator();
+        ImGui.TextWrapped("快照 / readback：");
+        ImGui.TextWrapped($"snapshot GraphicsObject：{selected.RecreateSnapshotGraphicsObject}");
+        ImGui.TextWrapped($"snapshot IndexInPool：{selected.RecreateSnapshotIndexInPool}");
+        ImGui.TextWrapped($"snapshot transformMode：{selected.RecreateSnapshotTransformMode}");
+        ImGui.TextWrapped($"snapshot transform：{selected.RecreateSnapshotTransform}");
+        ImGui.TextWrapped($"snapshot collider：{selected.RecreateSnapshotColliderAddress}");
+        ImGui.TextWrapped($"original path：{selected.RecreateSnapshotOriginalPath}");
+        ImGui.TextWrapped($"target path：{selected.RecreateSnapshotTargetPath}");
+        ImGui.TextWrapped($"snapshot ModelResourceHandle：{selected.RecreateSnapshotModelResourceHandle}");
+        ImGui.TextWrapped($"stable UTF8 buffer：{selected.RecreatePinnedPathAddress}");
+        ImGui.TextWrapped($"stable char** storage：{selected.RecreatePathPointerAddress}");
+        ImGui.TextWrapped($"after GraphicsObject：{selected.RecreateAfterGraphicsObject}");
+        ImGui.TextWrapped($"after ModelResourceHandle：{selected.RecreateAfterModelResourceHandle}");
+        ImGui.TextWrapped($"after visible：{selected.RecreateAfterVisible}");
+        ImGui.TextWrapped($"after transform：{selected.RecreateAfterTransform}");
+        ImGui.TextWrapped($"after collider：{selected.RecreateAfterColliderAddress}");
+        ImGui.TextWrapped($"layout restore：{selected.RecreateLayoutRestoreResult}");
+        ImGui.TextWrapped($"visual reapply：{selected.RecreateVisualReapplyResult}");
+        ImGui.TextWrapped($"collision mode result：{selected.RecreateCollisionModeResult}");
+        ImGui.TextWrapped($"result：{selected.RecreateLastResult}");
+        ImGui.TextWrapped($"error：{(string.IsNullOrWhiteSpace(selected.RecreateLastError) ? "无" : selected.RecreateLastError)}");
+
+        if (ImGui.Button("人工确认：外观已变化")) selected.RecreateManualConfirmation = "外观已变化";
         ImGui.SameLine();
-        if (ImGui.Button("人工确认：只影响当前实例")) selected.ManualVisualConfirmation = "只影响当前实例";
+        if (ImGui.Button("人工确认：仍未变化")) selected.RecreateManualConfirmation = "仍未变化";
         ImGui.SameLine();
-        if (ImGui.Button("人工确认：外观异常")) selected.ManualVisualConfirmation = "外观异常";
+        if (ImGui.Button("人工确认：模型消失")) selected.RecreateManualConfirmation = "模型消失";
         ImGui.SameLine();
-        if (ImGui.Button("人工确认：游戏不稳定")) selected.ManualVisualConfirmation = "游戏不稳定";
-        ImGui.TextWrapped($"人工记录：{(string.IsNullOrWhiteSpace(selected.ManualVisualConfirmation) ? "未记录" : selected.ManualVisualConfirmation)}");
+        if (ImGui.Button("人工确认：脚下仍无碰撞")) selected.RecreateManualConfirmation = "脚下仍无碰撞";
+        ImGui.SameLine();
+        if (ImGui.Button("人工确认：脚下出现碰撞")) selected.RecreateManualConfirmation = "脚下出现碰撞";
+        ImGui.SameLine();
+        if (ImGui.Button("人工确认：游戏不稳定")) selected.RecreateManualConfirmation = "游戏不稳定";
+        ImGui.TextWrapped($"人工记录：{(string.IsNullOrWhiteSpace(selected.RecreateManualConfirmation) ? "未记录" : selected.RecreateManualConfirmation)}");
     }
 
+    private void DrawModelRefreshStepButton(string instanceId, string label, string stepName)
+    {
+        ImGui.BeginDisabled(!this.realNpcSpawn.EnableUnsafeNativeWrites);
+        if (ImGui.Button(label))
+            this.localLayoutObjects.ExecuteModelRefreshStep(instanceId, stepName);
+        ImGui.EndDisabled();
+    }
     private IEnumerable<LayoutProbeInstance> FilteredBgParts()
     {
         var query = this.layoutProbe.Instances.Where(instance => string.Equals(instance.Type, "BgPart", StringComparison.Ordinal));
@@ -902,3 +1163,4 @@ public sealed class MainWindow : Window
     private static float DegreesToRadians(float degrees)
         => degrees * MathF.PI / 180f;
 }
+

@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Text.Json.Serialization;
 
 namespace LocalQuestReborn.Models;
 
@@ -84,6 +85,12 @@ public sealed class LocalLayoutObjectInstance
 
     public bool IsInvalid { get; set; }
 
+    public bool IsRenderInvalid { get; set; }
+
+    public bool ModelExperimentFailed { get; set; }
+
+    public string TransformWriteDisabledReason { get; set; } = string.Empty;
+
     public bool HasCollisionMoved { get; set; }
 
     public bool CanRestore { get; set; }
@@ -116,6 +123,14 @@ public sealed class LocalLayoutObjectInstance
 
     public string ModelResourceHandleDump { get; set; } = string.Empty;
 
+    public string BeforeModelResourceHandleDump { get; set; } = string.Empty;
+
+    public string AfterModelResourceHandleDump { get; set; } = string.Empty;
+
+    public string ModelPointerDiff { get; set; } = string.Empty;
+
+    public string ModelBoundsReadback { get; set; } = string.Empty;
+
     public string ModelResourceHandleVTable { get; set; } = string.Empty;
 
     public string ModelResourceHandleType { get; set; } = string.Empty;
@@ -135,6 +150,105 @@ public sealed class LocalLayoutObjectInstance
     public string SetModelSignatureReadback { get; set; } = string.Empty;
 
     public string ManualVisualConfirmation { get; set; } = string.Empty;
+
+    public string RecreateSnapshotGraphicsObject { get; set; } = string.Empty;
+
+    public int RecreateSnapshotIndexInPool { get; set; } = -1;
+
+    public string RecreateSnapshotTransform { get; set; } = string.Empty;
+
+    public string RecreateSnapshotTransformMode { get; set; } = string.Empty;
+
+    public string RecreateSnapshotColliderAddress { get; set; } = string.Empty;
+
+    public string RecreateSnapshotOriginalPath { get; set; } = string.Empty;
+
+    public string RecreateSnapshotTargetPath { get; set; } = string.Empty;
+
+    public string RecreateSnapshotModelResourceHandle { get; set; } = string.Empty;
+
+    public string RecreatePinnedPathAddress { get; set; } = string.Empty;
+
+    public string RecreatePathPointerAddress { get; set; } = string.Empty;
+
+    public string RecreateAfterGraphicsObject { get; set; } = string.Empty;
+
+    public string RecreateAfterModelResourceHandle { get; set; } = string.Empty;
+
+    public string RecreateAfterVisible { get; set; } = string.Empty;
+
+    public string RecreateAfterTransform { get; set; } = string.Empty;
+
+    public string RecreateAfterColliderAddress { get; set; } = string.Empty;
+
+    public string RecreateLayoutRestoreResult { get; set; } = string.Empty;
+
+    public string RecreateVisualReapplyResult { get; set; } = string.Empty;
+
+    public string RecreateCollisionModeResult { get; set; } = string.Empty;
+
+    public string RecreateLastResult { get; set; } = string.Empty;
+
+    public string RecreateLastError { get; set; } = string.Empty;
+
+    public string RecreateManualConfirmation { get; set; } = string.Empty;
+
+    [JsonIgnore]
+    public byte[] RecreateTargetPathBuffer { get; set; } = [];
+
+    public string CollisionSourceBgPartAddress { get; set; } = string.Empty;
+
+    public string CollisionSourceResourcePath { get; set; } = string.Empty;
+
+    public string CollisionSourceColliderType { get; set; } = string.Empty;
+
+    public uint CollisionSourceMeshPathCrc { get; set; }
+
+    public uint CollisionSourceAnalyticShapeDataCrc { get; set; }
+
+    public uint CollisionSourceMaterialIdLow { get; set; }
+
+    public uint CollisionSourceMaterialMaskLow { get; set; }
+
+    public uint CollisionSourceMaterialIdHigh { get; set; }
+
+    public uint CollisionSourceMaterialMaskHigh { get; set; }
+
+    public string CollisionSourceSecondaryPath { get; set; } = string.Empty;
+
+    public uint CollisionSnapshotMeshPathCrc { get; set; }
+
+    public uint CollisionSnapshotAnalyticShapeDataCrc { get; set; }
+
+    public uint CollisionSnapshotMaterialIdLow { get; set; }
+
+    public uint CollisionSnapshotMaterialMaskLow { get; set; }
+
+    public uint CollisionSnapshotMaterialIdHigh { get; set; }
+
+    public uint CollisionSnapshotMaterialMaskHigh { get; set; }
+
+    public string CollisionSnapshotColliderAddress { get; set; } = string.Empty;
+
+    public string CollisionSnapshotColliderType { get; set; } = string.Empty;
+
+    public string CollisionSnapshotSecondaryPath { get; set; } = string.Empty;
+
+    public string CollisionAfterColliderAddress { get; set; } = string.Empty;
+
+    public uint CollisionAfterMeshPathCrc { get; set; }
+
+    public uint CollisionAfterAnalyticShapeDataCrc { get; set; }
+
+    public string CollisionAfterColliderType { get; set; } = string.Empty;
+
+    public string CollisionAfterSecondaryPath { get; set; } = string.Empty;
+
+    public string CollisionExperimentLastResult { get; set; } = string.Empty;
+
+    public string CollisionExperimentLastError { get; set; } = string.Empty;
+
+    public string CollisionExperimentManualConfirmation { get; set; } = string.Empty;
 
     public string Notes { get; set; } = string.Empty;
 }

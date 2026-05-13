@@ -23,6 +23,9 @@ public sealed unsafe class LayoutObjectTransformService
 
     public bool ApplyTransform(LocalLayoutObjectInstance instance)
     {
+        if (!this.CanWriteTransform(instance, out var reason))
+            return this.Fail(instance, reason);
+
         return instance.TransformMode == LocalLayoutTransformMode.VisualOnly
             ? this.ApplyVisualOnly(instance)
             : this.ApplyFullLayout(instance);
@@ -30,9 +33,90 @@ public sealed unsafe class LayoutObjectTransformService
 
     public bool RestoreTransform(LocalLayoutObjectInstance instance)
     {
+        if (!this.CanWriteTransform(instance, out var reason))
+            return this.Fail(instance, reason);
+
         return instance.TransformMode == LocalLayoutTransformMode.VisualOnly
             ? this.RestoreVisualOnly(instance)
             : this.RestoreFullLayout(instance);
+    }
+
+    public bool CanWriteTransform(LocalLayoutObjectInstance? instance, out string reason)
+    {
+        reason = string.Empty;
+        if (instance == null)
+        {
+            reason = "未选中有效实例。";
+            return false;
+        }
+
+        if (instance.IsInvalid)
+            reason = "实例已失效。";
+        else if (instance.IsRestored)
+            reason = "实例已恢复。";
+        else if (instance.IsRenderInvalid)
+            reason = string.IsNullOrWhiteSpace(instance.TransformWriteDisabledReason)
+                ? "当前实例 render 已失效，不能再写 Graphics.Scene.Object transform。"
+                : instance.TransformWriteDisabledReason;
+        else if (instance.TransformMode == LocalLayoutTransformMode.VisualOnly)
+            reason = this.GetVisualOnlyBlockReason(instance);
+        else if (!TryGetPointer(instance.OccupiedSlotAddress, out var pointer) || pointer == null)
+            reason = $"slot 地址解析失败：{instance.OccupiedSlotAddress}";
+
+        if (string.IsNullOrWhiteSpace(reason))
+        {
+            instance.TransformWriteDisabledReason = string.Empty;
+            return true;
+        }
+
+        instance.TransformWriteDisabledReason = reason;
+        return false;
+    }
+
+    private string GetVisualOnlyBlockReason(LocalLayoutObjectInstance instance)
+    {
+        this.EnsureGraphicsObjectAddress(instance);
+        if (!TryParseAddress(instance.GraphicsObjectAddress, out var graphicsAddress) || graphicsAddress == 0)
+        {
+            instance.IsRenderInvalid = true;
+            return $"graphicsObjectAddress 无效：{instance.GraphicsObjectAddress}";
+        }
+
+        try
+        {
+            var bg = (SceneBgObject*)graphicsAddress;
+            if (!bg->IsVisible)
+            {
+                instance.IsRenderInvalid = true;
+                return "实例 render 已失效：visible=false。";
+            }
+
+            if (bg->ModelResourceHandle == null)
+            {
+                instance.IsRenderInvalid = true;
+                return "实例 render 已失效：ModelResourceHandle=null。";
+            }
+
+            if (bg->ModelResourceHandle->LoadState < 7)
+            {
+                instance.IsRenderInvalid = true;
+                return $"实例 render 未就绪：LoadState={bg->ModelResourceHandle->LoadState}。";
+            }
+
+            var readback = ReadSceneObjectTransform(graphicsAddress);
+            if (readback == null)
+            {
+                instance.IsRenderInvalid = true;
+                return "实例 render 已失效：readback transform 失败。";
+            }
+
+            return string.Empty;
+        }
+        catch (Exception ex)
+        {
+            instance.IsRenderInvalid = true;
+            return $"实例 render 检查失败：{ex.Message}";
+        }
     }
 
     private bool ApplyVisualOnly(LocalLayoutObjectInstance instance)
@@ -174,6 +258,7 @@ public sealed unsafe class LayoutObjectTransformService
     private bool Fail(LocalLayoutObjectInstance instance, string message)
     {
         instance.LastError = message;
+        instance.TransformWriteDisabledReason = message;
         this.LastResult = message;
         return false;
     }
