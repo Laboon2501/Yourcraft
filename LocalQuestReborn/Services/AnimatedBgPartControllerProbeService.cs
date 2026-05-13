@@ -19,8 +19,12 @@ public sealed unsafe class AnimatedBgPartControllerProbeService
     private const int AnimationDataOffset = 0xB8;
 
     private readonly List<SamplePair> samples = [];
+    private readonly List<GroupFrameSample> groupSamples = [];
     private LayoutProbeInstance? source;
     private LocalLayoutObjectInstance? localInstance;
+    private List<LayoutProbeInstance> groupChildren = [];
+    private string groupParentAddress = string.Empty;
+    private string groupParentPath = string.Empty;
 
     public string LastStatus { get; private set; } = "尚未执行 Animated / Dynamic Material BgPart controller 取证。";
 
@@ -35,6 +39,16 @@ public sealed unsafe class AnimatedBgPartControllerProbeService
     public bool IsSampling { get; private set; }
 
     public int SamplesCollected => this.samples.Count;
+
+    public string SharedGroupChildrenDump { get; private set; } = "尚未展开 SharedGroup。";
+
+    public string SharedGroupSamplingSummary { get; private set; } = "尚未采样 SharedGroup。";
+
+    public string SharedGroupFrameSamplesDump { get; private set; } = "尚未采样 SharedGroup。";
+
+    public bool IsGroupSampling { get; private set; }
+
+    public int GroupSamplesCollected => this.groupSamples.Count;
 
     public void DumpOnce(LayoutProbeInstance? sourceBgPart, LocalLayoutObjectInstance? local)
     {
@@ -87,16 +101,53 @@ public sealed unsafe class AnimatedBgPartControllerProbeService
         this.LastStatus = "已完成 UpdateMaterials 前后字段对比。";
     }
 
+    public void DumpSharedGroupChildren(LayoutProbeInstance? selected, IEnumerable<LayoutProbeInstance> allInstances)
+    {
+        if (!this.TryResolveSharedGroup(selected, allInstances, out var children, out var parentAddress, out var parentPath, out var error))
+        {
+            this.SharedGroupChildrenDump = error;
+            this.LastStatus = error;
+            return;
+        }
+
+        this.SharedGroupChildrenDump = this.BuildSharedGroupChildrenDump(parentAddress, parentPath, children);
+        this.LastStatus = $"已展开 SharedGroup：children={children.Count}; parent={parentAddress}";
+    }
+
+    public void StartSharedGroupSampling(LayoutProbeInstance? selected, IEnumerable<LayoutProbeInstance> allInstances)
+    {
+        if (!this.TryResolveSharedGroup(selected, allInstances, out var children, out var parentAddress, out var parentPath, out var error))
+        {
+            this.SharedGroupSamplingSummary = error;
+            this.LastStatus = error;
+            return;
+        }
+
+        this.groupChildren = children;
+        this.groupParentAddress = parentAddress;
+        this.groupParentPath = parentPath;
+        this.groupSamples.Clear();
+        this.SharedGroupSamplingSummary = "正在采样 SharedGroup 60 帧 visible 序列。";
+        this.SharedGroupFrameSamplesDump = string.Empty;
+        this.IsGroupSampling = true;
+        this.LastStatus = $"开始 SharedGroup 60 帧采样：parent={parentAddress}; children={children.Count}";
+    }
+
     public void CancelSampling()
     {
         this.IsSampling = false;
+        this.IsGroupSampling = false;
         this.LastStatus = "已取消 60 帧采样。";
     }
 
     public void Update()
     {
         if (!this.IsSampling)
+        {
+            if (this.IsGroupSampling)
+                this.UpdateSharedGroupSampling();
             return;
+        }
 
         var frame = this.samples.Count + 1;
         var sourceSnapshot = this.ReadSnapshot("原地图 BgPart", this.source?.Address, this.source?.ResourcePath, this.source?.Key, this.source?.LayerAddress, this.source?.Source);
@@ -111,6 +162,28 @@ public sealed unsafe class AnimatedBgPartControllerProbeService
         this.SamplingSummary = this.BuildSamplingSummary();
         this.FrameSamplesDump = this.BuildFrameSampleDump();
         this.LastStatus = "已完成 60 帧 Animated / Dynamic Material BgPart controller 取证。";
+    }
+
+    private void UpdateSharedGroupSampling()
+    {
+        var frame = this.groupSamples.Count + 1;
+        var childSamples = this.groupChildren
+            .Select(child => new GroupChildSample(
+                child.ChildIndex,
+                child.Address,
+                child.ResourcePath,
+                this.ReadSnapshot($"Child {child.ChildIndex}", child.Address, child.ResourcePath, child.Key, child.LayerAddress, child.Source)))
+            .ToList();
+        this.groupSamples.Add(new GroupFrameSample(frame, childSamples));
+        this.LastStatus = $"SharedGroup visible 序列采样中：{this.groupSamples.Count}/{SampleLimit}";
+
+        if (this.groupSamples.Count < SampleLimit)
+            return;
+
+        this.IsGroupSampling = false;
+        this.SharedGroupSamplingSummary = this.BuildSharedGroupSamplingSummary();
+        this.SharedGroupFrameSamplesDump = this.BuildSharedGroupFrameDump();
+        this.LastStatus = "已完成 SharedGroup 60 帧 visible 序列采样。";
     }
 
     private BgPartSnapshot ReadSnapshot(string label, string? address, string? expectedPath, string? key, string? layerAddress, string? sourceText)
@@ -212,6 +285,131 @@ public sealed unsafe class AnimatedBgPartControllerProbeService
             $"materialCandidates={materialCandidates}",
             $"objectRaw={objectRaw}",
         ]);
+    }
+
+    private bool TryResolveSharedGroup(
+        LayoutProbeInstance? selected,
+        IEnumerable<LayoutProbeInstance> allInstances,
+        out List<LayoutProbeInstance> children,
+        out string parentAddress,
+        out string parentPath,
+        out string error)
+    {
+        children = [];
+        parentAddress = string.Empty;
+        parentPath = string.Empty;
+        error = string.Empty;
+
+        if (selected == null)
+        {
+            error = "请先选择 SharedGroup parent 或 SharedGroup 内部 BgPart child。";
+            return false;
+        }
+
+        if (string.Equals(selected.Type, "SharedGroup", StringComparison.Ordinal))
+        {
+            parentAddress = selected.Address;
+            parentPath = selected.ResourcePath;
+        }
+        else if (string.Equals(selected.SourceKind, "SharedGroup", StringComparison.Ordinal)
+            && !string.IsNullOrWhiteSpace(selected.ParentAddress))
+        {
+            parentAddress = selected.ParentAddress;
+            parentPath = selected.SharedGroupPath;
+        }
+        else
+        {
+            error = "当前选择不是 SharedGroup parent，也不是 SharedGroup child。";
+            return false;
+        }
+
+        var resolvedParentAddress = parentAddress;
+        children = allInstances
+            .Where(item => string.Equals(item.SourceKind, "SharedGroup", StringComparison.Ordinal))
+            .Where(item => string.Equals(item.ParentAddress, resolvedParentAddress, StringComparison.OrdinalIgnoreCase))
+            .Where(item => string.Equals(item.Type, "BgPart", StringComparison.Ordinal))
+            .OrderBy(item => item.ChildIndex)
+            .ThenBy(item => item.ResourcePath, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (children.Count == 0)
+        {
+            error = $"未找到 parent={parentAddress} 的 SharedGroup BgPart child。请先重新扫描 Layout / BgPart。";
+            return false;
+        }
+
+        return true;
+    }
+
+    private string BuildSharedGroupChildrenDump(string parentAddress, string parentPath, IReadOnlyList<LayoutProbeInstance> children)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine("SharedGroup child BgPart 展开（只读）：");
+        builder.AppendLine($"parent={parentAddress}; path={parentPath}; childCount={children.Count}");
+        builder.AppendLine("不会写 SharedGroup container，不复制 controller/listener 指针。");
+        builder.AppendLine();
+        foreach (var child in children)
+        {
+            var snapshot = this.ReadSnapshot($"child #{child.ChildIndex}", child.Address, child.ResourcePath, child.Key, child.LayerAddress, child.Source);
+            builder.AppendLine($"[{child.ChildIndex}] {child.ResourcePath}");
+            builder.AppendLine($"  address={child.Address}; visible={child.Visible}; position=({FormatVector(child.Position)}); rotation={child.Rotation}; scale=({FormatVector(child.Scale)})");
+            builder.AppendLine($"  graphics={snapshot.GraphicsObject}; materialCandidates={snapshot.MaterialCandidates}; transform={snapshot.Transform}; primary={snapshot.PrimaryPath}");
+        }
+
+        return builder.ToString();
+    }
+
+    private string BuildSharedGroupSamplingSummary()
+    {
+        if (this.groupSamples.Count == 0)
+            return "没有 SharedGroup 采样数据。";
+
+        var builder = new StringBuilder();
+        builder.AppendLine("SharedGroup 60 帧 visible 序列结论（只读）：");
+        builder.AppendLine($"parent={this.groupParentAddress}; path={this.groupParentPath}; childCount={this.groupChildren.Count}");
+        builder.AppendLine("判断基于 child count、同 parent、visible 序列、transform 是否相同；没有硬编码资源路径。");
+
+        var activeSequences = this.groupSamples
+            .Select(sample => string.Join(",", sample.Children
+                .Where(child => string.Equals(child.Snapshot.Visible, "True", StringComparison.OrdinalIgnoreCase))
+                .Select(child => child.ChildIndex)))
+            .ToList();
+        var uniqueActiveSequences = activeSequences.Distinct(StringComparer.Ordinal).ToList();
+        var visibleCycling = this.groupChildren.Count > 1 && uniqueActiveSequences.Count > 1;
+        var uniqueTransforms = this.groupSamples
+            .SelectMany(sample => sample.Children.Select(child => $"{child.ChildIndex}:{child.Snapshot.Transform}"))
+            .Distinct(StringComparer.Ordinal)
+            .Take(20)
+            .ToList();
+        var sharedTransformSamples = this.groupSamples
+            .Select(sample => sample.Children.Select(child => child.Snapshot.Transform).Distinct(StringComparer.Ordinal).Count())
+            .DefaultIfEmpty(0)
+            .Max();
+
+        builder.AppendLine($"active child sequence distinct={uniqueActiveSequences.Count}; samples={string.Join(" | ", uniqueActiveSequences.Take(12))}");
+        builder.AppendLine($"candidate group animation type={(visibleCycling ? "VisibilityCycling" : "未确认 visible cycling")}");
+        builder.AppendLine($"same transform hint={(sharedTransformSamples <= 1 ? "所有 child transform 文本一致" : "child transform 存在差异")}");
+        builder.AppendLine($"transform samples={string.Join(" | ", uniqueTransforms)}");
+        builder.AppendLine();
+        builder.AppendLine("本地生成设计：若确认为 VisibilityCycling，不复制原 controller。后续应创建 LocalAnimatedGroupInstance，占用 N 个可用 BgPart slot，分别 recreate 为 child resourcePath，共用本地 transform，并由插件按采样 visible 序列切换显示。第一版仅 VisualOnly。");
+        return builder.ToString();
+    }
+
+    private string BuildSharedGroupFrameDump()
+    {
+        var builder = new StringBuilder();
+        foreach (var sample in this.groupSamples)
+        {
+            var active = sample.Children
+                .Where(child => string.Equals(child.Snapshot.Visible, "True", StringComparison.OrdinalIgnoreCase))
+                .Select(child => $"#{child.ChildIndex}:{child.ResourcePath}")
+                .ToList();
+            builder.AppendLine($"Frame {sample.Frame}: visible=[{string.Join(", ", active)}]");
+            foreach (var child in sample.Children)
+                builder.AppendLine($"  child #{child.ChildIndex}: visible={child.Snapshot.Visible}; transform={child.Snapshot.Transform}; material={child.Snapshot.MaterialCandidates}");
+        }
+
+        return builder.ToString();
     }
 
     private string BuildSamplingSummary()
@@ -450,6 +648,10 @@ public sealed unsafe class AnimatedBgPartControllerProbeService
         => $"X {vector.X:F2}, Y {vector.Y:F2}, Z {vector.Z:F2}";
 
     private sealed record SamplePair(int Frame, BgPartSnapshot Source, BgPartSnapshot Local);
+
+    private sealed record GroupFrameSample(int Frame, IReadOnlyList<GroupChildSample> Children);
+
+    private sealed record GroupChildSample(int ChildIndex, string Address, string ResourcePath, BgPartSnapshot Snapshot);
 
     private sealed record BgPartSnapshot(
         string Label,

@@ -339,6 +339,9 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped("正式功能：复用当前地图已有 BgPart slot。VisualOnly 写 Graphics.Scene.Object transform，不移动 collision。");
         ImGui.TextWrapped($"状态：{this.localLayoutObjects.LastStatus}");
         ImGui.TextWrapped($"模型状态：{this.localLayoutObjects.LastModelOverrideStatus}");
+        ImGui.TextWrapped($"动画回放：{this.localLayoutObjects.LastAnimatedPlaybackStatus}");
+        ImGui.TextWrapped($"animated playback count：{this.localLayoutObjects.AnimatedPlaybackCount}");
+        ImGui.TextWrapped($"animated group count：{this.localLayoutObjects.AnimatedGroupCount}");
         ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "custom mdl / SetModel 当前为高风险实验，已禁用自动调用。创建、删除、恢复全部不会调用 SetModel。");
         ImGui.TextWrapped($"active occupied slot count：{this.localLayoutObjects.ActiveOccupiedSlotCount}");
         ImGui.TextWrapped($"duplicate slot count：{this.localLayoutObjects.DuplicateSlotCount}");
@@ -346,6 +349,7 @@ public sealed class MainWindow : Window
         var unsafeEnabled = this.realNpcSpawn.EnableUnsafeNativeWrites;
         if (ImGui.Checkbox("启用 Unsafe/native 写入", ref unsafeEnabled))
             this.realNpcSpawn.EnableUnsafeNativeWrites = unsafeEnabled;
+        ImGui.TextDisabled("PinTransform 每帧硬锁定已在 v9.6 停用；动态对象改用 source animation sampling -> static carrier playback。");
         if (ImGui.Checkbox("模型和碰撞体一起变化（危险）", ref this.localLayoutFullCollisionMode) && !this.localLayoutFullCollisionMode)
             this.confirmFullLayoutCollisionMode = false;
         if (this.localLayoutFullCollisionMode)
@@ -367,6 +371,19 @@ public sealed class MainWindow : Window
             if (created != null)
                 this.selectedLocalLayoutObjectId = created.Id;
         }
+        if (ImGui.Button("创建动态本地实例（source -> carrier playback）"))
+        {
+            var created = this.localLayoutObjects.CreateAnimatedFromSource(
+                candidate,
+                this.AllBgParts(),
+                this.runtime.PlayerPosition!.Value,
+                mode,
+                this.realNpcSpawn.EnableUnsafeNativeWrites,
+                this.confirmFullLayoutCollisionMode);
+            var last = created.LastOrDefault();
+            if (last != null)
+                this.selectedLocalLayoutObjectId = last.Id;
+        }
         ImGui.EndDisabled();
 
         ImGui.BeginDisabled(!this.realNpcSpawn.EnableUnsafeNativeWrites || this.localLayoutObjects.Instances.Count == 0);
@@ -380,7 +397,10 @@ public sealed class MainWindow : Window
         }
         ImGui.EndDisabled();
         ImGui.SameLine();
-        ImGui.TextDisabled("会自动清理重复实例");
+        ImGui.TextDisabled("会自动 StopAllAndDetach 动画回放，并清理重复实例");
+        ImGui.SameLine();
+        if (ImGui.Button("停止全部动画回放"))
+            this.localLayoutObjects.StopAllPlayback();
         ImGui.SameLine();
         ImGui.BeginDisabled(this.localLayoutObjects.Instances.Count == 0);
         if (ImGui.Button("一键清理重复实例"))
@@ -390,6 +410,14 @@ public sealed class MainWindow : Window
                 this.selectedLocalLayoutObjectId = string.Empty;
         }
         ImGui.EndDisabled();
+
+        if (this.localLayoutObjects.AnimatedGroups.Count > 0 && ImGui.CollapsingHeader("Animated group 状态"))
+        {
+            foreach (var group in this.localLayoutObjects.AnimatedGroups)
+            {
+                ImGui.TextWrapped($"group={group.GroupId}; children={group.ChildInstanceIds.Count}; carriers={group.CarrierSlotAddresses.Count}; playback={group.PlaybackEnabled}; restoring={group.IsRestoring}; restored={group.IsRestored}; status={group.RestoreStatus}; error={group.LastError}");
+            }
+        }
 
         this.DrawLocalLayoutObjectTable();
         this.DrawSelectedLocalLayoutObjectControls();
@@ -516,18 +544,29 @@ public sealed class MainWindow : Window
         var candidate = this.GetSelectedBgPart();
         ImGui.TextWrapped(candidate == null
             ? "当前选中 BgPart：无"
-            : $"当前选中 BgPart：{candidate.ResourcePath} | {candidate.Address} | 距离 {candidate.DistanceToPlayer:F1}y | {FormatVector(candidate.Position)}");
+            : $"当前选中 BgPart：{candidate.ResourcePath} | {candidate.Address} | source={candidate.SourceKind} | parent={candidate.ParentAddress} | child={candidate.ChildIndex} | 距离 {candidate.DistanceToPlayer:F1}y | {FormatVector(candidate.Position)}");
+        if (candidate != null)
+        {
+            var carrierReject = this.localLayoutObjects.GetCarrierRejectReason(candidate);
+            ImGui.TextWrapped(string.IsNullOrWhiteSpace(carrierReject)
+                ? "carrier 状态：可作为静态 carrier"
+                : $"carrierRejectReason：{carrierReject}");
+        }
         ImGui.InputText("搜索 resourcePath/type", ref this.bgPartSearchText, 256);
 
         var rows = this.FilteredBgParts().Take(80).ToList();
-        if (!ImGui.BeginTable("BgPartSelectionTable", 6, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 180f)))
+        if (!ImGui.BeginTable("BgPartSelectionTable", 10, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 180f)))
             return;
         ImGui.TableSetupColumn("选择");
         ImGui.TableSetupColumn("distance");
+        ImGui.TableSetupColumn("source");
         ImGui.TableSetupColumn("type");
         ImGui.TableSetupColumn("resourcePath");
         ImGui.TableSetupColumn("visible");
         ImGui.TableSetupColumn("address");
+        ImGui.TableSetupColumn("parent shared group");
+        ImGui.TableSetupColumn("child");
+        ImGui.TableSetupColumn("carrier reject");
         ImGui.TableHeadersRow();
         foreach (var item in rows)
         {
@@ -542,13 +581,21 @@ public sealed class MainWindow : Window
             ImGui.TableSetColumnIndex(1);
             ImGui.TextUnformatted($"{item.DistanceToPlayer:F1}");
             ImGui.TableSetColumnIndex(2);
-            ImGui.TextUnformatted(item.Type);
+            ImGui.TextUnformatted(item.SourceKind);
             ImGui.TableSetColumnIndex(3);
-            ImGui.TextWrapped(item.ResourcePath);
+            ImGui.TextUnformatted(item.Type);
             ImGui.TableSetColumnIndex(4);
-            ImGui.TextUnformatted(item.Visible ? "是" : "否");
+            ImGui.TextWrapped(item.ResourcePath);
             ImGui.TableSetColumnIndex(5);
+            ImGui.TextUnformatted(item.Visible ? "是" : "否");
+            ImGui.TableSetColumnIndex(6);
             ImGui.TextWrapped(item.Address);
+            ImGui.TableSetColumnIndex(7);
+            ImGui.TextWrapped(string.IsNullOrWhiteSpace(item.ParentAddress) ? "-" : $"{item.ParentAddress} | {item.SharedGroupPath}");
+            ImGui.TableSetColumnIndex(8);
+            ImGui.TextUnformatted(item.ChildIndex >= 0 ? item.ChildIndex.ToString() : "-");
+            ImGui.TableSetColumnIndex(9);
+            ImGui.TextWrapped(this.localLayoutObjects.GetCarrierRejectReason(item));
             ImGui.PopID();
         }
         ImGui.EndTable();
@@ -649,6 +696,9 @@ public sealed class MainWindow : Window
         ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), $"选中实例：{selected.Id}");
         ImGui.TextWrapped($"template slot：{selected.TemplateSourceSlotAddress}");
         ImGui.TextWrapped($"occupied slot：{selected.OccupiedSlotAddress}");
+        ImGui.TextWrapped($"source kind：{selected.SourceKind}");
+        if (string.Equals(selected.SourceKind, "SharedGroup", StringComparison.Ordinal))
+            ImGui.TextWrapped($"SharedGroup parent：{selected.SourceSharedGroupPath} | {selected.SourceParentAddress} | child #{selected.SourceChildIndex}");
         ImGui.TextWrapped($"original model：{selected.OriginalModelResourcePath}");
         ImGui.TextWrapped($"current model：{selected.CurrentResourcePath}");
         ImGui.TextWrapped($"model apply status：{(string.IsNullOrWhiteSpace(selected.ModelApplyStatus) ? selected.ApplyMdlStatus : selected.ModelApplyStatus)}");
@@ -658,6 +708,10 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"complex risk：{(string.IsNullOrWhiteSpace(selected.ComplexModelRisk) ? "StaticOk" : selected.ComplexModelRisk)}");
         if (!string.IsNullOrWhiteSpace(selected.ComplexModelRiskReason))
             ImGui.TextWrapped($"risk reason：{selected.ComplexModelRiskReason}");
+        ImGui.TextWrapped($"is restoring：{selected.IsRestoring}");
+        ImGui.TextWrapped($"original visible：{selected.OriginalVisible}；current visible：{selected.Visible}");
+        if (!string.IsNullOrWhiteSpace(selected.CarrierRejectReason))
+            ImGui.TextWrapped($"carrier reject reason：{selected.CarrierRejectReason}");
         ImGui.TextWrapped($"readback：{selected.LastReadback}");
         ImGui.TextWrapped($"错误：{(string.IsNullOrWhiteSpace(selected.LastError) ? "无" : selected.LastError)}");
 
@@ -685,6 +739,32 @@ public sealed class MainWindow : Window
         EditString("custom mdl path", selected.CustomModelPath, 512, value => selected.CustomModelPath = value);
         ImGui.TextWrapped($"render invalid：{selected.IsRenderInvalid}");
         ImGui.TextWrapped($"transform disabled reason：{selected.TransformWriteDisabledReason}");
+        ImGui.TextWrapped($"transform skipped reason：{(string.IsNullOrWhiteSpace(selected.LastTransformWriteSkippedReason) ? "无" : selected.LastTransformWriteSkippedReason)}");
+        ImGui.TextWrapped($"applied transform position：{(string.IsNullOrWhiteSpace(selected.AppliedTransformPosition) ? "未写入" : selected.AppliedTransformPosition)}");
+        ImGui.TextWrapped($"readback immediate：{(string.IsNullOrWhiteSpace(selected.TransformReadbackImmediate) ? "未记录" : selected.TransformReadbackImmediate)}");
+        ImGui.TextWrapped($"readback +1 frame：{(string.IsNullOrWhiteSpace(selected.TransformReadbackAfter1Frame) ? "未记录" : selected.TransformReadbackAfter1Frame)}");
+        ImGui.TextWrapped($"readback +5 frames：{(string.IsNullOrWhiteSpace(selected.TransformReadbackAfter5Frames) ? "未记录" : selected.TransformReadbackAfter5Frames)}");
+        ImGui.TextWrapped($"readback +30 frames：{(string.IsNullOrWhiteSpace(selected.TransformReadbackAfter30Frames) ? "未记录" : selected.TransformReadbackAfter30Frames)}");
+        ImGui.TextWrapped($"controlled by runtime：{selected.ControlledByRuntime}");
+        ImGui.TextWrapped($"overwrite detail：{(string.IsNullOrWhiteSpace(selected.TransformOverwriteDetails) ? "未检测" : selected.TransformOverwriteDetails)}");
+        ImGui.TextWrapped($"pinTransform enabled：{selected.PinTransformEnabled}");
+        ImGui.TextWrapped($"pin target：{FormatVector(selected.PinTargetPosition)}");
+        ImGui.TextWrapped($"pin write failed count：{selected.PinWriteFailedCount}");
+        ImGui.TextWrapped($"last pin write result：{(string.IsNullOrWhiteSpace(selected.LastPinWriteResult) ? "未执行" : selected.LastPinWriteResult)}");
+        ImGui.TextWrapped($"pin reason：{(string.IsNullOrWhiteSpace(selected.PinTransformReason) ? "无" : selected.PinTransformReason)}");
+        ImGui.TextWrapped($"animation playback：{selected.AnimationPlaybackEnabled} / {selected.AnimationPlaybackMode}");
+        ImGui.TextWrapped($"animation source：{(string.IsNullOrWhiteSpace(selected.AnimationSourceBgPart) ? "无" : selected.AnimationSourceBgPart)} | {selected.AnimationSourceResourcePath}");
+        if (!string.IsNullOrWhiteSpace(selected.AnimationGroupId))
+            ImGui.TextWrapped($"animation group：{selected.AnimationGroupId} | child={selected.AnimationGroupChildIndex}");
+        ImGui.TextWrapped($"source base：{(string.IsNullOrWhiteSpace(selected.AnimationSourceBaseTransform) ? "未记录" : selected.AnimationSourceBaseTransform)}");
+        ImGui.TextWrapped($"local playback base：{(string.IsNullOrWhiteSpace(selected.LocalPlaybackBaseTransform) ? "未记录" : selected.LocalPlaybackBaseTransform)}");
+        ImGui.TextWrapped($"current delta：{(string.IsNullOrWhiteSpace(selected.CurrentDelta) ? "未采样" : selected.CurrentDelta)}");
+        ImGui.TextWrapped($"source rotation：{(string.IsNullOrWhiteSpace(selected.AnimationSourceRotation) ? "未采样" : selected.AnimationSourceRotation)}");
+        ImGui.TextWrapped($"rotation delta：{(string.IsNullOrWhiteSpace(selected.AnimationRotationDelta) ? "未采样" : selected.AnimationRotationDelta)}");
+        ImGui.TextWrapped($"local target rotation：{(string.IsNullOrWhiteSpace(selected.AnimationLocalTargetRotation) ? "未采样" : selected.AnimationLocalTargetRotation)}");
+        ImGui.TextWrapped($"readback rotation：{(string.IsNullOrWhiteSpace(selected.AnimationReadbackRotation) ? "未采样" : selected.AnimationReadbackRotation)}");
+        ImGui.TextWrapped($"playback frame：{selected.PlaybackFrameCount}；last sample：{(string.IsNullOrWhiteSpace(selected.LastSampleTime) ? "无" : selected.LastSampleTime)}");
+        ImGui.TextWrapped($"playback result：{(string.IsNullOrWhiteSpace(selected.AnimationPlaybackLastResult) ? "未执行" : selected.AnimationPlaybackLastResult)}");
         ImGui.TextWrapped($"model result：{selected.LastModelOverrideResult}");
         ImGui.TextWrapped($"model error：{(string.IsNullOrWhiteSpace(selected.LastModelOverrideError) ? "无" : selected.LastModelOverrideError)}");
         ImGui.TextWrapped($"collision resolve：{selected.CollisionSourceResolveResult}");
@@ -744,6 +824,8 @@ public sealed class MainWindow : Window
             this.selectedLocalLayoutObjectId = string.Empty;
         }
         ImGui.EndDisabled();
+
+        ImGui.TextDisabled("PinTransform 按钮已停用；动态对象请使用 AnimatedPlaybackSystem。");
     }
 
     private void DrawBgPartPool()
@@ -759,9 +841,10 @@ public sealed class MainWindow : Window
             .Take(80)
             .ToList();
 
-        if (!ImGui.BeginTable("BgPartPool", 7, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 420f)))
+        if (!ImGui.BeginTable("BgPartPool", 8, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 420f)))
             return;
         ImGui.TableSetupColumn("resourcePath");
+        ImGui.TableSetupColumn("source");
         ImGui.TableSetupColumn("total");
         ImGui.TableSetupColumn("available");
         ImGui.TableSetupColumn("occupied");
@@ -778,16 +861,20 @@ public sealed class MainWindow : Window
             ImGui.TableSetColumnIndex(0);
             ImGui.TextWrapped(group.Key);
             ImGui.TableSetColumnIndex(1);
-            ImGui.TextUnformatted(slots.Count.ToString());
+            var loadedCount = slots.Count(slot => !string.Equals(slot.SourceKind, "SharedGroup", StringComparison.Ordinal));
+            var sharedCount = slots.Count(slot => string.Equals(slot.SourceKind, "SharedGroup", StringComparison.Ordinal));
+            ImGui.TextWrapped($"LoadedLayout={loadedCount}; SharedGroup={sharedCount}");
             ImGui.TableSetColumnIndex(2);
-            ImGui.TextUnformatted(available.Count.ToString());
+            ImGui.TextUnformatted(slots.Count.ToString());
             ImGui.TableSetColumnIndex(3);
-            ImGui.TextUnformatted((slots.Count - available.Count).ToString());
+            ImGui.TextUnformatted(available.Count.ToString());
             ImGui.TableSetColumnIndex(4);
-            ImGui.TextUnformatted(slots.Count(slot => slot.Visible).ToString());
+            ImGui.TextUnformatted((slots.Count - available.Count).ToString());
             ImGui.TableSetColumnIndex(5);
-            ImGui.TextUnformatted($"{slots.Min(slot => slot.DistanceToPlayer):F1}");
+            ImGui.TextUnformatted(slots.Count(slot => slot.Visible).ToString());
             ImGui.TableSetColumnIndex(6);
+            ImGui.TextUnformatted($"{slots.Min(slot => slot.DistanceToPlayer):F1}");
+            ImGui.TableSetColumnIndex(7);
             ImGui.BeginDisabled(available.Count == 0 || !this.runtime.PlayerPosition.HasValue || !this.realNpcSpawn.EnableUnsafeNativeWrites);
             if (ImGui.Button("占用最近 slot"))
             {
@@ -862,6 +949,17 @@ public sealed class MainWindow : Window
             this.animatedBgPartControllerProbe.CancelSampling();
         ImGui.EndDisabled();
 
+        ImGui.Separator();
+        ImGui.TextWrapped("SharedGroup 动态屏幕取证：选中 SharedGroup child 后展开同 parent 的全部 BgPart，并采样 60 帧 visible 序列。只读，不写 SharedGroup container。");
+        ImGui.TextWrapped($"SharedGroup 采样帧：{this.animatedBgPartControllerProbe.GroupSamplesCollected}/60");
+        ImGui.BeginDisabled(candidate == null);
+        if (ImGui.Button("展开当前 SharedGroup children"))
+            this.animatedBgPartControllerProbe.DumpSharedGroupChildren(candidate, this.layoutProbe.Instances);
+        ImGui.SameLine();
+        if (ImGui.Button("开始 SharedGroup 60 帧 visible 采样"))
+            this.animatedBgPartControllerProbe.StartSharedGroupSampling(candidate, this.layoutProbe.Instances);
+        ImGui.EndDisabled();
+
         if (ImGui.CollapsingHeader("单帧 A/B dump"))
             ImGui.TextWrapped(this.animatedBgPartControllerProbe.OneShotDump);
         if (ImGui.CollapsingHeader("60 帧变化摘要"))
@@ -870,6 +968,12 @@ public sealed class MainWindow : Window
             ImGui.TextWrapped(this.animatedBgPartControllerProbe.UpdateMaterialsDiffDump);
         if (ImGui.CollapsingHeader("60 帧逐帧关键字段"))
             ImGui.TextWrapped(this.animatedBgPartControllerProbe.FrameSamplesDump);
+        if (ImGui.CollapsingHeader("SharedGroup children 展开"))
+            ImGui.TextWrapped(this.animatedBgPartControllerProbe.SharedGroupChildrenDump);
+        if (ImGui.CollapsingHeader("SharedGroup visible 序列摘要"))
+            ImGui.TextWrapped(this.animatedBgPartControllerProbe.SharedGroupSamplingSummary);
+        if (ImGui.CollapsingHeader("SharedGroup 60 帧逐帧"))
+            ImGui.TextWrapped(this.animatedBgPartControllerProbe.SharedGroupFrameSamplesDump);
     }
 
     private void DrawBgPartCollisionSourceProbeDebug()
@@ -938,10 +1042,20 @@ public sealed class MainWindow : Window
             query = query.Where(instance =>
                 instance.ResourcePath.Contains(this.bgPartSearchText, StringComparison.OrdinalIgnoreCase) ||
                 instance.Type.Contains(this.bgPartSearchText, StringComparison.OrdinalIgnoreCase) ||
-                instance.Address.Contains(this.bgPartSearchText, StringComparison.OrdinalIgnoreCase));
+                instance.Address.Contains(this.bgPartSearchText, StringComparison.OrdinalIgnoreCase) ||
+                instance.SourceKind.Contains(this.bgPartSearchText, StringComparison.OrdinalIgnoreCase) ||
+                instance.SharedGroupPath.Contains(this.bgPartSearchText, StringComparison.OrdinalIgnoreCase) ||
+                instance.ParentAddress.Contains(this.bgPartSearchText, StringComparison.OrdinalIgnoreCase) ||
+                instance.ParentKey.Contains(this.bgPartSearchText, StringComparison.OrdinalIgnoreCase) ||
+                instance.DebugInfo.Contains(this.bgPartSearchText, StringComparison.OrdinalIgnoreCase));
         }
         return query.OrderBy(instance => instance.DistanceToPlayer);
     }
+
+    private IEnumerable<LayoutProbeInstance> AllBgParts()
+        => this.layoutProbe.Instances
+            .Where(instance => string.Equals(instance.Type, "BgPart", StringComparison.Ordinal))
+            .OrderBy(instance => instance.DistanceToPlayer);
 
     private LayoutProbeInstance? GetSelectedBgPart()
     {

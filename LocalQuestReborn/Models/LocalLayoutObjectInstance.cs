@@ -19,6 +19,16 @@ public sealed class LocalLayoutObjectInstance
 
     public string SourceResourcePath { get; set; } = string.Empty;
 
+    public string SourceKind { get; set; } = "LoadedLayout";
+
+    public string SourceSharedGroupPath { get; set; } = string.Empty;
+
+    public string SourceParentAddress { get; set; } = string.Empty;
+
+    public string SourceParentKey { get; set; } = string.Empty;
+
+    public int SourceChildIndex { get; set; } = -1;
+
     public string OriginalResourcePath { get; set; } = string.Empty;
 
     public string OriginalSlotResourcePath
@@ -91,6 +101,10 @@ public sealed class LocalLayoutObjectInstance
 
     public bool Visible { get; set; }
 
+    public bool OriginalVisible { get; set; } = true;
+
+    public string CarrierRejectReason { get; set; } = string.Empty;
+
     public bool IsOccupied { get; set; }
 
     public bool IsRestored { get; set; }
@@ -101,9 +115,101 @@ public sealed class LocalLayoutObjectInstance
 
     public bool IsRenderInvalid { get; set; }
 
+    public bool IsRestoring { get; set; }
+
     public bool ModelExperimentFailed { get; set; }
 
     public string TransformWriteDisabledReason { get; set; } = string.Empty;
+
+    public string LastTransformWriteSkippedReason { get; set; } = string.Empty;
+
+    public bool ControlledByRuntime { get; set; }
+
+    public bool TransformMonitorActive { get; set; }
+
+    public int TransformMonitorFrame { get; set; }
+
+    public Vector3 TransformMonitorExpectedPosition { get; set; }
+
+    public Vector3 TransformMonitorExpectedRotationEuler { get; set; }
+
+    public Vector3 TransformMonitorExpectedScale { get; set; } = Vector3.One;
+
+    public string AppliedTransformPosition { get; set; } = string.Empty;
+
+    public string TransformReadbackImmediate { get; set; } = string.Empty;
+
+    public string TransformReadbackAfter1Frame { get; set; } = string.Empty;
+
+    public string TransformReadbackAfter5Frames { get; set; } = string.Empty;
+
+    public string TransformReadbackAfter30Frames { get; set; } = string.Empty;
+
+    public string TransformOverwriteDetails { get; set; } = string.Empty;
+
+    public bool PinTransformEnabled { get; set; }
+
+    public bool PinTransformAutoEnabled { get; set; } = true;
+
+    public bool PinFailed { get; set; }
+
+    public int PinWriteFailedCount { get; set; }
+
+    public Vector3 PinTargetPosition { get; set; }
+
+    public Vector3 PinTargetRotationEuler { get; set; }
+
+    public Vector3 PinTargetScale { get; set; } = Vector3.One;
+
+    public string LastPinWriteResult { get; set; } = string.Empty;
+
+    public string PinTransformReason { get; set; } = string.Empty;
+
+    public string AnimationSourceBgPart { get; set; } = string.Empty;
+
+    public string AnimationSourceResourcePath { get; set; } = string.Empty;
+
+    public string AnimationGroupId { get; set; } = string.Empty;
+
+    public int AnimationGroupChildIndex { get; set; } = -1;
+
+    public bool AnimationPlaybackEnabled { get; set; }
+
+    public AnimationPlaybackMode AnimationPlaybackMode { get; set; } = AnimationPlaybackMode.None;
+
+    public Vector3 AnimationSourceBasePosition { get; set; }
+
+    public Quaternion AnimationSourceBaseRotation { get; set; } = Quaternion.Identity;
+
+    public Vector3 AnimationSourceBaseScale { get; set; } = Vector3.One;
+
+    public Vector3 LocalPlaybackBasePosition { get; set; }
+
+    public Quaternion LocalPlaybackBaseRotation { get; set; } = Quaternion.Identity;
+
+    public Vector3 LocalPlaybackBaseScale { get; set; } = Vector3.One;
+
+    public string AnimationSourceBaseTransform { get; set; } = string.Empty;
+
+    public string LocalPlaybackBaseTransform { get; set; } = string.Empty;
+
+    public string CurrentDelta { get; set; } = string.Empty;
+
+    public string AnimationSourceRotation { get; set; } = string.Empty;
+
+    public string AnimationRotationDelta { get; set; } = string.Empty;
+
+    public string AnimationLocalTargetRotation { get; set; } = string.Empty;
+
+    public string AnimationReadbackRotation { get; set; } = string.Empty;
+
+    public string LastSampleTime { get; set; } = string.Empty;
+
+    public int PlaybackFrameCount { get; set; }
+
+    public string AnimationPlaybackLastResult { get; set; } = string.Empty;
+
+    public int AnimationPlaybackFailedCount { get; set; }
 
     public bool HasCollisionMoved { get; set; }
 

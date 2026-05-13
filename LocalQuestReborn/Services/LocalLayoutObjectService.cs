@@ -18,8 +18,12 @@ public sealed unsafe class LocalLayoutObjectService
     private readonly BgPartRecreateExperimentService recreateExperimentService = new();
     private readonly BgPartCollisionExperimentService collisionExperimentService = new();
     private readonly BgPartCollisionSourceResolver collisionSourceResolver = new();
+    private readonly AnimatedPlaybackSystem animatedPlaybackSystem = new();
     private readonly List<LocalLayoutObjectInstance> instances = [];
     private readonly Dictionary<ulong, LocalLayoutObjectInstance> occupiedSlots = [];
+    private bool animatedCreateBusy;
+
+    public bool AutoPinDynamicTransforms { get; set; }
 
     public IReadOnlyList<LocalLayoutObjectInstance> Instances => this.instances;
 
@@ -40,12 +44,29 @@ public sealed unsafe class LocalLayoutObjectService
 
     public string LastCollisionExperimentStatus => this.collisionExperimentService.LastResult;
 
+    public string LastAnimatedPlaybackStatus => this.animatedPlaybackSystem.LastStatus;
+
+    public int AnimatedPlaybackCount => this.animatedPlaybackSystem.PlaybackCount;
+
+    public int AnimatedGroupCount => this.animatedPlaybackSystem.GroupCount;
+
+    public IReadOnlyList<LocalAnimatedGroupInstance> AnimatedGroups => this.animatedPlaybackSystem.Groups;
+
+    public void StopAllPlayback(string reason = "用户手动停止全部动画回放。")
+        => this.animatedPlaybackSystem.StopAllAndDetach(this.instances, reason);
+
     public void Update()
     {
         foreach (var instance in this.instances.Where(item => item.PendingVisualTransform).ToList())
         {
-            this.recreateExperimentService.ProcessPendingVisualTransform(instance);
+            if (this.recreateExperimentService.ProcessPendingVisualTransform(instance))
+                this.ScheduleTransformMonitor(instance, instance.CurrentPosition, instance.CurrentRotationEuler, instance.CurrentScale, "延迟 VisualOnly transform");
         }
+
+        foreach (var instance in this.instances.Where(item => item.TransformMonitorActive).ToList())
+            this.UpdateTransformMonitor(instance);
+
+        this.animatedPlaybackSystem.Update(this.instances);
     }
 
     public bool IsSlotOccupied(string slotAddress)
@@ -120,6 +141,11 @@ public sealed unsafe class LocalLayoutObjectService
             TemplateSourceSlotAddress = template?.Address ?? candidate.Address,
             TemplateResourcePath = template?.ResourcePath ?? candidate.ResourcePath,
             SourceResourcePath = candidate.ResourcePath,
+            SourceKind = candidate.SourceKind,
+            SourceSharedGroupPath = candidate.SharedGroupPath,
+            SourceParentAddress = candidate.ParentAddress,
+            SourceParentKey = candidate.ParentKey,
+            SourceChildIndex = candidate.ChildIndex,
             OriginalResourcePath = candidate.ResourcePath,
             CurrentResourcePath = candidate.ResourcePath,
             CustomModelPath = string.Empty,
@@ -148,6 +174,8 @@ public sealed unsafe class LocalLayoutObjectService
             CurrentRotationEuler = Vector3.Zero,
             CurrentScale = mode == LocalLayoutTransformMode.VisualOnly ? originalVisual.Scale : originalLayout.Value.Scale,
             Visible = candidate.Visible,
+            OriginalVisible = candidate.Visible,
+            CarrierRejectReason = string.Empty,
             IsOccupied = true,
             CanRestore = true,
             VisualOnlyVerified = mode == LocalLayoutTransformMode.VisualOnly,
@@ -281,6 +309,245 @@ public sealed unsafe class LocalLayoutObjectService
         return created;
     }
 
+    public IReadOnlyList<LocalLayoutObjectInstance> CreateAnimatedFromSource(
+        LayoutProbeInstance? source,
+        IEnumerable<LayoutProbeInstance> allBgParts,
+        Vector3 basePosition,
+        LocalLayoutTransformMode mode,
+        bool unsafeEnabled,
+        bool fullLayoutConfirmed)
+    {
+        var created = new List<LocalLayoutObjectInstance>();
+        if (this.animatedCreateBusy)
+        {
+            this.LastStatus = "动态本地实例正在创建中，请等待当前操作完成。";
+            return created;
+        }
+
+        this.animatedCreateBusy = true;
+        try
+        {
+        if (source == null)
+        {
+            this.LastStatus = "请先选择一个动态 source BgPart。";
+            return created;
+        }
+
+        if (!string.Equals(source.Type, "BgPart", StringComparison.Ordinal))
+        {
+            this.LastStatus = $"动态 source 必须是 BgPart：{source.Type}";
+            return created;
+        }
+
+        if (!unsafeEnabled)
+        {
+            this.LastStatus = "创建动态本地实例需要 UnsafeMode=true。";
+            return created;
+        }
+
+        if (mode == LocalLayoutTransformMode.FullLayoutWithCollision && !fullLayoutConfirmed)
+        {
+            this.LastStatus = "FullLayoutWithCollision 创建动态本地实例需要二次确认。";
+            return created;
+        }
+
+        var all = allBgParts.ToList();
+        var isSharedGroupSource = string.Equals(source.SourceKind, "SharedGroup", StringComparison.Ordinal)
+            && !string.IsNullOrWhiteSpace(source.ParentAddress);
+        if (isSharedGroupSource)
+        {
+            var children = all
+                .Where(item => string.Equals(item.SourceKind, "SharedGroup", StringComparison.Ordinal))
+                .Where(item => string.Equals(item.ParentAddress, source.ParentAddress, StringComparison.OrdinalIgnoreCase))
+                .Where(item => string.Equals(item.Type, "BgPart", StringComparison.Ordinal))
+                .OrderBy(item => item.ChildIndex)
+                .ToList();
+
+            if (children.Count > 1)
+                return this.CreateVisibilityCyclingGroup(source, children, all, basePosition, mode, unsafeEnabled, fullLayoutConfirmed);
+        }
+
+        var carrier = this.FindStableCarrierSlots(all, excludedAddresses: [source.Address])
+            .FirstOrDefault();
+        if (carrier == null)
+        {
+            this.LastStatus = "没有可用的静态 carrier slot。需要非 SharedGroup child、未占用、bg/bgcommon 的 BgPart。";
+            return created;
+        }
+
+        var instance = this.CreateFromTemplate(source, carrier, basePosition, mode, applyTemplateModel: false);
+        if (instance == null)
+            return created;
+
+        created.Add(instance);
+        instance.AnimationPlaybackMode = AnimationPlaybackMode.TransformDelta;
+        instance.AnimationPlaybackEnabled = true;
+        if (!string.Equals(instance.CurrentResourcePath, source.ResourcePath, StringComparison.OrdinalIgnoreCase))
+            this.ApplyMdlPath(instance.Id, source.ResourcePath, all, unsafeEnabled, fullLayoutConfirmed || mode == LocalLayoutTransformMode.VisualOnly);
+        this.animatedPlaybackSystem.ConfigureTransformDelta(instance, source);
+        this.LastStatus = $"已创建 TransformDelta 动态本地实例：source={source.Address}; carrier={carrier.Address}; instance={instance.Id}";
+        return created;
+        }
+        catch (Exception ex)
+        {
+            foreach (var instance in created.ToList())
+            {
+                this.DisablePlayback(instance, "动态创建异常，rollback 停止 playback。");
+                this.RestoreOriginal(instance, removeAfterRestore: true);
+            }
+
+            this.LastStatus = $"创建动态本地实例失败，已 rollback：{ex.Message}";
+            return [];
+        }
+        finally
+        {
+            this.animatedCreateBusy = false;
+        }
+    }
+
+    private IReadOnlyList<LocalLayoutObjectInstance> CreateVisibilityCyclingGroup(
+        LayoutProbeInstance source,
+        IReadOnlyList<LayoutProbeInstance> children,
+        IReadOnlyList<LayoutProbeInstance> allBgParts,
+        Vector3 basePosition,
+        LocalLayoutTransformMode mode,
+        bool unsafeEnabled,
+        bool fullLayoutConfirmed)
+    {
+        var excluded = children.Select(child => child.Address).Append(source.Address).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var carriers = this.FindStableCarrierSlots(allBgParts, excluded)
+            .Take(children.Count)
+            .ToList();
+        var created = new List<LocalLayoutObjectInstance>();
+        if (carriers.Count < children.Count)
+        {
+            this.LastStatus = $"可用 carrier 不足：VisibilityCycling 需要 {children.Count} 个，可用 {carriers.Count} 个。不会创建半成品 group。";
+            return created;
+        }
+
+        var groupId = $"animated-group-{DateTimeOffset.Now.ToUnixTimeMilliseconds()}-{Guid.NewGuid():N}"[..46];
+        var failures = new List<string>();
+        for (var index = 0; index < children.Count; index++)
+        {
+            var child = children[index];
+            var carrier = carriers[index];
+            var instance = this.CreateFromTemplate(child, carrier, basePosition, mode, applyTemplateModel: false);
+            if (instance == null)
+            {
+                failures.Add($"child {child.ChildIndex}: create carrier failed");
+                break;
+            }
+
+            created.Add(instance);
+            if (!string.Equals(instance.CurrentResourcePath, child.ResourcePath, StringComparison.OrdinalIgnoreCase))
+            {
+                var applied = this.ApplyMdlPath(instance.Id, child.ResourcePath, allBgParts, unsafeEnabled, fullLayoutConfirmed || mode == LocalLayoutTransformMode.VisualOnly);
+                if (!applied)
+                {
+                    failures.Add($"child {child.ChildIndex}: mdl failed={FirstNonEmpty(instance.ApplyMdlError, instance.LastModelOverrideError, this.LastStatus)}");
+                    break;
+                }
+            }
+        }
+
+        if (failures.Count > 0 || created.Count != children.Count)
+        {
+            foreach (var instance in created.ToList())
+            {
+                this.DisablePlayback(instance, "VisibilityCycling 创建失败，rollback 停止 playback。");
+                this.RestoreOriginal(instance, removeAfterRestore: true);
+            }
+
+            this.LastStatus = $"VisibilityCycling 创建失败，已 rollback：{string.Join(" | ", failures)}";
+            return [];
+        }
+
+        for (var index = 0; index < children.Count; index++)
+            this.animatedPlaybackSystem.ConfigureVisibilityCycling(created[index], children[index], groupId, basePosition);
+
+        this.animatedPlaybackSystem.RegisterGroup(new LocalAnimatedGroupInstance
+        {
+            GroupId = groupId,
+            SourceSharedGroup = FirstNonEmpty(source.SharedGroupPath, source.ParentAddress, source.ResourcePath),
+            ChildInstanceIds = created.Select(item => item.Id).ToList(),
+            CarrierSlotAddresses = created.Select(item => item.OccupiedSlotAddress).ToList(),
+            PlaybackEnabled = true,
+            RestoreStatus = "播放中",
+        });
+
+        this.LastStatus = $"已创建 VisibilityCycling 动态本地组：children={children.Count}; created={created.Count}; group={groupId}; failures={string.Join(" | ", failures)}";
+        return created;
+    }
+
+    private IEnumerable<LayoutProbeInstance> FindStableCarrierSlots(IEnumerable<LayoutProbeInstance> allBgParts, IEnumerable<string> excludedAddresses)
+    {
+        var excluded = excludedAddresses.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return allBgParts
+            .Where(slot => string.IsNullOrWhiteSpace(this.GetCarrierRejectReason(slot, excluded)))
+            .OrderByDescending(slot => !slot.Visible)
+            .ThenBy(slot => IsSmallDecorativeCarrier(slot) ? 0 : 1)
+            .ThenByDescending(slot => slot.DistanceToPlayer);
+    }
+
+    public string GetCarrierRejectReason(LayoutProbeInstance? slot)
+        => this.GetCarrierRejectReason(slot, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+
+    private string GetCarrierRejectReason(LayoutProbeInstance? slot, ISet<string> excludedAddresses)
+    {
+        if (slot == null)
+            return "空 slot";
+        string reason;
+        if (!string.Equals(slot.Type, "BgPart", StringComparison.Ordinal))
+            reason = "不是 BgPart";
+        else if (string.Equals(slot.SourceKind, "SharedGroup", StringComparison.Ordinal))
+            reason = "SharedGroupChild";
+        else if (!IsSupportedMdlPath(slot.ResourcePath))
+            reason = "非 bg/bgcommon mdl";
+        else if (excludedAddresses.Contains(slot.Address))
+            reason = "source/template slot 已排除";
+        else if (this.IsSlotOccupied(slot.Address))
+            reason = "AlreadyOccupied";
+        else if (IsTerrainLikeCarrier(slot.ResourcePath))
+            reason = "TerrainLike";
+        else if (IsTooLargeCarrier(slot))
+            reason = "TooLarge";
+        else
+            reason = string.Empty;
+
+        slot.CarrierRejectReason = reason;
+        return reason;
+    }
+
+    private static bool IsTerrainLikeCarrier(string resourcePath)
+    {
+        var path = resourcePath.ToLowerInvariant();
+        string[] blocked =
+        [
+            "floor",
+            "wall",
+            "base",
+            "terrain",
+            "land",
+            "map",
+            "bgbase",
+            "sky",
+            "sea",
+            "collision",
+            "col_",
+        ];
+        return blocked.Any(path.Contains);
+    }
+
+    private static bool IsTooLargeCarrier(LayoutProbeInstance slot)
+        => Math.Abs(slot.Scale.X) > 20f
+            || Math.Abs(slot.Scale.Y) > 20f
+            || Math.Abs(slot.Scale.Z) > 20f;
+
+    private static bool IsSmallDecorativeCarrier(LayoutProbeInstance slot)
+        => Math.Abs(slot.Scale.X) <= 5f
+            && Math.Abs(slot.Scale.Y) <= 5f
+            && Math.Abs(slot.Scale.Z) <= 5f;
+
     public void UpdateExistingSlotToPlayer(LayoutProbeInstance? candidate, Vector3 playerPosition)
     {
         if (candidate == null)
@@ -323,6 +590,47 @@ public sealed unsafe class LocalLayoutObjectService
             return;
 
         this.WriteInstanceTransform(instance, playerPosition, instance.CurrentRotationEuler, instance.CurrentScale, "移动实例到玩家当前位置");
+    }
+
+    public void SetPinTransform(string id, bool enabled)
+    {
+        var instance = this.GetById(id);
+        if (instance == null)
+            return;
+
+        if (enabled)
+            instance.PinFailed = false;
+
+        instance.PinTransformEnabled = enabled;
+        instance.PinTransformReason = enabled
+            ? "用户手动启用 PinTransform。"
+            : "用户手动关闭 PinTransform。";
+        instance.LastPinWriteResult = enabled
+            ? "PinTransform 已启用，下一帧开始写回目标 transform。"
+            : "PinTransform 已关闭。";
+        if (enabled)
+        {
+            instance.PinWriteFailedCount = 0;
+            instance.PinTargetPosition = instance.CurrentPosition;
+            instance.PinTargetRotationEuler = instance.CurrentRotationEuler;
+            instance.PinTargetScale = instance.CurrentScale;
+        }
+
+        this.LastStatus = instance.LastPinWriteResult;
+    }
+
+    public void DisablePlayback(string id, string reason)
+    {
+        var instance = this.GetById(id);
+        if (instance != null)
+            this.DisablePlayback(instance, reason);
+    }
+
+    private void DisablePlayback(LocalLayoutObjectInstance instance, string reason)
+    {
+        this.animatedPlaybackSystem.DisablePlayback(instance, reason);
+        instance.PinTransformEnabled = false;
+        instance.TransformMonitorActive = false;
     }
 
     public void MoveX(string id, float delta) => this.MoveBy(id, new Vector3(delta, 0f, 0f), $"X {(delta >= 0 ? "+" : string.Empty)}{delta:F1}");
@@ -512,6 +820,21 @@ public sealed unsafe class LocalLayoutObjectService
                 ? instance.PendingVisualTransform ? "PendingVisualTransform" : "Applied"
                 : instance.ModelApplyStatus;
             instance.ApplyMdlError = instance.IsRenderInvalid ? instance.TransformWriteDisabledReason : string.Empty;
+            if (!instance.IsRenderInvalid
+                && string.Equals(instance.ModelApplyStatus, "UnsafeComplexModel", StringComparison.Ordinal)
+                && this.AutoPinDynamicTransforms
+                && instance.PinTransformAutoEnabled
+                && !instance.PinFailed)
+            {
+                instance.PinTargetPosition = instance.CurrentPosition;
+                instance.PinTargetRotationEuler = instance.CurrentRotationEuler;
+                instance.PinTargetScale = instance.CurrentScale;
+                instance.PinTransformEnabled = true;
+                instance.ControlledByRuntime = true;
+                instance.PinTransformReason = "复杂/动态模型 recreate 后不做同帧写入，改由 PinTransform 每帧固定到用户目标位置。";
+                instance.LastPinWriteResult = "等待下一次 Framework.Update 写回 pin target。";
+            }
+
             this.LastStatus = instance.LastModelOverrideResult;
             return !instance.IsRenderInvalid;
         }
@@ -555,6 +878,7 @@ public sealed unsafe class LocalLayoutObjectService
         if (instance == null)
             return false;
 
+        this.DisablePlayback(instance, "恢复原 mdl / transform 前停止动画回放。");
         var originalPath = FirstNonEmpty(instance.OriginalModelResourcePath, instance.OriginalResourcePath, instance.SourceResourcePath);
         var ok = true;
         instance.RestoreStatus = "Restoring";
@@ -795,7 +1119,42 @@ public sealed unsafe class LocalLayoutObjectService
         if (instance == null)
             return;
 
+        if (!string.IsNullOrWhiteSpace(instance.AnimationGroupId))
+        {
+            this.RestoreAnimatedGroup(instance.AnimationGroupId, removeAfterRestore: true);
+            return;
+        }
+
         this.RestoreOriginal(instance, removeAfterRestore: true);
+    }
+
+    private void RestoreAnimatedGroup(string groupId, bool removeAfterRestore)
+    {
+        var children = this.instances
+            .Where(item => string.Equals(item.AnimationGroupId, groupId, StringComparison.Ordinal))
+            .ToList();
+        if (children.Count == 0)
+            return;
+
+        foreach (var child in children)
+            this.DisablePlayback(child, "恢复动画组前停止 VisibilityCycling。");
+
+        var failures = new List<string>();
+        foreach (var child in children)
+        {
+            try
+            {
+                this.RestoreOriginal(child, removeAfterRestore);
+            }
+            catch (Exception ex)
+            {
+                child.RestoreStatus = $"GroupRestoreFailed：{ex.Message}";
+                child.LastError = child.RestoreStatus;
+                failures.Add($"{child.Id}: {ex.Message}");
+            }
+        }
+
+        this.LastStatus = $"已按 group 原子恢复 VisibilityCycling：group={groupId}; children={children.Count}; failures={failures.Count}; {string.Join(" | ", failures)}";
     }
 
     public void RestoreAll(
@@ -804,33 +1163,44 @@ public sealed unsafe class LocalLayoutObjectService
         bool unsafeEnabled = true,
         bool fullLayoutConfirmed = true)
     {
+        this.animatedPlaybackSystem.StopAllAndDetach(this.instances, "RestoreAll 前全局停止动画回放。");
         var preCleanupCount = this.CleanupDuplicateInstances(auto: true);
         this.RebuildOccupiedSlotRegistry();
         var restoreCount = this.occupiedSlots.Count;
         var modelRestoreFailures = new List<string>();
+
         foreach (var instance in this.occupiedSlots.Values.ToList())
         {
-            var originalPath = FirstNonEmpty(instance.OriginalModelResourcePath, instance.OriginalResourcePath, instance.SourceResourcePath);
-            var needsModelRestore = !string.IsNullOrWhiteSpace(originalPath)
-                && !string.Equals(FirstNonEmpty(instance.CurrentResourcePath, instance.AfterModelPath), originalPath, StringComparison.OrdinalIgnoreCase);
-
-            if (needsModelRestore)
+            try
             {
-                var restoredModel = this.RestoreModelAndTransform(
-                    instance.Id,
-                    bgParts ?? Enumerable.Empty<LayoutProbeInstance>(),
-                    unsafeEnabled,
-                    fullLayoutConfirmed || instance.TransformMode == LocalLayoutTransformMode.VisualOnly);
-                if (!restoredModel)
-                    modelRestoreFailures.Add($"{instance.Id}: {FirstNonEmpty(instance.LastModelOverrideError, instance.ApplyMdlError, instance.RestoreStatus)}");
+                var originalPath = FirstNonEmpty(instance.OriginalModelResourcePath, instance.OriginalResourcePath, instance.SourceResourcePath);
+                var needsModelRestore = !string.IsNullOrWhiteSpace(originalPath)
+                    && !string.Equals(FirstNonEmpty(instance.CurrentResourcePath, instance.AfterModelPath), originalPath, StringComparison.OrdinalIgnoreCase);
 
-                if (removeAfterRestore && this.instances.Contains(instance))
-                    this.instances.Remove(instance);
-                continue;
+                if (needsModelRestore)
+                {
+                    var restoredModel = this.RestoreModelAndTransform(
+                        instance.Id,
+                        bgParts ?? Enumerable.Empty<LayoutProbeInstance>(),
+                        unsafeEnabled,
+                        fullLayoutConfirmed || instance.TransformMode == LocalLayoutTransformMode.VisualOnly);
+                    if (!restoredModel)
+                        modelRestoreFailures.Add($"{instance.Id}: {FirstNonEmpty(instance.LastModelOverrideError, instance.ApplyMdlError, instance.RestoreStatus)}");
+
+                    if (removeAfterRestore && this.instances.Contains(instance))
+                        this.instances.Remove(instance);
+                    continue;
+                }
+
+                this.RestoreOriginal(instance, removeAfterRestore);
+                instance.RestoreStatus = "Restored";
             }
-
-            this.RestoreOriginal(instance, removeAfterRestore);
-            instance.RestoreStatus = "Restored";
+            catch (Exception ex)
+            {
+                instance.RestoreStatus = $"RestoreFailed：{ex.Message}";
+                instance.LastError = instance.RestoreStatus;
+                modelRestoreFailures.Add($"{instance.Id}: {ex.Message}");
+            }
         }
 
         if (removeAfterRestore)
@@ -997,51 +1367,87 @@ public sealed unsafe class LocalLayoutObjectService
 
     private void RestoreOriginal(LocalLayoutObjectInstance instance, bool removeAfterRestore)
     {
-        if (instance.IsRenderInvalid)
+        this.DisablePlayback(instance, "恢复/删除实例前停止动画回放。");
+        instance.IsRestoring = true;
+        instance.PinTransformEnabled = false;
+        instance.TransformMonitorActive = false;
+        instance.PinTransformReason = "实例恢复/删除时停止 PinTransform。";
+
+        try
         {
+            if (instance.IsRenderInvalid)
+            {
+                instance.IsOccupied = false;
+                instance.IsRestored = true;
+                instance.IsInvalid = true;
+                instance.LastError = "实例 render 已失效，无法安全恢复，请切图/重载地图恢复。";
+                instance.TransformWriteDisabledReason = instance.LastError;
+                if (TryNormalizeSlotAddress(instance.OccupiedSlotAddress, out var invalidSlotAddress))
+                    this.occupiedSlots.Remove(invalidSlotAddress);
+                if (removeAfterRestore)
+                    this.instances.Remove(instance);
+                this.LastStatus = instance.LastError;
+                return;
+            }
+
+            if (instance.IsDuplicate)
+            {
+                instance.LastError = "重复 slot 实例不参与恢复，避免覆盖原始 transform。";
+                this.LastStatus = instance.LastError;
+                if (removeAfterRestore)
+                    this.instances.Remove(instance);
+                return;
+            }
+
+            if (!instance.CanRestore)
+            {
+                instance.LastError = "没有可恢复的原始 transform。";
+                this.LastStatus = instance.LastError;
+                return;
+            }
+
+            this.transformService.RestoreTransform(instance);
+            this.RestoreCarrierVisible(instance);
+
             instance.IsOccupied = false;
             instance.IsRestored = true;
-            instance.IsInvalid = true;
-            instance.LastError = "实例 render 已失效，无法安全恢复，请切图/重载地图恢复。";
-            instance.TransformWriteDisabledReason = instance.LastError;
-            if (TryNormalizeSlotAddress(instance.OccupiedSlotAddress, out var invalidSlotAddress))
-                this.occupiedSlots.Remove(invalidSlotAddress);
+            instance.HasCollisionMoved = false;
+            if (TryNormalizeSlotAddress(instance.OccupiedSlotAddress, out var occupiedSlotAddress))
+                this.occupiedSlots.Remove(occupiedSlotAddress);
             if (removeAfterRestore)
                 this.instances.Remove(instance);
-            this.LastStatus = instance.LastError;
-            return;
-        }
 
-        if (instance.IsDuplicate)
+            this.LastStatus = this.transformService.LastResult;
+        }
+        finally
         {
-            instance.LastError = "重复 slot 实例不参与恢复，避免覆盖原始 transform。";
-            this.LastStatus = instance.LastError;
-            if (removeAfterRestore)
-                this.instances.Remove(instance);
-            return;
+            instance.IsRestoring = false;
         }
+    }
 
-        if (!instance.CanRestore)
+    private void RestoreCarrierVisible(LocalLayoutObjectInstance instance)
+    {
+        if (!TryGetPointer(instance.OccupiedSlotAddress, out var pointer))
+            return;
+
+        try
         {
-            instance.LastError = "没有可恢复的原始 transform。";
-            this.LastStatus = instance.LastError;
-            return;
+            if (!TryGetGraphicsObjectAddress(pointer, out var graphicsAddress) || graphicsAddress == 0)
+                return;
+
+            instance.GraphicsObjectAddress = $"0x{graphicsAddress:X}";
+            var bg = (SceneBgObject*)graphicsAddress;
+            if (bg->ModelResourceHandle == null || bg->ModelResourceHandle->LoadState != 7)
+                return;
+
+            bg->IsVisible = instance.OriginalVisible;
+            bg->UpdateRender();
+            instance.Visible = instance.OriginalVisible;
         }
-
-        if (instance.TransformMode == LocalLayoutTransformMode.VisualOnly)
-            this.transformService.RestoreTransform(instance);
-        else
-            this.transformService.RestoreTransform(instance);
-
-        instance.IsOccupied = false;
-        instance.IsRestored = true;
-        instance.HasCollisionMoved = false;
-        if (TryNormalizeSlotAddress(instance.OccupiedSlotAddress, out var occupiedSlotAddress))
-            this.occupiedSlots.Remove(occupiedSlotAddress);
-        if (removeAfterRestore)
-            this.instances.Remove(instance);
-
-        this.LastStatus = this.transformService.LastResult;
+        catch (Exception ex)
+        {
+            instance.LastError = $"恢复 carrier visible 失败：{ex.Message}";
+        }
     }
 
     private void WriteInstanceTransform(LocalLayoutObjectInstance instance, Vector3 position, Vector3 rotationEuler, Vector3 scale, string action)
@@ -1049,8 +1455,162 @@ public sealed unsafe class LocalLayoutObjectService
         instance.CurrentPosition = position;
         instance.CurrentRotationEuler = rotationEuler;
         instance.CurrentScale = scale;
-        this.transformService.ApplyTransform(instance);
+        var applied = this.transformService.ApplyTransform(instance);
+        if (applied)
+        {
+            this.ScheduleTransformMonitor(instance, position, rotationEuler, scale, action);
+        }
+        else
+        {
+            instance.TransformMonitorActive = false;
+            instance.LastTransformWriteSkippedReason = this.transformService.LastResult;
+            instance.TransformOverwriteDetails = "transform 写入未执行，原因见 transform disabled reason / skipped reason。";
+        }
+
         this.LastStatus = $"{action}锛{this.transformService.LastResult}";
+    }
+
+    private void ScheduleTransformMonitor(LocalLayoutObjectInstance instance, Vector3 expectedPosition, Vector3 expectedRotationEuler, Vector3 expectedScale, string action)
+    {
+        instance.ControlledByRuntime = false;
+        instance.TransformMonitorActive = true;
+        instance.TransformMonitorFrame = 0;
+        instance.TransformMonitorExpectedPosition = expectedPosition;
+        instance.TransformMonitorExpectedRotationEuler = expectedRotationEuler;
+        instance.TransformMonitorExpectedScale = expectedScale;
+        instance.PinTargetPosition = expectedPosition;
+        instance.PinTargetRotationEuler = expectedRotationEuler;
+        instance.PinTargetScale = expectedScale;
+        instance.PinFailed = false;
+        instance.AppliedTransformPosition = FormatVector(expectedPosition);
+        instance.LastTransformWriteSkippedReason = string.Empty;
+        instance.TransformOverwriteDetails = $"已写入 {action}，等待 1/5/30 帧 readback。";
+        instance.TransformReadbackAfter1Frame = string.Empty;
+        instance.TransformReadbackAfter5Frames = string.Empty;
+        instance.TransformReadbackAfter30Frames = string.Empty;
+        instance.TransformReadbackImmediate = this.ReadCurrentTransformForMonitor(instance, out _) ?? instance.LastReadback;
+    }
+
+    private void UpdateTransformMonitor(LocalLayoutObjectInstance instance)
+    {
+        if (instance.IsInvalid || instance.IsRestored || instance.IsRenderInvalid)
+        {
+            instance.TransformMonitorActive = false;
+            instance.TransformOverwriteDetails = "监控停止：实例已失效、已恢复或 render invalid。";
+            return;
+        }
+
+        instance.TransformMonitorFrame++;
+        var readback = this.ReadCurrentTransformForMonitor(instance, out var readbackPosition);
+        if (string.IsNullOrWhiteSpace(readback))
+        {
+            instance.TransformMonitorActive = false;
+            instance.ControlledByRuntime = true;
+            instance.TransformOverwriteDetails = "监控停止：readback 失败，可能已被 runtime 或 layout controller 接管。";
+            return;
+        }
+
+        if (instance.TransformMonitorFrame == 1)
+            instance.TransformReadbackAfter1Frame = readback;
+        if (instance.TransformMonitorFrame == 5)
+            instance.TransformReadbackAfter5Frames = readback;
+        if (instance.TransformMonitorFrame == 30)
+            instance.TransformReadbackAfter30Frames = readback;
+
+        var distanceFromExpected = Vector3.Distance(readbackPosition, instance.TransformMonitorExpectedPosition);
+        if (instance.TransformMonitorFrame >= 1 && distanceFromExpected > 0.75f)
+        {
+            var sourceDistance = Vector3.Distance(readbackPosition, instance.OccupiedSlotOriginalPosition);
+            instance.ControlledByRuntime = true;
+            instance.TransformOverwriteDetails =
+                $"readback 偏离目标 {distanceFromExpected:F2}m；到原 slot 位置距离 {sourceDistance:F2}m。疑似被 runtime/controller/layout transform 覆盖。";
+            if (this.AutoPinDynamicTransforms && instance.PinTransformAutoEnabled && !instance.PinFailed)
+            {
+                instance.PinTransformEnabled = true;
+                instance.PinTransformReason = "下一帧 readback 偏离目标，自动启用 PinTransform。";
+                instance.LastPinWriteResult = "等待下一次 Framework.Update 写回 pin target。";
+            }
+        }
+
+        if (instance.TransformMonitorFrame >= 1 && instance.ControlledByRuntime)
+        {
+            instance.TransformMonitorActive = false;
+            return;
+        }
+
+        if (instance.TransformMonitorFrame >= 30)
+        {
+            instance.TransformMonitorActive = false;
+            if (!instance.ControlledByRuntime)
+                instance.TransformOverwriteDetails = "1/5/30 帧 readback 均未明显偏离目标，暂未发现 runtime 覆盖。";
+        }
+    }
+
+    private void ProcessPinTransform(LocalLayoutObjectInstance instance)
+    {
+        if (!IsActiveInstance(instance, out _) || instance.IsRenderInvalid || instance.PendingVisualTransform)
+            return;
+
+        if (instance.PinFailed)
+        {
+            instance.PinTransformEnabled = false;
+            return;
+        }
+
+        instance.CurrentPosition = instance.PinTargetPosition;
+        instance.CurrentRotationEuler = instance.PinTargetRotationEuler;
+        instance.CurrentScale = instance.PinTargetScale;
+        var success = this.transformService.ApplyTransform(instance);
+        if (success)
+        {
+            instance.PinWriteFailedCount = 0;
+            instance.LastPinWriteResult = $"PinTransform 写回成功：{this.transformService.LastResult}";
+            return;
+        }
+
+        instance.PinWriteFailedCount++;
+        instance.LastPinWriteResult = $"PinTransform 写回失败 {instance.PinWriteFailedCount}/30：{this.transformService.LastResult}";
+        if (instance.PinWriteFailedCount < 30)
+            return;
+
+        instance.PinFailed = true;
+        instance.PinTransformEnabled = false;
+        instance.PinTransformReason = "连续 30 次写入失败，已暂停 PinTransform。";
+        instance.LastError = instance.PinTransformReason;
+    }
+
+    private string? ReadCurrentTransformForMonitor(LocalLayoutObjectInstance instance, out Vector3 position)
+    {
+        position = Vector3.Zero;
+        try
+        {
+            if (instance.TransformMode == LocalLayoutTransformMode.VisualOnly)
+            {
+                if (!TryParseAddress(instance.GraphicsObjectAddress, out var graphicsAddress) || graphicsAddress == 0)
+                    return null;
+
+                var snapshot = ReadSceneObjectTransform(graphicsAddress);
+                if (snapshot == null)
+                    return null;
+
+                position = snapshot.Value.Position;
+                return FormatSceneSnapshot(snapshot.Value);
+            }
+
+            if (!TryGetPointer(instance.OccupiedSlotAddress, out var pointer))
+                return null;
+
+            var layout = ReadLayoutTransform(pointer);
+            if (layout == null)
+                return null;
+
+            position = layout.Value.Position;
+            return FormatSnapshot(layout.Value);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private void WriteVisualTransform(LocalLayoutObjectInstance instance, Vector3 position, Quaternion rotation, Vector3 scale, string action)

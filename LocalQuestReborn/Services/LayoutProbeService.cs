@@ -177,12 +177,18 @@ public sealed unsafe class LayoutProbeService
                 if (instancePtr == null || instancePtr.Value == null)
                     continue;
 
-                var instance = ParseInstance(instancePtr.Value, searchOrigin, index, $"{source}; Layer={layerKey}; Instance={instanceKey}");
-                if (instance == null)
-                    continue;
-
-                results.Add(instance);
-                index++;
+                ParseInstanceTree(
+                    instancePtr.Value,
+                    searchOrigin,
+                    results,
+                    ref index,
+                    $"{source}; Layer={layerKey}; Instance={instanceKey}",
+                    sourceKind: "LoadedLayout",
+                    sharedGroupPath: string.Empty,
+                    parentAddress: string.Empty,
+                    parentKey: string.Empty,
+                    childIndex: -1,
+                    depth: 0);
             }
         }
 
@@ -216,7 +222,76 @@ public sealed unsafe class LayoutProbeService
         }
     }
 
-    private LayoutProbeInstance? ParseInstance(ILayoutInstance* instanceLayout, Vector3 searchOrigin, int index, string source)
+    private void ParseInstanceTree(
+        ILayoutInstance* instanceLayout,
+        Vector3 searchOrigin,
+        List<LayoutProbeInstance> results,
+        ref int index,
+        string source,
+        string sourceKind,
+        string sharedGroupPath,
+        string parentAddress,
+        string parentKey,
+        int childIndex,
+        int depth)
+    {
+        if (instanceLayout == null)
+            return;
+
+        if (depth > 4)
+            return;
+
+        var type = instanceLayout->Id.Type;
+        if (type == InstanceType.SharedGroup)
+        {
+            var sharedGroup = (SharedGroupLayoutInstance*)instanceLayout;
+            var parent = this.ParseSharedGroup(
+                sharedGroup,
+                searchOrigin,
+                index,
+                source,
+                sourceKind,
+                sharedGroupPath,
+                parentAddress,
+                parentKey,
+                childIndex);
+            if (parent != null)
+            {
+                results.Add(parent);
+                index++;
+            }
+
+            this.ParseSharedGroupChildren(sharedGroup, searchOrigin, results, ref index, source, depth);
+            return;
+        }
+
+        var parsed = this.ParseInstance(
+            instanceLayout,
+            searchOrigin,
+            index,
+            source,
+            sourceKind,
+            sharedGroupPath,
+            parentAddress,
+            parentKey,
+            childIndex);
+        if (parsed == null)
+            return;
+
+        results.Add(parsed);
+        index++;
+    }
+
+    private LayoutProbeInstance? ParseInstance(
+        ILayoutInstance* instanceLayout,
+        Vector3 searchOrigin,
+        int index,
+        string source,
+        string sourceKind,
+        string sharedGroupPath,
+        string parentAddress,
+        string parentKey,
+        int childIndex)
     {
         if (instanceLayout == null)
             return null;
@@ -224,14 +299,23 @@ public sealed unsafe class LayoutProbeService
         var type = instanceLayout->Id.Type;
         return type switch
         {
-            InstanceType.BgPart when this.ShowBgPart => ParseBgPart((BgPartsLayoutInstance*)instanceLayout, searchOrigin, index, source),
-            InstanceType.SharedGroup when this.ShowSharedGroup => ParseSharedGroup((SharedGroupLayoutInstance*)instanceLayout, searchOrigin, index, source),
-            InstanceType.Light when this.ShowLight => ParseLight(instanceLayout, searchOrigin, index, source),
+            InstanceType.BgPart when this.ShowBgPart => ParseBgPart((BgPartsLayoutInstance*)instanceLayout, searchOrigin, index, source, sourceKind, sharedGroupPath, parentAddress, parentKey, childIndex),
+            InstanceType.SharedGroup when this.ShowSharedGroup => ParseSharedGroup((SharedGroupLayoutInstance*)instanceLayout, searchOrigin, index, source, sourceKind, sharedGroupPath, parentAddress, parentKey, childIndex),
+            InstanceType.Light when this.ShowLight => ParseLight(instanceLayout, searchOrigin, index, source, sourceKind, sharedGroupPath, parentAddress, parentKey, childIndex),
             _ => null,
         };
     }
 
-    private LayoutProbeInstance? ParseBgPart(BgPartsLayoutInstance* bgPart, Vector3 searchOrigin, int index, string source)
+    private LayoutProbeInstance? ParseBgPart(
+        BgPartsLayoutInstance* bgPart,
+        Vector3 searchOrigin,
+        int index,
+        string source,
+        string sourceKind,
+        string sharedGroupPath,
+        string parentAddress,
+        string parentKey,
+        int childIndex)
     {
         if (bgPart == null)
             return null;
@@ -259,14 +343,28 @@ public sealed unsafe class LayoutProbeService
             ResourcePath = path,
             Visible = visible,
             LayerId = "LayerManager",
-            GroupId = "BgPart",
+            GroupId = string.IsNullOrWhiteSpace(parentAddress) ? "BgPart" : "SharedGroupChild",
             DistanceToPlayer = Vector3.Distance(searchOrigin, position),
             Source = $"{source} -> BgPartsLayoutInstance",
-            DebugInfo = $"GraphicsObject=0x{(nint)bgPart->GraphicsObject:X}; ModelResourceHandle={modelHandle}",
+            SourceKind = sourceKind,
+            SharedGroupPath = sharedGroupPath,
+            ParentAddress = parentAddress,
+            ParentKey = parentKey,
+            ChildIndex = childIndex,
+            DebugInfo = $"GraphicsObject=0x{(nint)bgPart->GraphicsObject:X}; ModelResourceHandle={modelHandle}; sourceKind={sourceKind}; sharedGroupPath={sharedGroupPath}; parent={parentAddress}; parentKey={parentKey}; childIndex={childIndex}",
         };
     }
 
-    private LayoutProbeInstance? ParseSharedGroup(SharedGroupLayoutInstance* sharedGroup, Vector3 searchOrigin, int index, string source)
+    private LayoutProbeInstance? ParseSharedGroup(
+        SharedGroupLayoutInstance* sharedGroup,
+        Vector3 searchOrigin,
+        int index,
+        string source,
+        string sourceKind,
+        string parentSharedGroupPath,
+        string parentAddress,
+        string parentKey,
+        int childIndex)
     {
         if (sharedGroup == null)
             return null;
@@ -304,11 +402,67 @@ public sealed unsafe class LayoutProbeService
             GroupId = "SharedGroup",
             DistanceToPlayer = Vector3.Distance(searchOrigin, position),
             Source = $"{source} -> SharedGroupLayoutInstance",
-            DebugInfo = $"Children={childCount}",
+            SourceKind = sourceKind,
+            SharedGroupPath = path,
+            ParentAddress = parentAddress,
+            ParentKey = parentKey,
+            ChildIndex = childIndex,
+            DebugInfo = $"Children={childCount}; sharedGroupPath={path}; parentSharedGroupPath={parentSharedGroupPath}; parent={parentAddress}; parentKey={parentKey}; childIndex={childIndex}",
         };
     }
 
-    private LayoutProbeInstance? ParseLight(ILayoutInstance* light, Vector3 searchOrigin, int index, string source)
+    private void ParseSharedGroupChildren(SharedGroupLayoutInstance* sharedGroup, Vector3 searchOrigin, List<LayoutProbeInstance> results, ref int index, string source, int depth)
+    {
+        if (sharedGroup == null || depth > 4)
+            return;
+
+        var sharedGroupPath = ReadPrimaryPath((ILayoutInstance*)sharedGroup);
+        var parentAddress = $"0x{(nint)sharedGroup:X}";
+        var parentKey = $"SharedGroup:{(nint)sharedGroup:X}";
+        var childIndex = 0;
+        try
+        {
+            foreach (var instanceDataPtr in sharedGroup->Instances.Instances)
+            {
+                if (instanceDataPtr == null || instanceDataPtr.Value == null)
+                    continue;
+
+                var childNode = instanceDataPtr.Value;
+                var childInstance = childNode->Instance;
+                if (childInstance == null)
+                    continue;
+
+                ParseInstanceTree(
+                    childInstance,
+                    searchOrigin,
+                    results,
+                    ref index,
+                    $"{source}; SharedGroup={parentAddress}; Child={childIndex}",
+                    sourceKind: "SharedGroup",
+                    sharedGroupPath,
+                    parentAddress,
+                    parentKey,
+                    childIndex,
+                    depth + 1);
+                childIndex++;
+            }
+        }
+        catch (Exception ex)
+        {
+            this.log.Debug(ex, "Failed to expand SharedGroup children.");
+        }
+    }
+
+    private LayoutProbeInstance? ParseLight(
+        ILayoutInstance* light,
+        Vector3 searchOrigin,
+        int index,
+        string source,
+        string sourceKind,
+        string sharedGroupPath,
+        string parentAddress,
+        string parentKey,
+        int childIndex)
     {
         if (light == null)
             return null;
@@ -335,6 +489,11 @@ public sealed unsafe class LayoutProbeService
             GroupId = "Light",
             DistanceToPlayer = Vector3.Distance(searchOrigin, position),
             Source = $"{source} -> LightLayoutInstance",
+            SourceKind = sourceKind,
+            SharedGroupPath = sharedGroupPath,
+            ParentAddress = parentAddress,
+            ParentKey = parentKey,
+            ChildIndex = childIndex,
             DebugInfo = "当前 FFXIVClientStructs 未公开 LightLayoutInstance 类型，按 ILayoutInstance 只读显示。",
         };
     }

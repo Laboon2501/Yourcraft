@@ -56,9 +56,6 @@ public sealed unsafe class LayoutObjectTransformService
             reason = "实例已恢复。";
         else if (instance.PendingVisualTransform)
             reason = $"recreate 后 VisualOnly transform 仍在等待安全写入：{instance.PendingVisualTransformResult}";
-        else if (string.Equals(instance.ModelApplyStatus, "UnsafeComplexModel", StringComparison.Ordinal)
-            && !string.IsNullOrWhiteSpace(instance.TransformWriteDisabledReason))
-            reason = instance.TransformWriteDisabledReason;
         else if (instance.IsRenderInvalid)
             reason = string.IsNullOrWhiteSpace(instance.TransformWriteDisabledReason)
                 ? "当前实例 render 已失效，不能再写 Graphics.Scene.Object transform。"
@@ -276,9 +273,6 @@ public sealed unsafe class LayoutObjectTransformService
 
     private void EnsureGraphicsObjectAddress(LocalLayoutObjectInstance instance)
     {
-        if (!string.IsNullOrWhiteSpace(instance.GraphicsObjectAddress))
-            return;
-
         if (!TryGetPointer(instance.OccupiedSlotAddress, out var pointer))
             return;
 

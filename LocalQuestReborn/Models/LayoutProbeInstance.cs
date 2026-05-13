@@ -34,5 +34,17 @@ public sealed class LayoutProbeInstance
 
     public string Source { get; set; } = string.Empty;
 
+    public string SourceKind { get; set; } = "LoadedLayout";
+
+    public string SharedGroupPath { get; set; } = string.Empty;
+
+    public string ParentAddress { get; set; } = string.Empty;
+
+    public string ParentKey { get; set; } = string.Empty;
+
+    public int ChildIndex { get; set; } = -1;
+
     public string DebugInfo { get; set; } = string.Empty;
+
+    public string CarrierRejectReason { get; set; } = string.Empty;
 }
