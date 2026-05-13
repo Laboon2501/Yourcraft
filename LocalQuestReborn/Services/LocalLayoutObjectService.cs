@@ -149,6 +149,9 @@ public sealed unsafe class LocalLayoutObjectService
             Id = $"layout-object-{DateTimeOffset.Now.ToUnixTimeMilliseconds()}-{Guid.NewGuid():N}"[..45],
             TemplateSourceSlotAddress = template?.Address ?? candidate.Address,
             TemplateResourcePath = template?.ResourcePath ?? candidate.ResourcePath,
+            TemplateTransform = template == null
+                ? FormatSnapshot(originalLayout.Value)
+                : $"position=({FormatVector(template.Position)}), rotation={template.Rotation}, scale=({FormatVector(template.Scale)})",
             SourceResourcePath = candidate.ResourcePath,
             SourceKind = candidate.SourceKind,
             SourceSharedGroupPath = candidate.SharedGroupPath,
@@ -215,7 +218,9 @@ public sealed unsafe class LocalLayoutObjectService
         string defaultCustomMdlPath = "",
         IEnumerable<LayoutProbeInstance>? bgParts = null,
         bool unsafeEnabled = false,
-        bool fullLayoutConfirmed = false)
+        bool fullLayoutConfirmed = false,
+        Vector3 defaultRotationEuler = default,
+        Vector3? defaultScale = null)
     {
         var created = new List<LocalLayoutObjectInstance>();
         if (template == null)
@@ -256,11 +261,11 @@ public sealed unsafe class LocalLayoutObjectService
         }
 
         var templateBlockReason = GetStaticObjectBlockReason(template);
-        if (!string.IsNullOrWhiteSpace(templateBlockReason))
-        {
-            this.LastStatus = $"{DynamicObjectBlockedMessage} 模板原因：{templateBlockReason}";
-            return created;
-        }
+        var templateWarning = string.IsNullOrWhiteSpace(templateBlockReason)
+            ? string.Empty
+            : $"模板疑似动态/SharedGroup/controller 驱动：{templateBlockReason}。本次只把它当作外观路径参考，动态效果不会复制。";
+
+        var excluded = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { template.Address };
 
         var indexedSlots = candidateSlots
             .Select((slot, index) => new { Slot = slot, Index = index });
@@ -269,7 +274,7 @@ public sealed unsafe class LocalLayoutObjectService
             .Where(slot => string.Equals(slot.Slot.Type, "BgPart", StringComparison.Ordinal))
             .Where(slot => !string.Equals(slot.Slot.Address, template.Address, StringComparison.OrdinalIgnoreCase))
             .Where(slot => !this.IsSlotOccupied(slot.Slot.Address))
-            .Where(slot => string.IsNullOrWhiteSpace(GetStaticObjectBlockReason(slot.Slot)));
+            .Where(slot => string.IsNullOrWhiteSpace(this.GetCarrierRejectReason(slot.Slot, excluded)));
 
         if (hasCustomMdlPath || allowDifferentResourcePathSlots)
         {
@@ -303,11 +308,13 @@ public sealed unsafe class LocalLayoutObjectService
         for (var index = 0; index < slots.Count; index++)
         {
             var position = basePosition + spacing * index;
+            var targetScale = defaultScale ?? Vector3.One;
             var instance = this.CreateFromTemplate(template, slots[index], position, mode, applyTemplateModel: false);
             if (instance == null)
                 continue;
 
             created.Add(instance);
+            this.WriteInstanceTransform(instance, position, defaultRotationEuler, targetScale, "复制体初始 transform");
             if (!hasCustomMdlPath)
                 continue;
 
@@ -330,10 +337,10 @@ public sealed unsafe class LocalLayoutObjectService
         }
 
         this.LastStatus = hasCustomMdlPath
-            ? $"批量完成：createdCount={created.Count}; mdlAppliedCount={mdlAppliedCount}; mdlFailedCount={failures.Count}; failed={string.Join(" | ", failures)}"
+            ? $"批量完成：createdCount={created.Count}; mdlAppliedCount={mdlAppliedCount}; mdlFailedCount={failures.Count}; failed={string.Join(" | ", failures)} {templateWarning}"
             : allowDifferentResourcePathSlots
-                ? $"已从 {created.Count} 个 bg/bgcommon 可用 slot 创建实例。未应用 custom mdl path 时，不建议把它当作模板外观复制。模板 slot 已排除。"
-                : $"已从模板创建 {created.Count} 个同 resourcePath 本地实例。模板 slot 已排除。";
+                ? $"已从 {created.Count} 个 bg/bgcommon 可用 slot 创建实例。未应用 custom mdl path 时，不建议把它当作模板外观复制。模板 slot 已排除。{templateWarning}"
+                : $"已从模板创建 {created.Count} 个同 resourcePath 本地实例。模板 slot 已排除。{templateWarning}";
         return created;
     }
 
@@ -799,6 +806,92 @@ public sealed unsafe class LocalLayoutObjectService
         instance.ApplyMdlError = instance.CollisionApplied ? string.Empty : instance.CollisionError;
         this.LastStatus = instance.LastModelOverrideResult;
         return true;
+    }
+
+    public bool ChangeCollisionMode(
+        string id,
+        LocalLayoutTransformMode mode,
+        IEnumerable<LayoutProbeInstance> bgParts,
+        bool unsafeEnabled,
+        bool fullLayoutConfirmed)
+    {
+        var instance = this.GetById(id);
+        if (instance == null)
+            return false;
+
+        if (!unsafeEnabled)
+            return this.FailCollisionModeChange(instance, "UnsafeMode=false。");
+        if (instance.IsInvalid || instance.IsRestored || instance.IsDuplicate)
+            return this.FailCollisionModeChange(instance, "实例已失效、已恢复或是重复记录。");
+        if (instance.IsRenderInvalid)
+            return this.FailCollisionModeChange(instance, "实例 render 已失效，不能安全切换 collision 模式。");
+        if (mode == LocalLayoutTransformMode.FullLayoutWithCollision && !fullLayoutConfirmed)
+            return this.FailCollisionModeChange(instance, "FullLayoutWithCollision 需要二次确认。");
+
+        if (instance.TransformMode == mode)
+        {
+            this.WriteInstanceTransform(instance, instance.CurrentPosition, instance.CurrentRotationEuler, instance.CurrentScale, "刷新当前 collision 模式 transform");
+            this.LastStatus = $"实例已是 {mode}，已按当前模式重新应用 transform。";
+            return true;
+        }
+
+        this.DisablePlayback(instance, "切换 collision 模式前停止动画/监控。");
+
+        if (mode == LocalLayoutTransformMode.VisualOnly)
+        {
+            var previousMode = instance.TransformMode;
+            if (previousMode == LocalLayoutTransformMode.FullLayoutWithCollision)
+            {
+                var collisionRestored = this.collisionExperimentService.RestoreCollision(instance, unsafeEnabled, fullLayoutConfirmed: true, confirmed: true);
+                if (!collisionRestored)
+                    instance.CollisionError = $"切换 VisualOnly 时恢复原 collision 失败：{this.collisionExperimentService.LastResult}";
+            }
+
+            var layoutRestored = this.RestoreOriginalLayoutTransformDirect(instance, out var layoutResult);
+            instance.TransformMode = LocalLayoutTransformMode.VisualOnly;
+            instance.CollisionApplied = false;
+            instance.HasCollisionMoved = false;
+            instance.CollisionSourceResolveResult = $"VisualOnly：collision 已恢复/保持在 carrier 原 slot。layoutRestore={layoutResult}";
+            this.WriteInstanceTransform(instance, instance.CurrentPosition, instance.CurrentRotationEuler, instance.CurrentScale, "切换到 VisualOnly");
+            this.LastStatus = layoutRestored
+                ? $"已切换到 VisualOnly：只写 Graphics.Scene.Object，collision 不随复制体移动。"
+                : $"已切换到 VisualOnly，但恢复原 layout transform 失败：{layoutResult}";
+            return layoutRestored;
+        }
+
+        instance.TransformMode = LocalLayoutTransformMode.FullLayoutWithCollision;
+        instance.HasCollisionMoved = true;
+        var modelPath = FirstNonEmpty(instance.CurrentModelPath, instance.CurrentResourcePath, instance.CustomModelPath, instance.TemplateResourcePath);
+        var resolve = this.collisionSourceResolver.Resolve(modelPath, bgParts);
+        instance.CollisionSourceResolveResult = resolve.Message;
+        if (resolve.Found && resolve.SourceInstance != null)
+        {
+            var captured = this.collisionExperimentService.CaptureSource(instance, resolve.SourceInstance);
+            if (captured)
+                this.collisionExperimentService.ApplySourceCollision(instance, unsafeEnabled, fullLayoutConfirmed: true, confirmed: true);
+
+            instance.CollisionApplied = captured && string.IsNullOrWhiteSpace(instance.CollisionExperimentLastError);
+            instance.CollisionError = instance.CollisionApplied ? string.Empty : FirstNonEmpty(instance.CollisionExperimentLastError, this.collisionExperimentService.LastResult);
+        }
+        else
+        {
+            instance.CollisionApplied = false;
+            instance.CollisionError = "未找到当前 mdl 对应的 collision source，已切换为 FullLayout，但 collision 未替换/保持原状态。";
+        }
+
+        this.WriteInstanceTransform(instance, instance.CurrentPosition, instance.CurrentRotationEuler, instance.CurrentScale, "切换到 FullLayoutWithCollision");
+        this.LastStatus = instance.CollisionApplied
+            ? $"已切换到 FullLayoutWithCollision，并应用 target collision：{instance.CollisionSourceResourcePath}"
+            : $"已切换到 FullLayoutWithCollision。{instance.CollisionError}";
+        return true;
+    }
+
+    private bool FailCollisionModeChange(LocalLayoutObjectInstance instance, string message)
+    {
+        instance.CollisionError = message;
+        instance.LastError = message;
+        this.LastStatus = message;
+        return false;
     }
 
     public bool RestoreModelAndTransform(

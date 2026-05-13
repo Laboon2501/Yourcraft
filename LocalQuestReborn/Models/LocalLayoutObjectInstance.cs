@@ -15,7 +15,15 @@ public sealed class LocalLayoutObjectInstance
 
     public string TemplateSourceSlotAddress { get; set; } = string.Empty;
 
+    public string TemplateSlotAddress
+    {
+        get => this.TemplateSourceSlotAddress;
+        set => this.TemplateSourceSlotAddress = value;
+    }
+
     public string TemplateResourcePath { get; set; } = string.Empty;
+
+    public string TemplateTransform { get; set; } = string.Empty;
 
     public string SourceResourcePath { get; set; } = string.Empty;
 
@@ -54,6 +62,18 @@ public sealed class LocalLayoutObjectInstance
     public string OccupiedSlotAddress { get; set; } = string.Empty;
 
     public LocalLayoutTransformMode TransformMode { get; set; } = LocalLayoutTransformMode.VisualOnly;
+
+    public LocalLayoutTransformMode CollisionMode
+    {
+        get => this.TransformMode;
+        set => this.TransformMode = value;
+    }
+
+    public bool CollisionEnabled
+    {
+        get => this.TransformMode == LocalLayoutTransformMode.FullLayoutWithCollision;
+        set => this.TransformMode = value ? LocalLayoutTransformMode.FullLayoutWithCollision : LocalLayoutTransformMode.VisualOnly;
+    }
 
     public string GraphicsObjectAddress { get; set; } = string.Empty;
 

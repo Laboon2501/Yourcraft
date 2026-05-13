@@ -37,7 +37,11 @@ public sealed class MainWindow : Window
     private bool allowDifferentResourcePathSlots;
     private int layoutCopyCount = 1;
     private float layoutCopySpacing = 2f;
+    private float layoutCopySpacingY;
     private float layoutCopySpacingZ;
+    private LocalLayoutTransformMode layoutCopyDefaultMode = LocalLayoutTransformMode.VisualOnly;
+    private Vector3 layoutCopyDefaultRotationEuler;
+    private Vector3 layoutCopyDefaultScale = Vector3.One;
     private bool layoutUseManualBasePosition;
     private Vector3 layoutManualBasePosition;
     private string layoutBatchCustomMdlPath = string.Empty;
@@ -802,7 +806,14 @@ public sealed class MainWindow : Window
         ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "复制模板");
         ImGui.TextWrapped(template == null ? "当前模板：无" : $"template resourcePath：{template.ResourcePath}");
         ImGui.TextWrapped(template == null ? "template slotAddress：无" : $"template slotAddress：{template.Address}");
+        ImGui.TextWrapped(template == null ? "template transform：无" : $"template transform：pos {FormatVector(template.Position)} | rot {template.Rotation} | scale {FormatVector(template.Scale)}");
         ImGui.TextWrapped(template == null ? "template 是否被排除：未设置模板" : "template 是否被排除：是");
+        if (template != null)
+        {
+            var templateRisk = this.localLayoutObjects.GetCarrierRejectReason(template);
+            if (!string.IsNullOrWhiteSpace(templateRisk))
+                ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), $"模板风险：{templateRisk}。模板只作为外观/路径参考，不会占用或修改本体；动态效果不会复制。");
+        }
         ImGui.BeginDisabled(candidate == null);
         if (ImGui.Button("设为复制模板") && candidate != null)
         {
@@ -812,10 +823,31 @@ public sealed class MainWindow : Window
                 this.layoutManualBasePosition = this.runtime.PlayerPosition ?? candidate.Position;
         }
         ImGui.EndDisabled();
+        ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "创建复制体");
         ImGui.InputInt("创建数量 N", ref this.layoutCopyCount);
         this.layoutCopyCount = Math.Clamp(this.layoutCopyCount, 1, 100);
-        ImGui.InputFloat("横向 X spacing", ref this.layoutCopySpacing);
-        ImGui.InputFloat("纵向 Z spacing", ref this.layoutCopySpacingZ);
+        ImGui.InputFloat("间距 X", ref this.layoutCopySpacing);
+        ImGui.InputFloat("间距 Y", ref this.layoutCopySpacingY);
+        ImGui.InputFloat("间距 Z", ref this.layoutCopySpacingZ);
+        DrawEnumCombo("默认 collision 模式", this.layoutCopyDefaultMode, value => this.layoutCopyDefaultMode = value);
+        if (this.layoutCopyDefaultMode == LocalLayoutTransformMode.FullLayoutWithCollision)
+            ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "FullLayoutWithCollision 会让复制体的 collision 随模型一起移动，需要上方二次确认。");
+        var copyRotationDegrees = new Vector3(
+            RadiansToDegrees(this.layoutCopyDefaultRotationEuler.X),
+            RadiansToDegrees(this.layoutCopyDefaultRotationEuler.Y),
+            RadiansToDegrees(this.layoutCopyDefaultRotationEuler.Z));
+        if (ImGui.InputFloat("默认 Pitch X (deg)", ref copyRotationDegrees.X))
+            this.layoutCopyDefaultRotationEuler.X = DegreesToRadians(copyRotationDegrees.X);
+        if (ImGui.InputFloat("默认 Yaw Y (deg)", ref copyRotationDegrees.Y))
+            this.layoutCopyDefaultRotationEuler.Y = DegreesToRadians(copyRotationDegrees.Y);
+        if (ImGui.InputFloat("默认 Roll Z (deg)", ref copyRotationDegrees.Z))
+            this.layoutCopyDefaultRotationEuler.Z = DegreesToRadians(copyRotationDegrees.Z);
+        var copyDefaultScale = this.layoutCopyDefaultScale;
+        if (ImGui.InputFloat("默认 Scale X", ref copyDefaultScale.X)) this.layoutCopyDefaultScale = Vector3.Max(copyDefaultScale, new Vector3(0.01f));
+        copyDefaultScale = this.layoutCopyDefaultScale;
+        if (ImGui.InputFloat("默认 Scale Y", ref copyDefaultScale.Y)) this.layoutCopyDefaultScale = Vector3.Max(copyDefaultScale, new Vector3(0.01f));
+        copyDefaultScale = this.layoutCopyDefaultScale;
+        if (ImGui.InputFloat("默认 Scale Z", ref copyDefaultScale.Z)) this.layoutCopyDefaultScale = Vector3.Max(copyDefaultScale, new Vector3(0.01f));
         EditString("批量默认 custom mdl path（可留空）", this.layoutBatchCustomMdlPath, 512, value => this.layoutBatchCustomMdlPath = value);
         ImGui.TextWrapped("留空时只占用同 resourcePath slot；填写 bg/...mdl 或 bgcommon/...mdl 时，可使用任意 bg/bgcommon 可用 slot，并在创建后逐个应用该 mdl。");
         var usePlayerBase = !this.layoutUseManualBasePosition;
@@ -842,8 +874,8 @@ public sealed class MainWindow : Window
             this.allowDifferentResourcePathSlots = allowDifferent;
         if (this.allowDifferentResourcePathSlots)
             ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "警告：未填写 custom mdl path 时，使用不同 resourcePath slot 不是复制模板，只是移动不同物体。");
-        var mode = this.localLayoutFullCollisionMode ? LocalLayoutTransformMode.FullLayoutWithCollision : LocalLayoutTransformMode.VisualOnly;
-        var fullLayoutBlocked = this.localLayoutFullCollisionMode && !this.confirmFullLayoutCollisionMode;
+        var mode = this.layoutCopyDefaultMode;
+        var fullLayoutBlocked = mode == LocalLayoutTransformMode.FullLayoutWithCollision && !this.confirmFullLayoutCollisionMode;
         var hasBasePosition = this.layoutUseManualBasePosition || this.runtime.PlayerPosition.HasValue;
         var basePosition = this.layoutUseManualBasePosition
             ? this.layoutManualBasePosition
@@ -867,7 +899,7 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"同 resourcePath 可用 slot 数：{sameResourceAvailable}；bg/bgcommon 可用 slot 数：{anySupportedAvailable}；当前将创建：{Math.Min(this.layoutCopyCount, plannedAvailable)}");
 
         ImGui.BeginDisabled(!this.realNpcSpawn.EnableUnsafeNativeWrites || template == null || !hasBasePosition || fullLayoutBlocked);
-        if (ImGui.Button(mode == LocalLayoutTransformMode.VisualOnly ? "按当前模式创建 N 个 VisualOnly 实例" : "按当前模式创建 N 个 FullLayoutWithCollision 实例"))
+        if (ImGui.Button(mode == LocalLayoutTransformMode.VisualOnly ? "创建 N 个 VisualOnly 复制体" : "创建 N 个 FullLayoutWithCollision 复制体"))
             this.CreateMany(template, availableNearest, this.layoutCopyCount, basePosition, mode);
         if (ImGui.Button("从最远可用 slot 分配"))
             this.CreateMany(template, availableFarthest, this.layoutCopyCount, basePosition, mode);
@@ -885,12 +917,14 @@ public sealed class MainWindow : Window
             count,
             basePosition,
             mode,
-            new Vector3(this.layoutCopySpacing, 0f, this.layoutCopySpacingZ),
+            new Vector3(this.layoutCopySpacing, this.layoutCopySpacingY, this.layoutCopySpacingZ),
             this.allowDifferentResourcePathSlots,
             this.layoutBatchCustomMdlPath,
             this.FilteredBgParts(),
             this.realNpcSpawn.EnableUnsafeNativeWrites,
-            this.confirmFullLayoutCollisionMode);
+            this.confirmFullLayoutCollisionMode,
+            this.layoutCopyDefaultRotationEuler,
+            this.layoutCopyDefaultScale);
         var last = created.LastOrDefault();
         if (last != null)
             this.selectedLocalLayoutObjectId = last.Id;
@@ -974,7 +1008,7 @@ public sealed class MainWindow : Window
 
     private void DrawLocalLayoutObjectTable()
     {
-        if (!ImGui.BeginTable("LocalLayoutObjects", 15, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 320f)))
+        if (!ImGui.BeginTable("LocalLayoutObjects", 16, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 320f)))
             return;
         ImGui.TableSetupColumn("选择");
         ImGui.TableSetupColumn("instanceId");
@@ -1022,7 +1056,20 @@ public sealed class MainWindow : Window
             ImGui.TableSetColumnIndex(9);
             ImGui.TextWrapped(FirstNonEmpty(instance.ApplyMdlError, instance.LastError, instance.LastModelOverrideError));
             ImGui.TableSetColumnIndex(10);
-            ImGui.TextUnformatted(instance.TransformMode.ToString());
+            ImGui.BeginDisabled(instance.IsRestored || instance.IsInvalid || instance.IsDuplicate || !this.realNpcSpawn.EnableUnsafeNativeWrites);
+            DrawEnumCombo("##rowCollisionMode", instance.TransformMode, value =>
+            {
+                if (!value.Equals(instance.TransformMode))
+                {
+                    this.localLayoutObjects.ChangeCollisionMode(
+                        instance.Id,
+                        value,
+                        this.FilteredBgParts(),
+                        this.realNpcSpawn.EnableUnsafeNativeWrites,
+                        this.confirmFullLayoutCollisionMode);
+                }
+            });
+            ImGui.EndDisabled();
             ImGui.TableSetColumnIndex(11);
             ImGui.TextUnformatted(instance.IsRestored ? "是" : "否");
             ImGui.TableSetColumnIndex(12);
@@ -1065,6 +1112,8 @@ public sealed class MainWindow : Window
         ImGui.Separator();
         ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), $"选中实例：{selected.Id}");
         ImGui.TextWrapped($"template slot：{selected.TemplateSourceSlotAddress}");
+        ImGui.TextWrapped($"template resource：{selected.TemplateResourcePath}");
+        ImGui.TextWrapped($"template transform：{selected.TemplateTransform}");
         ImGui.TextWrapped($"occupied slot：{selected.OccupiedSlotAddress}");
         ImGui.TextWrapped($"source kind：{selected.SourceKind}");
         if (string.Equals(selected.SourceKind, "SharedGroup", StringComparison.Ordinal))
@@ -1091,7 +1140,18 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"readback：{selected.LastReadback}");
         ImGui.TextWrapped($"错误：{(string.IsNullOrWhiteSpace(selected.LastError) ? "无" : selected.LastError)}");
 
-        DrawEnumCombo("实例 transformMode", selected.TransformMode, value => selected.TransformMode = value);
+        DrawEnumCombo("复制体 collision 模式", selected.TransformMode, value =>
+        {
+            if (!value.Equals(selected.TransformMode))
+            {
+                this.localLayoutObjects.ChangeCollisionMode(
+                    selected.Id,
+                    value,
+                    this.FilteredBgParts(),
+                    this.realNpcSpawn.EnableUnsafeNativeWrites,
+                    this.confirmFullLayoutCollisionMode);
+            }
+        });
         var selectedWriteMode = selected.TransformMode;
         var fullLayoutNeedsConfirmation = selectedWriteMode == LocalLayoutTransformMode.FullLayoutWithCollision && !this.confirmFullLayoutCollisionMode;
         ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), selectedWriteMode == LocalLayoutTransformMode.VisualOnly
