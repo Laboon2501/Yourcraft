@@ -87,6 +87,98 @@ public sealed class BrioCapabilityBridgeService
         }
     }
 
+    public bool TryReadModelTransform(RuntimeActorInstance actor, out string reason)
+    {
+        try
+        {
+            if (actor.CharacterObject == null)
+                return this.Fail(actor, "characterObject 不可用。", out reason);
+
+            if (!this.TryGetModelPosing(actor, out var modelPosing, out reason) || modelPosing == null)
+                return this.Fail(actor, reason);
+
+            var transformProperty = modelPosing.GetType().GetProperty("Transform", BindingFlags.Instance | BindingFlags.Public);
+            var transform = transformProperty?.GetValue(modelPosing);
+            if (transform == null)
+                return this.Fail(actor, "ModelPosing.Transform 不可读取。", out reason);
+
+            if (TryGetTransformFieldOrProperty(transform, "Position", out Vector3 position))
+                actor.LastKnownPosition = position;
+            if (TryGetTransformFieldOrProperty(transform, "Rotation", out Quaternion rotation))
+            {
+                actor.LastKnownRotation = Normalize(rotation);
+                actor.LastKnownRotationEuler = QuaternionToEuler(actor.LastKnownRotation);
+            }
+            if (TryGetTransformFieldOrProperty(transform, "Scale", out Vector3 scale))
+                actor.LastKnownScale = NormalizeScale(scale);
+
+            actor.TransformEditPosition = actor.LastKnownPosition;
+            actor.TransformEditRotationEuler = actor.LastKnownRotationEuler;
+            actor.TransformEditScale = actor.LastKnownScale;
+            actor.LastTransformReadback = $"position={actor.LastKnownPosition}; rotationEuler={actor.LastKnownRotationEuler}; scale={actor.LastKnownScale}";
+            actor.LastTransformError = string.Empty;
+            reason = $"已读取 Brio ModelPosing.Transform：{actor.LastTransformReadback}";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            this.log.Error(ex, "Failed to read Brio model transform. RuntimeId={RuntimeId}", actor.RuntimeId);
+            reason = $"读取 Brio Transform 失败：{ex.Message}";
+            actor.LastTransformError = reason;
+            return false;
+        }
+    }
+
+    public bool TryApplyModelTransform(RuntimeActorInstance actor, Vector3 position, Vector3 rotationEuler, Vector3 scale, out string reason)
+    {
+        try
+        {
+            if (actor.CharacterObject == null)
+                return this.Fail(actor, "characterObject 不可用。", out reason);
+
+            if (!this.TryGetModelPosing(actor, out var modelPosing, out reason) || modelPosing == null)
+                return this.Fail(actor, reason);
+
+            var transformProperty = modelPosing.GetType().GetProperty("Transform", BindingFlags.Instance | BindingFlags.Public);
+            if (transformProperty == null || !transformProperty.CanWrite)
+                return this.Fail(actor, "ModelPosing.Transform 不可写。", out reason);
+
+            var transform = transformProperty.GetValue(modelPosing) ?? Activator.CreateInstance(transformProperty.PropertyType);
+            if (transform == null)
+                return this.Fail(actor, "无法创建 Brio Transform。", out reason);
+
+            var normalizedScale = NormalizeScale(scale);
+            var rotation = Normalize(Quaternion.CreateFromYawPitchRoll(rotationEuler.Y, rotationEuler.X, rotationEuler.Z));
+            SetTransformFieldOrProperty(transform, "Position", position);
+            SetTransformFieldOrProperty(transform, "Rotation", rotation);
+            SetTransformFieldOrProperty(transform, "Scale", normalizedScale);
+            transformProperty.SetValue(modelPosing, transform);
+
+            actor.LastKnownPosition = position;
+            actor.LastKnownRotation = rotation;
+            actor.LastKnownRotationEuler = rotationEuler;
+            actor.LastKnownScale = normalizedScale;
+            actor.TransformEditPosition = position;
+            actor.TransformEditRotationEuler = rotationEuler;
+            actor.TransformEditScale = normalizedScale;
+            actor.LastTransformReadback = $"position={position}; rotationEuler={rotationEuler}; scale={normalizedScale}";
+            actor.LastTransformError = string.Empty;
+            actor.LastMoveMethod = "Native SetPosition + Brio ModelPosing.Transform";
+            this.LastMoveMethod = actor.LastMoveMethod;
+            this.LastMoveError = string.Empty;
+            reason = $"已应用 Brio ModelPosing.Transform：{actor.LastTransformReadback}";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            this.log.Error(ex, "Failed to apply Brio model transform. RuntimeId={RuntimeId}", actor.RuntimeId);
+            reason = $"应用 Brio Transform 失败：{ex.Message}";
+            actor.LastTransformError = reason;
+            this.LastMoveError = reason;
+            return false;
+        }
+    }
+
     private bool TryGetModelPosing(RuntimeActorInstance actor, out object? modelPosing, out string reason)
     {
         modelPosing = null;
@@ -221,6 +313,58 @@ public sealed class BrioCapabilityBridgeService
 
         var field = type.GetField(name, BindingFlags.Instance | BindingFlags.Public);
         field?.SetValue(transform, value);
+    }
+
+    private static bool TryGetTransformFieldOrProperty<T>(object transform, string name, out T value)
+    {
+        value = default!;
+        var type = transform.GetType();
+        var property = type.GetProperty(name, BindingFlags.Instance | BindingFlags.Public);
+        if (property?.GetValue(transform) is T propertyValue)
+        {
+            value = propertyValue;
+            return true;
+        }
+
+        var field = type.GetField(name, BindingFlags.Instance | BindingFlags.Public);
+        if (field?.GetValue(transform) is T fieldValue)
+        {
+            value = fieldValue;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static Vector3 NormalizeScale(Vector3 scale)
+        => new(
+            MathF.Max(0.01f, float.IsFinite(scale.X) ? scale.X : 1f),
+            MathF.Max(0.01f, float.IsFinite(scale.Y) ? scale.Y : 1f),
+            MathF.Max(0.01f, float.IsFinite(scale.Z) ? scale.Z : 1f));
+
+    private static Quaternion Normalize(Quaternion rotation)
+    {
+        if (!float.IsFinite(rotation.X) || !float.IsFinite(rotation.Y) || !float.IsFinite(rotation.Z) || !float.IsFinite(rotation.W))
+            return Quaternion.Identity;
+
+        return rotation.LengthSquared() < 0.0001f ? Quaternion.Identity : Quaternion.Normalize(rotation);
+    }
+
+    private static Vector3 QuaternionToEuler(Quaternion q)
+    {
+        q = Normalize(q);
+        var sinrCosp = 2f * (q.W * q.X + q.Y * q.Z);
+        var cosrCosp = 1f - 2f * (q.X * q.X + q.Y * q.Y);
+        var pitch = MathF.Atan2(sinrCosp, cosrCosp);
+
+        var sinp = 2f * (q.W * q.Y - q.Z * q.X);
+        var yaw = MathF.Abs(sinp) >= 1f ? MathF.CopySign(MathF.PI / 2f, sinp) : MathF.Asin(sinp);
+
+        var sinyCosp = 2f * (q.W * q.Z + q.X * q.Y);
+        var cosyCosp = 1f - 2f * (q.Y * q.Y + q.Z * q.Z);
+        var roll = MathF.Atan2(sinyCosp, cosyCosp);
+
+        return new Vector3(pitch, yaw, roll);
     }
 
     private static Assembly? FindBrioAssembly()

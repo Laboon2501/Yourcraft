@@ -27,6 +27,11 @@ public sealed class MainWindow : Window
     private string selectedBgPartAddress = string.Empty;
     private string templateBgPartAddress = string.Empty;
     private string bgPartSearchText = string.Empty;
+    private string glamourerSearchText = string.Empty;
+    private string gameNpcSearchText = string.Empty;
+    private int actorBatchCount = 3;
+    private Vector3 actorBatchOffset = new(1.5f, 0f, 0f);
+    private bool actorBatchUsePlayerPosition;
     private bool localLayoutFullCollisionMode;
     private bool confirmFullLayoutCollisionMode;
     private bool allowDifferentResourcePathSlots;
@@ -170,14 +175,24 @@ public sealed class MainWindow : Window
             this.gameNpcCatalog.ReloadCatalog();
 
         ImGui.TextWrapped($"NPC 数量：{this.database.Npcs.Count} | Glamourer 设计：{this.glamourerDesignCatalog.Designs.Count} | NPC 目录：ENpc {this.gameNpcCatalog.ENpcCount} / BNpc {this.gameNpcCatalog.BNpcCount} / ModelChara {this.gameNpcCatalog.ModelCharaCount}");
+        ImGui.TextWrapped($"Glamourer 扫描：{this.glamourerDesignCatalog.LastScanMessage}");
+        ImGui.TextWrapped($"NPC 目录：{this.gameNpcCatalog.LastLoadMessage}");
+        if (this.database.Npcs.Count == 0)
+        {
+            ImGui.TextWrapped("还没有 NPC 配置。点击“创建 NPC”会在玩家当前位置创建一个本地 NPC。");
+            return;
+        }
+
         this.EnsureSelectedNpc();
         if (ImGui.BeginCombo("选择 NPC", this.SelectedNpcLabel()))
         {
-            foreach (var npc in this.database.Npcs)
+            foreach (var optionNpc in this.database.Npcs)
             {
-                var selected = string.Equals(this.selectedNpcId, npc.Id, StringComparison.OrdinalIgnoreCase);
-                if (ImGui.Selectable($"{npc.Name} ({npc.Id})", selected))
-                    this.selectedNpcId = npc.Id;
+                var selected = string.Equals(this.selectedNpcId, optionNpc.Id, StringComparison.OrdinalIgnoreCase);
+                if (ImGui.Selectable($"{optionNpc.Name} ({optionNpc.Id})", selected))
+                    this.selectedNpcId = optionNpc.Id;
+                if (selected)
+                    ImGui.SetItemDefaultFocus();
             }
             ImGui.EndCombo();
         }
@@ -186,15 +201,18 @@ public sealed class MainWindow : Window
         if (currentNpc == null)
             return;
 
+        ImGui.Separator();
+        ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "基础信息");
         ImGui.TextWrapped($"NPC ID：{currentNpc.Id}");
         EditString("名称", currentNpc.Name, 128, value => currentNpc.Name = value);
-        var territory = (int)currentNpc.TerritoryType;
-        if (ImGui.InputInt("地图编号 territoryType", ref territory))
-            currentNpc.TerritoryType = (ushort)Math.Clamp(territory, 0, ushort.MaxValue);
-        EditVector3Data("坐标", currentNpc.Position);
+        EditString("名称模板", currentNpc.NameTemplate, 128, value => currentNpc.NameTemplate = value);
         var radius = currentNpc.InteractRadius;
-        if (ImGui.InputFloat("交互半径", ref radius))
+        if (ImGui.InputFloat("默认交互半径", ref radius))
             currentNpc.InteractRadius = Math.Max(0.1f, radius);
+        EditVector3Data("默认生成偏移", currentNpc.DefaultSpawnOffset);
+        EditVector3DataDegrees("默认旋转", currentNpc.DefaultRotationEuler);
+        EnsureNpcDefaultScale(currentNpc);
+        EditVector3Data("默认缩放", currentNpc.DefaultScale);
 
         var defaultAnimation = (int)Math.Min(currentNpc.DefaultAnimationId, int.MaxValue);
         if (ImGui.InputInt("默认动画 ID", ref defaultAnimation))
@@ -202,29 +220,20 @@ public sealed class MainWindow : Window
         var autoPlay = currentNpc.AutoPlayDefaultAnimation;
         if (ImGui.Checkbox("生成后自动播放默认动画", ref autoPlay))
             currentNpc.AutoPlayDefaultAnimation = autoPlay;
+        var lookAtPlayerEnabled = currentNpc.LookAtPlayerEnabled;
+        if (ImGui.Checkbox("默认靠近时看向玩家", ref lookAtPlayerEnabled))
+            currentNpc.LookAtPlayerEnabled = lookAtPlayerEnabled;
+        var lookRadius = currentNpc.LookAtRadius;
+        if (ImGui.InputFloat("默认看向半径", ref lookRadius))
+            currentNpc.LookAtRadius = Math.Max(0.1f, lookRadius);
+        DrawEnumCombo("默认看向模式", currentNpc.LookAtMode, value => currentNpc.LookAtMode = value);
         var respawn = currentNpc.RespawnAfterGpose;
         if (ImGui.Checkbox("退出 GPose 后自动重建", ref respawn))
             currentNpc.RespawnAfterGpose = respawn;
+        EditString("模板备注", currentNpc.Notes, 512, value => currentNpc.Notes = value);
+        if (currentNpc.TerritoryType != 0 || currentNpc.Position.X != 0f || currentNpc.Position.Y != 0f || currentNpc.Position.Z != 0f)
+            ImGui.TextDisabled($"旧版地图/坐标已保留但不用于模板生成：territory={currentNpc.TerritoryType}, position={FormatVector(ToVector3(currentNpc.Position))}");
 
-        DrawEnumCombo("外观 sourceType", currentNpc.Appearance.SourceType, value => currentNpc.Appearance.SourceType = value);
-        EditString("displayName", currentNpc.Appearance.DisplayName, 160, value => currentNpc.Appearance.DisplayName = value);
-        EditString("Glamourer design GUID", currentNpc.Appearance.GlamourerDesignId, 160, value => currentNpc.Appearance.GlamourerDesignId = value);
-        EditString("GameNpc 名称", currentNpc.Appearance.GameNpcName, 160, value => currentNpc.Appearance.GameNpcName = value);
-        DrawEnumCombo("GameNpc kind", currentNpc.Appearance.GameNpcKind, value => currentNpc.Appearance.GameNpcKind = value);
-        var gameNpcBaseId = (int)Math.Min(currentNpc.Appearance.GameNpcBaseId, int.MaxValue);
-        if (ImGui.InputInt("GameNpc baseId", ref gameNpcBaseId))
-            currentNpc.Appearance.GameNpcBaseId = (uint)Math.Max(0, gameNpcBaseId);
-        var gameNpcModelId = (int)Math.Min(currentNpc.Appearance.GameNpcModelId, int.MaxValue);
-        if (ImGui.InputInt("GameNpc modelId", ref gameNpcModelId))
-            currentNpc.Appearance.GameNpcModelId = (uint)Math.Max(0, gameNpcModelId);
-
-        if (ImGui.Button("移动配置坐标到玩家当前位置") && this.runtime.PlayerPosition.HasValue)
-        {
-            SetVector3Data(currentNpc.Position, this.runtime.PlayerPosition.Value);
-            currentNpc.TerritoryType = (ushort)Math.Clamp((int)this.runtime.TerritoryType, 0, ushort.MaxValue);
-            this.database.Save();
-        }
-        ImGui.SameLine();
         if (ImGui.Button("保存 NPC 配置"))
             this.database.Save();
         ImGui.SameLine();
@@ -237,37 +246,196 @@ public sealed class MainWindow : Window
             return;
         }
 
-        ImGui.BeginDisabled(!this.realNpcSpawn.CanSpawnRealActor);
-        if (ImGui.Button("生成唯一真实 Actor 并应用此 NPC 外观"))
+        this.DrawNpcAppearanceEditor(currentNpc);
+        ImGui.Separator();
+        ImGui.TextWrapped($"当前由此模板生成的 Actor 数量：{this.realNpcSpawn.GetActorCountForNpc(currentNpc.Id)}");
+        ImGui.TextDisabled("生成、移动、应用外观等运行态操作请到“Actor 实例”页处理。");
+    }
+
+    private void DrawNpcAppearanceEditor(CustomNpc npc)
+    {
+        var appearance = npc.Appearance;
+        ImGui.Separator();
+        ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "外观来源");
+        DrawEnumCombo("sourceType", appearance.SourceType, value => appearance.SourceType = value);
+        EditString("displayName", appearance.DisplayName, 160, value => appearance.DisplayName = value);
+
+        switch (appearance.SourceType)
         {
-            var actor = this.realNpcSpawn.SpawnUnique(currentNpc);
-            if (actor != null)
-                this.selectedActorRuntimeId = actor.RuntimeId;
+            case CustomNpcAppearanceSourceType.None:
+                ImGui.TextWrapped("不应用外观，保持生成时的玩家 clone 外观。");
+                break;
+            case CustomNpcAppearanceSourceType.CurrentPlayer:
+                ImGui.TextWrapped("使用生成时复制的当前玩家外观。");
+                break;
+            case CustomNpcAppearanceSourceType.GlamourerDesign:
+                this.DrawGlamourerDesignPicker(npc);
+                break;
+            case CustomNpcAppearanceSourceType.GameNpc:
+                this.DrawGameNpcPicker(npc);
+                break;
+            case CustomNpcAppearanceSourceType.MCDF:
+                EditString("MCDF 路径", appearance.McdfPath, 512, value => appearance.McdfPath = value);
+                ImGui.TextWrapped("MCDF 外观应用接口仍是占位，当前只保存配置。");
+                break;
+            case CustomNpcAppearanceSourceType.PenumbraCollection:
+                EditString("Penumbra Collection", appearance.PenumbraCollectionName, 256, value => appearance.PenumbraCollectionName = value);
+                ImGui.TextWrapped("Penumbra collection 会在后续 redraw/apply 管线里使用。");
+                break;
         }
-        ImGui.EndDisabled();
+
+        EditString("notes/debugInfo", appearance.Notes, 512, value => appearance.Notes = value);
+    }
+
+    private void DrawGlamourerDesignPicker(CustomNpc npc)
+    {
+        var appearance = npc.Appearance;
+        ImGui.TextWrapped($"当前 design 名称：{appearance.DisplayName}");
+        EditString("当前 design GUID", appearance.GlamourerDesignId, 128, value => appearance.GlamourerDesignId = value);
+        ImGui.InputText("设计搜索", ref this.glamourerSearchText, 128);
+        if (ImGui.Button("扫描 Glamourer 设计"))
+            this.glamourerDesignCatalog.Scan();
         ImGui.SameLine();
-        if (ImGui.Button("对已生成 Actor 应用此 NPC 外观"))
-            this.realNpcSpawn.ApplyNpcAppearanceForNpc(currentNpc.Id);
+        if (ImGui.Button("探测 Glamourer IPC"))
+            this.realNpcSpawn.ProbeGlamourerIpc();
+
+        var designs = this.glamourerDesignCatalog.Search(this.glamourerSearchText, 60);
+        if (!ImGui.BeginTable("GlamourerDesigns", 4, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 180f)))
+            return;
+
+        ImGui.TableSetupColumn("名称");
+        ImGui.TableSetupColumn("GUID");
+        ImGui.TableSetupColumn("来源文件");
+        ImGui.TableSetupColumn("操作");
+        ImGui.TableHeadersRow();
+        foreach (var design in designs)
+        {
+            ImGui.TableNextRow();
+            ImGui.PushID($"glamourer-{design.Identifier}");
+            ImGui.TableSetColumnIndex(0);
+            ImGui.TextWrapped(design.Name);
+            ImGui.TableSetColumnIndex(1);
+            ImGui.TextWrapped(design.Identifier);
+            ImGui.TableSetColumnIndex(2);
+            ImGui.TextWrapped(design.FilePath);
+            ImGui.TableSetColumnIndex(3);
+            if (ImGui.Button("选为此 NPC 外观"))
+            {
+                this.glamourerDesignCatalog.ApplyDesignToNpc(npc, design);
+                this.database.Save();
+            }
+            ImGui.PopID();
+        }
+        ImGui.EndTable();
+    }
+
+    private void DrawGameNpcPicker(CustomNpc npc)
+    {
+        var appearance = npc.Appearance;
+        ImGui.TextWrapped($"当前 NPC 名称：{appearance.GameNpcName}");
+        ImGui.TextWrapped($"gameNpcKind：{appearance.GameNpcKind}");
+        var baseId = (int)Math.Min(appearance.GameNpcBaseId, int.MaxValue);
+        if (ImGui.InputInt("gameNpcBaseId", ref baseId))
+            appearance.GameNpcBaseId = (uint)Math.Max(0, baseId);
+        var modelId = (int)Math.Min(appearance.GameNpcModelId, int.MaxValue);
+        if (ImGui.InputInt("gameNpcModelId", ref modelId))
+            appearance.GameNpcModelId = (uint)Math.Max(0, modelId);
+        EditString("gameNpcName", appearance.GameNpcName, 160, value => appearance.GameNpcName = value);
+        DrawEnumCombo("gameNpcKind", appearance.GameNpcKind, value => appearance.GameNpcKind = value);
+
+        if (ImGui.Button("从当前 Target 读取 NPC 信息"))
+        {
+            if (this.gameNpcCatalog.SaveCurrentTargetAsGameNpcAppearance(npc, moveNpcToPlayer: false, this.runtime.PlayerPosition, out var message))
+                this.database.Save();
+            this.realNpcSpawn.SetMessage(message);
+        }
+
+        ImGui.InputText("NPC 目录搜索", ref this.gameNpcSearchText, 128);
+        var entries = this.gameNpcCatalog.Search(this.gameNpcSearchText, 100);
+        if (!ImGui.BeginTable("GameNpcCatalog", 6, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 220f)))
+            return;
+
+        ImGui.TableSetupColumn("名称");
+        ImGui.TableSetupColumn("类型");
+        ImGui.TableSetupColumn("RowId");
+        ImGui.TableSetupColumn("ModelCharaId");
+        ImGui.TableSetupColumn("解析摘要");
+        ImGui.TableSetupColumn("操作");
+        ImGui.TableHeadersRow();
+        foreach (var entry in entries)
+        {
+            ImGui.TableNextRow();
+            ImGui.PushID($"gamenpc-{entry.SourceKind}-{entry.RowId}");
+            ImGui.TableSetColumnIndex(0);
+            ImGui.TextWrapped(string.IsNullOrWhiteSpace(entry.DisplayName) ? entry.Name : entry.DisplayName);
+            ImGui.TableSetColumnIndex(1);
+            ImGui.TextUnformatted(entry.SourceKind.ToString());
+            ImGui.TableSetColumnIndex(2);
+            ImGui.TextUnformatted(entry.RowId.ToString());
+            ImGui.TableSetColumnIndex(3);
+            ImGui.TextUnformatted(entry.ModelCharaId.ToString());
+            ImGui.TableSetColumnIndex(4);
+            ImGui.TextWrapped(string.IsNullOrWhiteSpace(entry.RawDebugInfo) ? entry.DebugInfo : entry.RawDebugInfo);
+            ImGui.TableSetColumnIndex(5);
+            if (ImGui.Button("选为此 NPC 外观"))
+            {
+                this.gameNpcCatalog.ApplyCatalogEntryToNpc(npc, entry);
+                this.database.Save();
+            }
+            ImGui.PopID();
+        }
+        ImGui.EndTable();
     }
 
     private void DrawActorInstances()
     {
         this.EnsureSelectedNpc();
         var selectedNpc = this.GetSelectedNpc();
+        if (ImGui.BeginCombo("选中 NPC 模板", this.SelectedNpcLabel()))
+        {
+            foreach (var optionNpc in this.database.Npcs)
+            {
+                var selected = string.Equals(this.selectedNpcId, optionNpc.Id, StringComparison.OrdinalIgnoreCase);
+                if (ImGui.Selectable($"{optionNpc.Name} ({optionNpc.Id})", selected))
+                    this.selectedNpcId = optionNpc.Id;
+                if (selected)
+                    ImGui.SetItemDefaultFocus();
+            }
+            ImGui.EndCombo();
+        }
+
         if (ImGui.Button("刷新有效性"))
             this.realNpcSpawn.RefreshActors();
         ImGui.SameLine();
         ImGui.BeginDisabled(selectedNpc == null || !this.realNpcSpawn.CanSpawnRealActor);
-        if (ImGui.Button("生成选中 NPC 的唯一 Actor") && selectedNpc != null)
+        if (ImGui.Button("从模板生成唯一 Actor") && selectedNpc != null)
         {
             var actor = this.realNpcSpawn.SpawnUnique(selectedNpc);
             if (actor != null)
                 this.selectedActorRuntimeId = actor.RuntimeId;
         }
+        ImGui.SameLine();
+        if (ImGui.Button("生成一个新 Actor") && selectedNpc != null)
+        {
+            var actor = this.realNpcSpawn.SpawnNew(selectedNpc);
+            if (actor != null)
+                this.selectedActorRuntimeId = actor.RuntimeId;
+        }
+        ImGui.EndDisabled();
+        ImGui.SameLine();
+        ImGui.BeginDisabled(selectedNpc == null);
+        if (ImGui.Button("删除此模板的全部 Actor") && selectedNpc != null)
+            this.realNpcSpawn.DespawnAllForNpc(selectedNpc.Id);
         ImGui.EndDisabled();
         ImGui.SameLine();
         if (ImGui.Button("删除全部 Actor"))
             this.realNpcSpawn.DespawnAll();
+
+        if (selectedNpc != null)
+            this.DrawActorBatchSpawnControls(selectedNpc);
+
+        ImGui.TextWrapped($"Actor 数量：{this.realNpcSpawn.Actors.Count} | 队列长度：{this.realNpcSpawn.AppearanceQueueLength} | {this.realNpcSpawn.AppearanceQueueStatus}");
+        ImGui.TextWrapped($"SpawnIntent 数量：{this.realNpcSpawn.SpawnIntentCount}");
 
         if (!ImGui.BeginTable("RuntimeActors", 8, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 320f)))
             return;
@@ -311,27 +479,259 @@ public sealed class MainWindow : Window
         var npc = this.database.GetNpcById(selectedActor.NpcId);
         ImGui.Separator();
         ImGui.TextWrapped($"选中 Actor：{selectedActor.RuntimeId}");
+        ImGui.TextWrapped($"模板 NPC：{selectedActor.TemplateNpcId} / {selectedActor.NpcId}");
+        ImGui.TextWrapped($"显示名：{selectedActor.DisplayName}");
+        ImGui.TextWrapped($"生成地图：{selectedActor.SpawnedTerritoryType} {selectedActor.SpawnedTerritoryName}");
+        ImGui.TextWrapped($"当前外观来源：{selectedActor.AppearanceSourceType}");
         ImGui.TextWrapped($"最后外观：{selectedActor.LastAppearanceApplyResult}");
         ImGui.TextWrapped($"错误：{selectedActor.LastError}");
-        ImGui.BeginDisabled(!selectedActor.IsValid);
-        if (ImGui.Button("应用 NPC 外观"))
-            this.realNpcSpawn.EnqueueNpcAppearance(selectedActor.RuntimeId);
-        ImGui.SameLine();
-        if (ImGui.Button("移到玩家当前位置") && this.runtime.PlayerPosition.HasValue)
-            this.realNpcSpawn.MoveActor(selectedActor.RuntimeId, this.runtime.PlayerPosition.Value);
-        ImGui.SameLine();
-        if (ImGui.Button("移到 NPC 配置坐标") && npc != null)
-            this.realNpcSpawn.MoveActor(selectedActor.RuntimeId, ToVector3(npc.Position));
-        ImGui.SameLine();
-        if (ImGui.Button("播放默认动画") && npc != null)
-            this.realNpcSpawn.PlayAnimation(selectedActor.RuntimeId, npc.DefaultAnimationId);
-        ImGui.EndDisabled();
-        ImGui.SameLine();
         if (ImGui.Button("删除此 Actor"))
         {
-            this.realNpcSpawn.Despawn(selectedActor.RuntimeId, DespawnReason.UserRequested);
-            this.selectedActorRuntimeId = string.Empty;
+            this.DeleteSelectedActor(selectedActor);
+            return;
         }
+
+        this.DrawSelectedActorTransformEditor(selectedActor, npc);
+        this.DrawSelectedActorBehaviorEditor(selectedActor, npc);
+        this.DrawSelectedActorAppearanceEditor(selectedActor, npc);
+    }
+
+    private void DrawSelectedActorTransformEditor(RuntimeActorInstance actor, CustomNpc? npc)
+    {
+        ImGui.Separator();
+        ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "Actor Transform 编辑");
+        if (!actor.IsValid || actor.CharacterObject == null)
+        {
+            ImGui.TextColored(new Vector4(1f, 0.35f, 0.25f, 1f), "当前 Actor 无效或已删除。");
+            return;
+        }
+
+        if (actor.TransformEditScale == Vector3.Zero)
+            actor.TransformEditScale = actor.LastKnownScale == Vector3.Zero ? Vector3.One : actor.LastKnownScale;
+        if (actor.TransformEditPosition == Vector3.Zero && actor.LastKnownPosition != Vector3.Zero)
+            actor.TransformEditPosition = actor.LastKnownPosition;
+
+        var editPosition = actor.TransformEditPosition;
+        if (ImGui.InputFloat("Actor Position X", ref editPosition.X)) actor.TransformEditPosition = editPosition;
+        if (ImGui.InputFloat("Actor Position Y", ref editPosition.Y)) actor.TransformEditPosition = editPosition;
+        if (ImGui.InputFloat("Actor Position Z", ref editPosition.Z)) actor.TransformEditPosition = editPosition;
+
+        var rotationDegrees = new Vector3(
+            RadiansToDegrees(actor.TransformEditRotationEuler.X),
+            RadiansToDegrees(actor.TransformEditRotationEuler.Y),
+            RadiansToDegrees(actor.TransformEditRotationEuler.Z));
+        if (ImGui.InputFloat("Actor Pitch X (deg)", ref rotationDegrees.X))
+            actor.TransformEditRotationEuler = new Vector3(DegreesToRadians(rotationDegrees.X), actor.TransformEditRotationEuler.Y, actor.TransformEditRotationEuler.Z);
+        if (ImGui.InputFloat("Actor Yaw Y (deg)", ref rotationDegrees.Y))
+            actor.TransformEditRotationEuler = new Vector3(actor.TransformEditRotationEuler.X, DegreesToRadians(rotationDegrees.Y), actor.TransformEditRotationEuler.Z);
+        if (ImGui.InputFloat("Actor Roll Z (deg)", ref rotationDegrees.Z))
+            actor.TransformEditRotationEuler = new Vector3(actor.TransformEditRotationEuler.X, actor.TransformEditRotationEuler.Y, DegreesToRadians(rotationDegrees.Z));
+
+        var editScale = actor.TransformEditScale;
+        if (ImGui.InputFloat("Actor Scale X", ref editScale.X)) actor.TransformEditScale = Vector3.Max(editScale, new Vector3(0.01f));
+        if (ImGui.InputFloat("Actor Scale Y", ref editScale.Y)) actor.TransformEditScale = Vector3.Max(editScale, new Vector3(0.01f));
+        if (ImGui.InputFloat("Actor Scale Z", ref editScale.Z)) actor.TransformEditScale = Vector3.Max(editScale, new Vector3(0.01f));
+
+        ImGui.TextWrapped($"readback position：{FormatVector(actor.LastKnownPosition)}");
+        ImGui.TextWrapped($"readback rotation：pitch {RadiansToDegrees(actor.LastKnownRotationEuler.X):F1}, yaw {RadiansToDegrees(actor.LastKnownRotationEuler.Y):F1}, roll {RadiansToDegrees(actor.LastKnownRotationEuler.Z):F1}");
+        ImGui.TextWrapped($"readback scale：{FormatVector(actor.LastKnownScale)}");
+        ImGui.TextWrapped($"last transform readback：{(string.IsNullOrWhiteSpace(actor.LastTransformReadback) ? "未读取" : actor.LastTransformReadback)}");
+        ImGui.TextWrapped($"last transform error：{(string.IsNullOrWhiteSpace(actor.LastTransformError) ? "无" : actor.LastTransformError)}");
+
+        ImGui.BeginDisabled(!actor.IsValid);
+        if (ImGui.Button("应用 Transform"))
+            this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
+        ImGui.SameLine();
+        if (ImGui.Button("移动到玩家当前位置") && this.runtime.PlayerPosition.HasValue)
+        {
+            actor.TransformEditPosition = this.runtime.PlayerPosition.Value;
+            this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("重置位置"))
+        {
+            actor.TransformEditPosition = actor.SpawnPosition == Vector3.Zero ? actor.LastKnownPosition : actor.SpawnPosition;
+            this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
+        }
+
+        if (ImGui.Button("重置旋转"))
+        {
+            actor.TransformEditRotationEuler = Vector3.Zero;
+            this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("重置缩放"))
+        {
+            actor.TransformEditScale = Vector3.One;
+            this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("保存当前 Transform"))
+            this.realNpcSpawn.SaveActorTransformSnapshot(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
+
+        if (ImGui.Button("从当前 Actor 读取 Transform"))
+            this.realNpcSpawn.RefreshActorTransform(actor.RuntimeId);
+        ImGui.EndDisabled();
+    }
+
+    private void DrawSelectedActorBehaviorEditor(RuntimeActorInstance actor, CustomNpc? npc)
+    {
+        ImGui.Separator();
+        ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "Actor 行为");
+        var lookAtEnabled = actor.LookAtPlayerEnabled;
+        var lookAtChanged = false;
+        if (ImGui.Checkbox("此 Actor 看向玩家", ref lookAtEnabled))
+        {
+            actor.LookAtPlayerEnabled = lookAtEnabled;
+            if (lookAtEnabled && actor.LookAtMode == NpcLookAtMode.None)
+                actor.LookAtMode = NpcLookAtMode.BodyYaw;
+            lookAtChanged = true;
+        }
+
+        var lookRadius = actor.LookAtRadius <= 0.1f ? npc?.LookAtRadius ?? 8f : actor.LookAtRadius;
+        if (ImGui.InputFloat("此 Actor 看向半径", ref lookRadius))
+        {
+            actor.LookAtRadius = Math.Max(0.1f, lookRadius);
+            lookAtChanged = true;
+        }
+
+        var beforeLookAtMode = actor.LookAtMode;
+        DrawEnumCombo("此 Actor 看向模式", actor.LookAtMode, value => actor.LookAtMode = value);
+        if (actor.LookAtMode != beforeLookAtMode)
+            lookAtChanged = true;
+
+        if (lookAtChanged)
+            this.realNpcSpawn.UpdateActorLookAtSettings(actor.RuntimeId, actor.LookAtPlayerEnabled, actor.LookAtRadius, actor.LookAtMode);
+
+        var animationId = (int)Math.Min(actor.CurrentAnimationId == 0 ? actor.DefaultAnimationId : actor.CurrentAnimationId, int.MaxValue);
+        if (ImGui.InputInt("此 Actor 动画 ID", ref animationId))
+            actor.CurrentAnimationId = (uint)Math.Max(0, animationId);
+
+        ImGui.TextWrapped($"动画状态：enabled={actor.AnimationEnabled}, current={actor.CurrentAnimationId}, error={(string.IsNullOrWhiteSpace(actor.LastAnimationError) ? "无" : actor.LastAnimationError)}");
+        ImGui.TextWrapped($"看向状态：looking={actor.IsLookingAtPlayer}, error={(string.IsNullOrWhiteSpace(actor.LastLookAtError) ? "无" : actor.LastLookAtError)}");
+
+        ImGui.BeginDisabled(!actor.IsValid || actor.CharacterObject == null);
+        if (ImGui.Button("播放动画"))
+            this.realNpcSpawn.PlayAnimation(actor.RuntimeId, actor.CurrentAnimationId);
+        ImGui.SameLine();
+        if (ImGui.Button("停止/恢复 idle"))
+            this.realNpcSpawn.StopAnimation(actor.RuntimeId);
+        ImGui.EndDisabled();
+
+        ImGui.SameLine();
+        ImGui.BeginDisabled(npc == null);
+        if (ImGui.Button("保存为模板默认值") && npc != null)
+        {
+            npc.DefaultAnimationId = actor.CurrentAnimationId;
+            npc.LookAtPlayerEnabled = actor.LookAtPlayerEnabled;
+            npc.LookAtRadius = actor.LookAtRadius;
+            npc.LookAtMode = actor.LookAtMode;
+            SetVector3Data(npc.DefaultRotationEuler, actor.TransformEditRotationEuler);
+            SetVector3Data(npc.DefaultScale, actor.TransformEditScale == Vector3.Zero ? Vector3.One : actor.TransformEditScale);
+            this.database.Save();
+            this.realNpcSpawn.SetMessage($"已把 Actor {ShortId(actor.RuntimeId)} 的行为/旋转/缩放保存为模板默认值。");
+        }
+        ImGui.EndDisabled();
+    }
+
+    private void DrawSelectedActorAppearanceEditor(RuntimeActorInstance actor, CustomNpc? npc)
+    {
+        ImGui.Separator();
+        ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "Actor 外观");
+        if (npc == null)
+        {
+            ImGui.TextColored(new Vector4(1f, 0.35f, 0.25f, 1f), "找不到对应 NPC 模板，无法应用模板外观。");
+            return;
+        }
+
+        ImGui.TextWrapped($"模板外观来源：{npc.Appearance.SourceType}");
+        ImGui.TextWrapped($"模板 displayName：{npc.Appearance.DisplayName}");
+        ImGui.TextWrapped($"Glamourer Design：{npc.Appearance.GlamourerDesignId}");
+        ImGui.TextWrapped($"GameNpc：{npc.Appearance.GameNpcName} / baseId={npc.Appearance.GameNpcBaseId} / modelId={npc.Appearance.GameNpcModelId}");
+        ImGui.TextWrapped($"最后结果：{(string.IsNullOrWhiteSpace(actor.LastAppearanceApplyResult) ? "未应用" : actor.LastAppearanceApplyResult)}");
+        ImGui.TextWrapped($"最后错误：{(string.IsNullOrWhiteSpace(actor.LastAppearanceError) ? "无" : actor.LastAppearanceError)}");
+
+        ImGui.BeginDisabled(!actor.IsValid || actor.CharacterObject == null);
+        if (ImGui.Button("应用 NPC 模板外观"))
+            this.realNpcSpawn.EnqueueNpcAppearance(actor.RuntimeId);
+        ImGui.SameLine();
+        ImGui.BeginDisabled(npc.Appearance.SourceType != CustomNpcAppearanceSourceType.GlamourerDesign);
+        if (ImGui.Button("重新应用 Glamourer design"))
+            this.realNpcSpawn.EnqueueNpcAppearance(actor.RuntimeId);
+        ImGui.EndDisabled();
+        ImGui.SameLine();
+        ImGui.BeginDisabled(npc.Appearance.SourceType != CustomNpcAppearanceSourceType.GameNpc);
+        if (ImGui.Button("重新应用 GameNpc 外观"))
+            this.realNpcSpawn.EnqueueNpcAppearance(actor.RuntimeId);
+        ImGui.EndDisabled();
+        ImGui.EndDisabled();
+    }
+
+    private void DrawActorBatchSpawnControls(CustomNpc npc)
+    {
+        ImGui.Separator();
+        ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "从模板批量生成 Actor");
+        ImGui.InputInt("生成数量", ref this.actorBatchCount);
+        this.actorBatchCount = Math.Clamp(this.actorBatchCount, 1, 50);
+        ImGui.InputFloat("Actor 间距 X", ref this.actorBatchOffset.X);
+        ImGui.InputFloat("Actor 间距 Y", ref this.actorBatchOffset.Y);
+        ImGui.InputFloat("Actor 间距 Z", ref this.actorBatchOffset.Z);
+        ImGui.Checkbox("批量起点直接使用玩家当前位置（忽略模板默认偏移）", ref this.actorBatchUsePlayerPosition);
+        var basePosition = this.GetActorBatchBasePosition(npc);
+        ImGui.TextWrapped($"批量起点：{FormatVector(basePosition)}");
+
+        ImGui.BeginDisabled(!this.realNpcSpawn.CanSpawnRealActor || (this.actorBatchUsePlayerPosition && !this.runtime.PlayerPosition.HasValue));
+        if (ImGui.Button("生成多个真实 Actor"))
+            this.SpawnMultipleActors(npc);
+        ImGui.EndDisabled();
+    }
+
+    private Vector3 GetActorBatchBasePosition(CustomNpc npc)
+    {
+        if (this.actorBatchUsePlayerPosition && this.runtime.PlayerPosition.HasValue)
+            return this.runtime.PlayerPosition.Value;
+
+        return (this.runtime.PlayerPosition ?? Vector3.Zero) + ToVector3(npc.DefaultSpawnOffset);
+    }
+
+    private void SpawnMultipleActors(CustomNpc npc)
+    {
+        var basePosition = this.GetActorBatchBasePosition(npc);
+        RuntimeActorInstance? lastActor = null;
+        var spawned = 0;
+        for (var index = 0; index < this.actorBatchCount; index++)
+        {
+            var actor = this.realNpcSpawn.SpawnNew(npc);
+            if (actor == null)
+                continue;
+
+            var targetPosition = basePosition + this.actorBatchOffset * index;
+            this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, targetPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
+            lastActor = actor;
+            spawned++;
+        }
+
+        if (lastActor != null)
+            this.selectedActorRuntimeId = lastActor.RuntimeId;
+        this.realNpcSpawn.SetMessage($"批量生成完成：请求 {this.actorBatchCount}，成功 {spawned}。");
+    }
+
+    private void DeleteSelectedActor(RuntimeActorInstance actor)
+    {
+        var actors = this.realNpcSpawn.Actors.ToList();
+        var selectedIndex = actors.FindIndex(item => string.Equals(item.RuntimeId, actor.RuntimeId, StringComparison.OrdinalIgnoreCase));
+        var deleted = this.realNpcSpawn.Despawn(actor.RuntimeId, DespawnReason.UserRequested);
+        var remaining = this.realNpcSpawn.Actors.ToList();
+        if (remaining.Count == 0)
+        {
+            this.selectedActorRuntimeId = string.Empty;
+            return;
+        }
+
+        var nextIndex = Math.Clamp(selectedIndex < 0 ? 0 : selectedIndex, 0, remaining.Count - 1);
+        this.selectedActorRuntimeId = remaining[nextIndex].RuntimeId;
+        if (!deleted)
+            this.realNpcSpawn.SetMessage($"删除 Actor 失败或只完成了本地移除：{actor.LastError}");
     }
 
     private void DrawLocalLayoutObjects()
@@ -959,7 +1359,10 @@ public sealed class MainWindow : Window
             Id = $"local-npc-{DateTimeOffset.Now.ToUnixTimeMilliseconds()}",
             Name = "本地 NPC",
             TerritoryType = (ushort)Math.Clamp((int)this.runtime.TerritoryType, 0, ushort.MaxValue),
+            LegacyDefaultTerritoryType = (ushort)Math.Clamp((int)this.runtime.TerritoryType, 0, ushort.MaxValue),
             Position = new Vector3Data { X = position.X, Y = position.Y, Z = position.Z },
+            DefaultSpawnOffset = new Vector3Data(),
+            DefaultScale = new Vector3Data { X = 1f, Y = 1f, Z = 1f },
             InteractRadius = 6f,
         };
         this.database.Npcs.Add(npc);
@@ -998,6 +1401,26 @@ public sealed class MainWindow : Window
         if (ImGui.InputFloat($"{label} X", ref x)) data.X = x;
         if (ImGui.InputFloat($"{label} Y", ref y)) data.Y = y;
         if (ImGui.InputFloat($"{label} Z", ref z)) data.Z = z;
+    }
+
+    private static void EditVector3DataDegrees(string label, Vector3Data data)
+    {
+        var x = RadiansToDegrees(data.X);
+        var y = RadiansToDegrees(data.Y);
+        var z = RadiansToDegrees(data.Z);
+        if (ImGui.InputFloat($"{label} Pitch X (deg)", ref x)) data.X = DegreesToRadians(x);
+        if (ImGui.InputFloat($"{label} Yaw Y (deg)", ref y)) data.Y = DegreesToRadians(y);
+        if (ImGui.InputFloat($"{label} Roll Z (deg)", ref z)) data.Z = DegreesToRadians(z);
+    }
+
+    private static void EnsureNpcDefaultScale(CustomNpc npc)
+    {
+        if (npc.DefaultScale.X == 0f)
+            npc.DefaultScale.X = 1f;
+        if (npc.DefaultScale.Y == 0f)
+            npc.DefaultScale.Y = 1f;
+        if (npc.DefaultScale.Z == 0f)
+            npc.DefaultScale.Z = 1f;
     }
 
     private static void DrawEnumCombo<TEnum>(string label, TEnum value, Action<TEnum> setter)

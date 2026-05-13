@@ -77,7 +77,9 @@ public sealed class BrioAssemblyBridgeService
         {
             RuntimeId = runtimeId,
             NpcId = npc.Id,
+            TemplateNpcId = npc.Id,
             NpcName = npc.Name,
+            DisplayName = npc.Name,
             ExpectedName = npc.Name,
             DesiredDisplayName = FormatDisplayName(npc),
             SpawnSource = "BrioAssembly",
@@ -115,7 +117,8 @@ public sealed class BrioAssemblyBridgeService
             var selectedSpawnFlag = this.SelectSpawnFlag(spawnFlagsType, spawnFlags, out var selectedSpawnFlagInfo);
             this.SelectedSpawnFlag = selectedSpawnFlagInfo;
 
-            var spawnPosition = new Vector3(npc.Position.X, npc.Position.Y, npc.Position.Z);
+            var spawnPosition = localPlayer.Position + new Vector3(npc.DefaultSpawnOffset.X, npc.DefaultSpawnOffset.Y, npc.DefaultSpawnOffset.Z);
+            instance.LastKnownPosition = spawnPosition;
             var createMethods = actorSpawnService.GetType()
                 .GetMethods(BindingFlags.Instance | BindingFlags.Public)
                 .Where(method => method.Name == "CreateCharacter")

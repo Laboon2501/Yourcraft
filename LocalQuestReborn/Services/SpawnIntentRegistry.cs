@@ -22,7 +22,7 @@ public sealed class SpawnIntentRegistry
         intent.SuppressedUntilUserSpawn = false;
         intent.RespawnAfterGpose = npc.RespawnAfterGpose;
         intent.LastRuntimeId = string.IsNullOrWhiteSpace(runtimeId) ? intent.LastRuntimeId : runtimeId;
-        intent.LastSpawnPosition = new Vector3(npc.Position.X, npc.Position.Y, npc.Position.Z);
+        intent.LastSpawnPosition = new Vector3(npc.DefaultSpawnOffset.X, npc.DefaultSpawnOffset.Y, npc.DefaultSpawnOffset.Z);
         intent.LastAppearanceSource = npc.Appearance.SourceType.ToString();
         intent.AutoPlayAnimation = npc.AutoPlayDefaultAnimation && npc.DefaultAnimationId > 0;
         intent.LastDespawnReason = null;

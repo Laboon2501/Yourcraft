@@ -204,6 +204,44 @@ public sealed class RealNpcSpawnService
     public void SetEventNpcHostService(EventNpcHostService service)
         => this.eventNpcHostService = service;
 
+    private Vector3 GetTemplateSpawnPosition(CustomNpc npc)
+    {
+        var basePosition = this.TryReadLocalPlayerPosition(out var playerPosition) ? playerPosition : Vector3.Zero;
+        var offset = ToVector3(npc.DefaultSpawnOffset);
+        return basePosition + offset;
+    }
+
+    private bool TryReadLocalPlayerPosition(out Vector3 position)
+    {
+        position = Vector3.Zero;
+        try
+        {
+            var localPlayer = this.clientState.GetType().GetProperty("LocalPlayer")?.GetValue(this.clientState);
+            var raw = localPlayer?.GetType().GetProperty("Position")?.GetValue(localPlayer);
+            if (raw is Vector3 vector)
+            {
+                position = vector;
+                return true;
+            }
+        }
+        catch
+        {
+        }
+
+        return false;
+    }
+
+    private static Vector3 ToVector3(Vector3Data data)
+        => new(data.X, data.Y, data.Z);
+
+    private static Vector3 NormalizeScale(Vector3 scale)
+    {
+        return new Vector3(
+            MathF.Max(0.01f, float.IsFinite(scale.X) && scale.X != 0f ? scale.X : 1f),
+            MathF.Max(0.01f, float.IsFinite(scale.Y) && scale.Y != 0f ? scale.Y : 1f),
+            MathF.Max(0.01f, float.IsFinite(scale.Z) && scale.Z != 0f ? scale.Z : 1f));
+    }
+
     public void ProbeBrioIpc()
         => this.RunSafely("探测 Brio IPC", () =>
         {
@@ -225,6 +263,9 @@ public sealed class RealNpcSpawnService
         try
         {
             var runtimeId = Guid.NewGuid().ToString("N");
+            var spawnPosition = this.GetTemplateSpawnPosition(npc);
+            var spawnRotation = ToVector3(npc.DefaultRotationEuler);
+            var spawnScale = NormalizeScale(ToVector3(npc.DefaultScale));
             if (!this.CanSpawnRealActor)
             {
                 this.LastMessage = "Brio Assembly 不可用，未生成真实 Actor。";
@@ -238,10 +279,26 @@ public sealed class RealNpcSpawnService
             }
 
             this.registry.Add(instance);
+            instance.TemplateNpcId = npc.Id;
+            instance.NpcId = npc.Id;
+            instance.NpcName = npc.Name;
+            instance.DisplayName = npc.Name;
+            instance.SpawnedTerritoryType = (ushort)Math.Clamp((int)this.clientState.TerritoryType, 0, ushort.MaxValue);
+            instance.SpawnedTerritoryName = this.clientState.TerritoryType.ToString();
+            instance.SpawnPosition = spawnPosition;
+            instance.SpawnRotationEuler = spawnRotation;
+            instance.SpawnScale = spawnScale;
+            instance.TransformEditPosition = spawnPosition;
+            instance.TransformEditRotationEuler = spawnRotation;
+            instance.TransformEditScale = spawnScale;
             instance.DefaultAnimationId = npc.DefaultAnimationId;
+            instance.CurrentAnimationId = npc.DefaultAnimationId;
+            instance.LookAtPlayerEnabled = npc.LookAtPlayerEnabled;
+            instance.LookAtRadius = Math.Max(0.1f, npc.LookAtRadius);
+            instance.LookAtMode = npc.LookAtMode;
             this.nameplateService.TryReadActorName(instance);
             this.targetabilityService.TryReadTargetability(instance);
-            this.MoveActor(instance.RuntimeId, new Vector3(npc.Position.X, npc.Position.Y, npc.Position.Z));
+            this.ApplyActorTransform(instance.RuntimeId, spawnPosition, spawnRotation, spawnScale);
             this.EnqueueNpcAppearance(instance.RuntimeId);
             if (npc.AutoPlayDefaultAnimation && npc.DefaultAnimationId > 0)
                 this.PlayAnimation(instance.RuntimeId, npc.DefaultAnimationId);
@@ -273,15 +330,39 @@ public sealed class RealNpcSpawnService
         if (instance == null)
             return true;
 
+        this.PrepareActorForDespawn(instance);
         var success = this.brioAssemblyBridge.TryDespawnActor(instance, out var despawnMessage);
         this.spawnIntentRegistry.MarkDespawned(instance.NpcId, reason);
         this.registry.Remove(runtimeId);
+        if (string.Equals(this.CurrentSelectedActorRuntimeId, runtimeId, StringComparison.OrdinalIgnoreCase))
+            this.ClearSelectedActorForPlayerLookAt();
         this.LastMessage = success ? despawnMessage : $"删除 Actor 失败：{despawnMessage}";
         return success;
     }
 
     public void DespawnAllForNpc(string npcId)
         => this.DespawnAllForNpc(npcId, DespawnReason.UserRequested, updateIntent: true);
+
+    private void PrepareActorForDespawn(RuntimeActorInstance instance)
+    {
+        instance.LookAtPlayerEnabled = false;
+        instance.IsLookingAtPlayer = false;
+        instance.LastLookAtUpdateAt = DateTime.MinValue;
+        this.appearanceApplyQueue.RemoveJobsForActor(instance.RuntimeId);
+
+        if (instance.AnimationEnabled && instance.IsValid && instance.CharacterObject != null)
+        {
+            try
+            {
+                this.animationService.Stop(instance, out _);
+            }
+            catch (Exception ex)
+            {
+                instance.LastAnimationError = $"删除前停止动画失败：{ex.Message}";
+                this.log.Warning(ex, "Failed to stop animation before despawn. RuntimeId={RuntimeId}", instance.RuntimeId);
+            }
+        }
+    }
 
     private void DespawnAllForNpc(string npcId, DespawnReason reason, bool updateIntent)
     {
@@ -320,10 +401,104 @@ public sealed class RealNpcSpawnService
 
         var success = this.brioAssemblyBridge.TryMoveActorWithNativeSetPosition(instance, position, out var reason);
         if (success)
+        {
+            instance.SpawnPosition = instance.LastKnownPosition;
+            instance.TransformEditPosition = instance.LastKnownPosition;
             this.brioCapabilityBridge.TrySyncTransformAfterNativeMove(instance, instance.LastKnownPosition, out _);
+        }
 
         this.LastMessage = success ? reason : $"移动 Actor 失败：{reason}";
         return success;
+    }
+
+    public bool RefreshActorTransform(string runtimeId)
+    {
+        var instance = this.registry.GetByRuntimeId(runtimeId);
+        if (instance == null)
+        {
+            this.LastMessage = $"没有找到 Runtime Actor：{runtimeId}";
+            return false;
+        }
+
+        if (!instance.IsValid || instance.CharacterObject == null)
+        {
+            instance.LastTransformError = "当前 Actor 无效或已删除。";
+            this.LastMessage = instance.LastTransformError;
+            return false;
+        }
+
+        this.brioAssemblyBridge.RefreshActor(instance);
+        if (this.brioCapabilityBridge.TryReadModelTransform(instance, out var reason))
+        {
+            this.LastMessage = reason;
+            return true;
+        }
+
+        instance.TransformEditPosition = instance.LastKnownPosition;
+        instance.TransformEditRotationEuler = instance.LastKnownRotationEuler;
+        instance.TransformEditScale = instance.LastKnownScale == Vector3.Zero ? Vector3.One : instance.LastKnownScale;
+        instance.LastTransformError = reason;
+        this.LastMessage = reason;
+        return false;
+    }
+
+    public bool ApplyActorTransform(string runtimeId, Vector3 position, Vector3 rotationEuler, Vector3 scale)
+    {
+        var instance = this.registry.GetByRuntimeId(runtimeId);
+        if (instance == null)
+        {
+            this.LastMessage = $"没有找到 Runtime Actor：{runtimeId}";
+            return false;
+        }
+
+        if (!instance.IsValid || instance.CharacterObject == null)
+        {
+            instance.LastTransformError = "当前 Actor 无效或已删除。";
+            this.LastMessage = instance.LastTransformError;
+            return false;
+        }
+
+        var safeScale = new Vector3(
+            MathF.Max(0.01f, float.IsFinite(scale.X) ? scale.X : 1f),
+            MathF.Max(0.01f, float.IsFinite(scale.Y) ? scale.Y : 1f),
+            MathF.Max(0.01f, float.IsFinite(scale.Z) ? scale.Z : 1f));
+        if (!this.MoveActor(runtimeId, position))
+        {
+            instance.LastTransformError = this.LastMessage;
+            return false;
+        }
+
+        var readPosition = instance.LastKnownPosition;
+        if (!this.brioCapabilityBridge.TryApplyModelTransform(instance, readPosition, rotationEuler, safeScale, out var transformReason))
+        {
+            instance.LastTransformError = transformReason;
+            this.LastMessage = transformReason;
+            return false;
+        }
+
+        this.brioAssemblyBridge.RefreshActor(instance);
+        this.brioCapabilityBridge.TryReadModelTransform(instance, out var readReason);
+        instance.SpawnPosition = instance.LastKnownPosition;
+        instance.SpawnRotationEuler = instance.LastKnownRotationEuler;
+        instance.SpawnScale = instance.LastKnownScale == Vector3.Zero ? safeScale : instance.LastKnownScale;
+        this.LastMessage = string.IsNullOrWhiteSpace(readReason) ? transformReason : readReason;
+        return true;
+    }
+
+    public void SaveActorTransformSnapshot(string runtimeId, Vector3 position, Vector3 rotationEuler, Vector3 scale)
+    {
+        var instance = this.registry.GetByRuntimeId(runtimeId);
+        if (instance == null)
+        {
+            this.LastMessage = $"没有找到 Runtime Actor：{runtimeId}";
+            return;
+        }
+
+        instance.TransformEditPosition = position;
+        instance.TransformEditRotationEuler = rotationEuler;
+        instance.TransformEditScale = scale;
+        instance.SavedTransformSnapshot = $"position={position}; rotationEuler={rotationEuler}; scale={scale}";
+        this.LastMessage = $"已保存当前 Transform 到运行态缓存：{instance.SavedTransformSnapshot}";
     }
 
     public void MoveAllForNpc(string npcId, Vector3 position)
@@ -423,6 +598,31 @@ public sealed class RealNpcSpawnService
         var success = this.animationService.Stop(instance, out var reason);
         this.LastMessage = success ? "已停止动画并尝试恢复 idle。" : $"停止动画失败：{reason}";
         return success;
+    }
+
+    public void UpdateActorLookAtSettings(string runtimeId, bool enabled, float radius, NpcLookAtMode mode)
+    {
+        var instance = this.registry.GetByRuntimeId(runtimeId);
+        if (instance == null)
+        {
+            this.LastMessage = $"没有找到 Runtime Actor：{runtimeId}";
+            return;
+        }
+
+        instance.LookAtPlayerEnabled = enabled;
+        instance.LookAtRadius = Math.Max(0.1f, radius);
+        instance.LookAtMode = enabled && mode == NpcLookAtMode.None ? NpcLookAtMode.BodyYaw : mode;
+        instance.LastLookAtUpdateAt = DateTime.MinValue;
+        if (!enabled)
+        {
+            instance.IsLookingAtPlayer = false;
+            instance.LastLookAtError = string.Empty;
+            this.LastMessage = $"已关闭 Actor 看向玩家：{ShortRuntimeId(runtimeId)}";
+            return;
+        }
+
+        this.lookAtService.Update([instance], this.database);
+        this.LastMessage = $"已更新 Actor 看向玩家：{ShortRuntimeId(runtimeId)}，模式={instance.LookAtMode}，半径={instance.LookAtRadius:F1}";
     }
 
     public bool SetActorName(string runtimeId)
@@ -1109,4 +1309,7 @@ public sealed class RealNpcSpawnService
         var name = string.IsNullOrWhiteSpace(npc.Name) ? npc.Id : npc.Name;
         return template.Replace("{name}", name, StringComparison.OrdinalIgnoreCase);
     }
+
+    private static string ShortRuntimeId(string runtimeId)
+        => string.IsNullOrWhiteSpace(runtimeId) ? "无" : runtimeId[..Math.Min(8, runtimeId.Length)];
 }

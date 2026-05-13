@@ -1,45 +1,180 @@
 ﻿{
   "Npcs": [
     {
-      "Id": "local-npc-1778403064420",
+      "Id": "local-npc-1778679839563",
       "Name": "本地 NPC",
       "NameTemplate": "{name}",
-      "TerritoryType": 339,
+      "TerritoryType": 1186,
       "Position": {
-        "X": -65.623695,
-        "Y": 10.001682,
-        "Z": 30.71906
+        "X": 393.12897,
+        "Y": 59.55,
+        "Z": 70.119995
       },
-      "InteractRadius": 5,
-      "DefaultAnimationId": 3,
-      "AutoPlayDefaultAnimation": true,
-      "LookAtPlayerEnabled": true,
+      "LegacyDefaultTerritoryType": 0,
+      "DefaultSpawnOffset": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "DefaultRotationEuler": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "DefaultScale": {
+        "X": 1,
+        "Y": 1,
+        "Z": 1
+      },
+      "InteractRadius": 6,
+      "DefaultAnimationId": 0,
+      "AutoPlayDefaultAnimation": false,
+      "LookAtPlayerEnabled": false,
       "LookAtRadius": 8,
-      "LookAtMode": "NativeLookAt",
-      "RespawnAfterGpose": false,
-      "HostMode": "ExistingEventNpcHost",
-      "NativeHostMode": "ExistingEventNpcHost",
-      "HostDataId": 1002633,
-      "HostObjectIndex": "495",
-      "HostTerritoryType": 134,
-      "HostName": "格林威达",
+      "LookAtMode": "None",
+      "RespawnAfterGpose": true,
+      "Notes": "",
+      "HostMode": "VirtualActor",
+      "NativeHostMode": "None",
+      "HostDataId": 0,
+      "HostObjectIndex": "",
+      "HostTerritoryType": 0,
+      "HostName": "",
       "OverrideNativeName": false,
       "InterceptNativeTalk": false,
-      "UseLocalDialogueOnInteract": true,
+      "UseLocalDialogueOnInteract": false,
       "InterceptMode": "ManualCommand",
       "OverrideDialogueEnabled": true,
       "appearance": {
-        "sourceType": "GlamourerDesign",
-        "displayName": "hal",
-        "glamourerDesignId": "e7222fd1-31cf-45f5-9c9d-febd991c56f4",
+        "sourceType": "GameNpc",
+        "displayName": "阿尔博特",
+        "glamourerDesignId": "e065e46d-9f1f-43da-9894-cf8fe232c7d0",
         "penumbraCollectionName": "",
         "mcdfPath": "",
-        "gameNpcName": "木人",
-        "gameNpcKind": "BNpc",
-        "gameNpcBaseId": 16841,
+        "gameNpcName": "阿尔博特",
+        "gameNpcKind": "ENpc",
+        "gameNpcBaseId": 1028107,
         "gameNpcModelId": 0,
         "gameNpcCustomizeId": 0,
-        "notes": "C:\\Users\\kiomo\\AppData\\Roaming\\XIVLauncherCN\\pluginConfigs\\Glamourer\\designs\\e7222fd1-31cf-45f5-9c9d-febd991c56f4.json"
+        "notes": "ENpc ResidentRowId=1028107, BaseRowId=1028107, ModelCharaId=0, CustomizeId=无, Equipment=无, RowType=ENpcResident\nResident: ExcelPage=Lumina.Excel.ExcelPage; RowOffset=1693126; RowId=1028107; Singular=阿尔博特; Plural=; Title=; Adjective=0; PossessivePronoun=0; StartsWithVowel=0; Unknown0=1; Pronoun=0; Article=0; Map=4; Unknown1=False\nBase: ExcelPage=Lumina.Excel.ExcelPage; RowOffset=33142; RowId=1028107; ENpcData=Lumina.Excel.Collection`1[Lumina.Excel.RowRef]; ModelMainHand=17180328337; ModelOffHand=0; Scale=1; ModelHead=0; ModelBody=65573; ModelHands=65573; ModelLegs=65573; ModelFeet=65573; ModelEars=0; ModelNeck=0; ModelWrists=0; ModelLeftRing=0; ModelRightRing=0; EventHandler=783; ModelChara=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.ModelChara]; NpcEquip=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.NpcEquip]; Behavior=Lumina.Excel.SubrowRef`1[Lumina.Excel.Sheets.Behavior]; Unknown_70_1=0; Unknown_70_2=0; Balloon=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Balloon]; Race=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Race]; Gender=0; BodyType=1; Height=50; Tribe=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Tribe]; Face=5; HairStyle=1; HairHighlight=1; SkinColor=10; EyeHeterochromia=145; HairColor=70; HairHighlightColor=0; FacialFeature=1; FacialFeatureColor=1; Eyebrows=0; EyeColor=145; EyeShape=0; Nose=0; Jaw=0; Mouth=0; LipColor=0; BustOrTone1=50; ExtraFeature1=0; ExtraFeature2OrBust=50; FacePaint=0; FacePaintColor=1; Unknown0=0; DyeMainHand=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2MainHand=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeOffHand=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2OffHand=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeHead=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeBody=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeHands=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeLegs=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeFeet=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeEars=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeNeck=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeWrists=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeLeftRing=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeRightRing=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2Head=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2Body=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2Hands=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2Legs=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2Feet=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2Ears=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2Neck=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2Wrists=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2LeftRing=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2RightRing=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Invisibility=0; DefaultBalloon=0; Unknown1=0; Important=False; Visor=False"
+      }
+    },
+    {
+      "Id": "local-npc-1778679862906",
+      "Name": "本地 NPC",
+      "NameTemplate": "{name}",
+      "TerritoryType": 1186,
+      "Position": {
+        "X": 354.69165,
+        "Y": 50.75,
+        "Z": 175.2336
+      },
+      "LegacyDefaultTerritoryType": 0,
+      "DefaultSpawnOffset": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "DefaultRotationEuler": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "DefaultScale": {
+        "X": 1,
+        "Y": 1,
+        "Z": 1
+      },
+      "InteractRadius": 6,
+      "DefaultAnimationId": 0,
+      "AutoPlayDefaultAnimation": false,
+      "LookAtPlayerEnabled": false,
+      "LookAtRadius": 8,
+      "LookAtMode": "None",
+      "RespawnAfterGpose": true,
+      "Notes": "",
+      "HostMode": "VirtualActor",
+      "NativeHostMode": "None",
+      "HostDataId": 0,
+      "HostObjectIndex": "",
+      "HostTerritoryType": 0,
+      "HostName": "",
+      "OverrideNativeName": false,
+      "InterceptNativeTalk": false,
+      "UseLocalDialogueOnInteract": false,
+      "InterceptMode": "ManualCommand",
+      "OverrideDialogueEnabled": true,
+      "appearance": {
+        "sourceType": "None",
+        "displayName": "",
+        "glamourerDesignId": "",
+        "penumbraCollectionName": "",
+        "mcdfPath": "",
+        "gameNpcName": "",
+        "gameNpcKind": "Unknown",
+        "gameNpcBaseId": 0,
+        "gameNpcModelId": 0,
+        "gameNpcCustomizeId": 0,
+        "notes": ""
+      }
+    },
+    {
+      "Id": "local-npc-1778679863444",
+      "Name": "阿尔博特",
+      "NameTemplate": "{name}",
+      "TerritoryType": 1186,
+      "Position": {
+        "X": 354.69165,
+        "Y": 50.75,
+        "Z": 175.2336
+      },
+      "LegacyDefaultTerritoryType": 0,
+      "DefaultSpawnOffset": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "DefaultRotationEuler": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "DefaultScale": {
+        "X": 1,
+        "Y": 1,
+        "Z": 1
+      },
+      "InteractRadius": 6,
+      "DefaultAnimationId": 0,
+      "AutoPlayDefaultAnimation": false,
+      "LookAtPlayerEnabled": false,
+      "LookAtRadius": 8,
+      "LookAtMode": "None",
+      "RespawnAfterGpose": true,
+      "Notes": "",
+      "HostMode": "VirtualActor",
+      "NativeHostMode": "None",
+      "HostDataId": 0,
+      "HostObjectIndex": "",
+      "HostTerritoryType": 0,
+      "HostName": "",
+      "OverrideNativeName": false,
+      "InterceptNativeTalk": false,
+      "UseLocalDialogueOnInteract": false,
+      "InterceptMode": "ManualCommand",
+      "OverrideDialogueEnabled": true,
+      "appearance": {
+        "sourceType": "None",
+        "displayName": "",
+        "glamourerDesignId": "",
+        "penumbraCollectionName": "",
+        "mcdfPath": "",
+        "gameNpcName": "",
+        "gameNpcKind": "Unknown",
+        "gameNpcBaseId": 0,
+        "gameNpcModelId": 0,
+        "gameNpcCustomizeId": 0,
+        "notes": ""
       }
     }
   ],

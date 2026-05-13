@@ -8,7 +8,15 @@ public sealed class RuntimeActorInstance
 
     public string NpcId { get; set; } = string.Empty;
 
+    public string TemplateNpcId { get; set; } = string.Empty;
+
     public string NpcName { get; set; } = string.Empty;
+
+    public string DisplayName { get; set; } = string.Empty;
+
+    public ushort SpawnedTerritoryType { get; set; }
+
+    public string SpawnedTerritoryName { get; set; } = string.Empty;
 
     public string ObjectIndex { get; set; } = "不可用";
 
@@ -21,6 +29,30 @@ public sealed class RuntimeActorInstance
     public DateTime SpawnTime { get; set; } = DateTime.Now;
 
     public Vector3 LastKnownPosition { get; set; }
+
+    public Quaternion LastKnownRotation { get; set; } = Quaternion.Identity;
+
+    public Vector3 LastKnownRotationEuler { get; set; }
+
+    public Vector3 LastKnownScale { get; set; } = Vector3.One;
+
+    public Vector3 SpawnPosition { get; set; }
+
+    public Vector3 SpawnRotationEuler { get; set; }
+
+    public Vector3 SpawnScale { get; set; } = Vector3.One;
+
+    public Vector3 TransformEditPosition { get; set; }
+
+    public Vector3 TransformEditRotationEuler { get; set; }
+
+    public Vector3 TransformEditScale { get; set; } = Vector3.One;
+
+    public string LastTransformReadback { get; set; } = string.Empty;
+
+    public string LastTransformError { get; set; } = string.Empty;
+
+    public string SavedTransformSnapshot { get; set; } = string.Empty;
 
     public bool IsValid { get; set; }
 
@@ -85,6 +117,12 @@ public sealed class RuntimeActorInstance
     public string LastAnimationResult { get; set; } = string.Empty;
 
     public string LastAnimationError { get; set; } = string.Empty;
+
+    public bool LookAtPlayerEnabled { get; set; }
+
+    public float LookAtRadius { get; set; } = 8f;
+
+    public NpcLookAtMode LookAtMode { get; set; } = NpcLookAtMode.None;
 
     public bool IsLookingAtPlayer { get; set; }
 

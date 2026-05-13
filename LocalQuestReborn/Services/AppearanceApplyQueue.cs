@@ -70,6 +70,29 @@ public sealed class AppearanceApplyQueue
         this.LastStatus = $"已加入全部 {count} 个 Actor 的外观应用任务。";
     }
 
+    public int RemoveJobsForActor(string runtimeId)
+    {
+        if (string.IsNullOrWhiteSpace(runtimeId) || this.jobs.Count == 0)
+            return 0;
+
+        var remaining = this.jobs
+            .Where(job => !string.Equals(job.RuntimeId, runtimeId, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        var removed = this.jobs.Count - remaining.Count;
+        if (removed <= 0)
+            return 0;
+
+        this.jobs.Clear();
+        foreach (var job in remaining)
+            this.jobs.Enqueue(job);
+
+        if (string.Equals(this.CurrentActorRuntimeId, runtimeId, StringComparison.OrdinalIgnoreCase))
+            this.CurrentActorRuntimeId = string.Empty;
+
+        this.LastStatus = $"已移除 Actor {runtimeId} 的待处理外观任务：{removed} 个。";
+        return removed;
+    }
+
     public void Update()
     {
         if (this.jobs.Count == 0)

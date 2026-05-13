@@ -27,8 +27,8 @@ public sealed class ActorLookAtService
 
         foreach (var actor in actors)
         {
-            var npc = database.GetNpcById(actor.NpcId);
-            if (npc == null || !npc.LookAtPlayerEnabled || npc.LookAtMode == NpcLookAtMode.None || !actor.IsValid)
+            var lookAtRadius = actor.LookAtRadius > 0.1f ? actor.LookAtRadius : 8f;
+            if (!actor.LookAtPlayerEnabled || actor.LookAtMode == NpcLookAtMode.None || !actor.IsValid)
             {
                 actor.IsLookingAtPlayer = false;
                 continue;
@@ -40,7 +40,7 @@ public sealed class ActorLookAtService
 
             actor.LastLookAtUpdateAt = now;
             var distance = XzDistance(actor.LastKnownPosition, player.Position);
-            if (distance > npc.LookAtRadius)
+            if (distance > lookAtRadius)
             {
                 actor.IsLookingAtPlayer = false;
                 continue;
@@ -48,7 +48,7 @@ public sealed class ActorLookAtService
 
             var direction = player.Position - actor.LastKnownPosition;
             var yaw = MathF.Atan2(direction.X, direction.Z);
-            var success = npc.LookAtMode == NpcLookAtMode.NativeLookAt || npc.LookAtMode == NpcLookAtMode.HeadOnly
+            var success = actor.LookAtMode == NpcLookAtMode.NativeLookAt || actor.LookAtMode == NpcLookAtMode.HeadOnly
                 ? this.TrySetNativeLookAt(actor, player, out var reason)
                 : this.TrySetBodyYaw(actor, yaw, out reason);
 
