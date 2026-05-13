@@ -371,19 +371,10 @@ public sealed class MainWindow : Window
             if (created != null)
                 this.selectedLocalLayoutObjectId = created.Id;
         }
-        if (ImGui.Button("创建动态本地实例（source -> carrier playback）"))
-        {
-            var created = this.localLayoutObjects.CreateAnimatedFromSource(
-                candidate,
-                this.AllBgParts(),
-                this.runtime.PlayerPosition!.Value,
-                mode,
-                this.realNpcSpawn.EnableUnsafeNativeWrites,
-                this.confirmFullLayoutCollisionMode);
-            var last = created.LastOrDefault();
-            if (last != null)
-                this.selectedLocalLayoutObjectId = last.Id;
-        }
+        ImGui.BeginDisabled();
+        ImGui.Button("创建动态本地实例（已暂停）");
+        ImGui.EndDisabled();
+        ImGui.TextDisabled("v9.7 暂停 AnimatedPlayback；广告牌/动态模型先按静态实例处理。");
         ImGui.EndDisabled();
 
         ImGui.BeginDisabled(!this.realNpcSpawn.EnableUnsafeNativeWrites || this.localLayoutObjects.Instances.Count == 0);
@@ -677,7 +668,6 @@ public sealed class MainWindow : Window
         ImGui.EndTable();
         if (!string.IsNullOrWhiteSpace(deleteId))
         {
-            this.localLayoutObjects.RestoreModelAndTransform(deleteId, this.FilteredBgParts(), this.realNpcSpawn.EnableUnsafeNativeWrites, this.confirmFullLayoutCollisionMode);
             this.localLayoutObjects.Delete(deleteId);
             if (string.Equals(this.selectedLocalLayoutObjectId, deleteId, StringComparison.Ordinal))
                 this.selectedLocalLayoutObjectId = string.Empty;
@@ -705,6 +695,12 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"pending recreate：{selected.PendingRecreate}");
         ImGui.TextWrapped($"pending visual transform：{selected.PendingVisualTransform}，等待帧：{selected.PendingVisualTransformFrameWait}");
         ImGui.TextWrapped($"pending result：{selected.PendingVisualTransformResult}");
+        ImGui.TextWrapped($"restore status：{(string.IsNullOrWhiteSpace(selected.RestoreStatus) ? "Pending" : selected.RestoreStatus)}");
+        ImGui.TextWrapped($"restore step：{(string.IsNullOrWhiteSpace(selected.RestoreStep) ? "无" : selected.RestoreStep)}");
+        ImGui.TextWrapped($"restore error：{(string.IsNullOrWhiteSpace(selected.RestoreError) ? "无" : selected.RestoreError)}");
+        ImGui.TextWrapped($"after restore path：{(string.IsNullOrWhiteSpace(selected.AfterRestorePath) ? "未记录" : selected.AfterRestorePath)}");
+        ImGui.TextWrapped($"after restore position：{(string.IsNullOrWhiteSpace(selected.AfterRestorePosition) ? "未记录" : selected.AfterRestorePosition)}");
+        ImGui.TextWrapped($"after restore visible：{(string.IsNullOrWhiteSpace(selected.AfterRestoreVisible) ? "未记录" : selected.AfterRestoreVisible)}");
         ImGui.TextWrapped($"complex risk：{(string.IsNullOrWhiteSpace(selected.ComplexModelRisk) ? "StaticOk" : selected.ComplexModelRisk)}");
         if (!string.IsNullOrWhiteSpace(selected.ComplexModelRiskReason))
             ImGui.TextWrapped($"risk reason：{selected.ComplexModelRiskReason}");
@@ -819,7 +815,6 @@ public sealed class MainWindow : Window
             this.localLayoutObjects.RefreshAnimationCapabilityDump(selected.Id, this.GetSelectedBgPart());
         if (ImGui.Button("删除实例"))
         {
-            this.localLayoutObjects.RestoreModelAndTransform(selected.Id, this.FilteredBgParts(), this.realNpcSpawn.EnableUnsafeNativeWrites, this.confirmFullLayoutCollisionMode);
             this.localLayoutObjects.Delete(selected.Id);
             this.selectedLocalLayoutObjectId = string.Empty;
         }

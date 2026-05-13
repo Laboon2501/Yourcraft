@@ -255,6 +255,16 @@ public sealed class LocalLayoutObjectInstance
 
     public string RestoreStatus { get; set; } = string.Empty;
 
+    public string RestoreStep { get; set; } = string.Empty;
+
+    public string RestoreError { get; set; } = string.Empty;
+
+    public string AfterRestorePath { get; set; } = string.Empty;
+
+    public string AfterRestorePosition { get; set; } = string.Empty;
+
+    public string AfterRestoreVisible { get; set; } = string.Empty;
+
     public string BeforeModelPath { get; set; } = string.Empty;
 
     public string TargetModelPath { get; set; } = string.Empty;
