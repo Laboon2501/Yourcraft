@@ -745,6 +745,7 @@ public sealed class MainWindow : Window
         ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "custom mdl 使用 DestroyPrimary -> CreatePrimary；不会调用 SetModel。");
         ImGui.TextWrapped($"active occupied slot count：{this.localLayoutObjects.ActiveOccupiedSlotCount}");
         ImGui.TextWrapped($"duplicate slot count：{this.localLayoutObjects.DuplicateSlotCount}");
+        ImGui.TextWrapped($"恢复/清理忙碌状态：{this.localLayoutObjects.IsBusy}");
 
         var unsafeEnabled = this.realNpcSpawn.EnableUnsafeNativeWrites;
         if (ImGui.Checkbox("启用 Unsafe/native 写入", ref unsafeEnabled))
@@ -763,7 +764,7 @@ public sealed class MainWindow : Window
         var candidate = this.GetSelectedBgPart();
         var mode = this.localLayoutFullCollisionMode ? LocalLayoutTransformMode.FullLayoutWithCollision : LocalLayoutTransformMode.VisualOnly;
         var fullLayoutBlocked = this.localLayoutFullCollisionMode && !this.confirmFullLayoutCollisionMode;
-        ImGui.BeginDisabled(!this.realNpcSpawn.EnableUnsafeNativeWrites || candidate == null || !this.runtime.PlayerPosition.HasValue || fullLayoutBlocked);
+        ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || !this.realNpcSpawn.EnableUnsafeNativeWrites || candidate == null || !this.runtime.PlayerPosition.HasValue || fullLayoutBlocked);
         if (ImGui.Button(this.localLayoutFullCollisionMode ? "从候选创建本地物件（FullLayoutWithCollision，危险）" : "从候选创建本地物件（VisualOnly，推荐）"))
         {
             var created = this.localLayoutObjects.CreateFromCandidate(candidate, this.runtime.PlayerPosition!.Value, mode);
@@ -772,7 +773,7 @@ public sealed class MainWindow : Window
         }
         ImGui.EndDisabled();
 
-        ImGui.BeginDisabled(!this.realNpcSpawn.EnableUnsafeNativeWrites || this.localLayoutObjects.Instances.Count == 0);
+        ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || !this.realNpcSpawn.EnableUnsafeNativeWrites || this.localLayoutObjects.Instances.Count == 0);
         if (ImGui.Button("恢复全部"))
         {
             this.localLayoutObjects.RestoreAll(
@@ -785,7 +786,7 @@ public sealed class MainWindow : Window
         ImGui.SameLine();
         ImGui.TextDisabled("会自动清理动态残留 registry 和重复实例");
         ImGui.SameLine();
-        ImGui.BeginDisabled(this.localLayoutObjects.Instances.Count == 0);
+        ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || this.localLayoutObjects.Instances.Count == 0);
         if (ImGui.Button("一键清理重复实例"))
         {
             this.localLayoutObjects.CleanupDuplicateInstances(auto: false);
@@ -898,7 +899,7 @@ public sealed class MainWindow : Window
             : $"模板 resourcePath：{template.ResourcePath}");
         ImGui.TextWrapped($"同 resourcePath 可用 slot 数：{sameResourceAvailable}；bg/bgcommon 可用 slot 数：{anySupportedAvailable}；当前将创建：{Math.Min(this.layoutCopyCount, plannedAvailable)}");
 
-        ImGui.BeginDisabled(!this.realNpcSpawn.EnableUnsafeNativeWrites || template == null || !hasBasePosition || fullLayoutBlocked);
+        ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || !this.realNpcSpawn.EnableUnsafeNativeWrites || template == null || !hasBasePosition || fullLayoutBlocked);
         if (ImGui.Button(mode == LocalLayoutTransformMode.VisualOnly ? "创建 N 个 VisualOnly 复制体" : "创建 N 个 FullLayoutWithCollision 复制体"))
             this.CreateMany(template, availableNearest, this.layoutCopyCount, basePosition, mode);
         if (ImGui.Button("从最远可用 slot 分配"))
@@ -1056,7 +1057,7 @@ public sealed class MainWindow : Window
             ImGui.TableSetColumnIndex(9);
             ImGui.TextWrapped(FirstNonEmpty(instance.ApplyMdlError, instance.LastError, instance.LastModelOverrideError));
             ImGui.TableSetColumnIndex(10);
-            ImGui.BeginDisabled(instance.IsRestored || instance.IsInvalid || instance.IsDuplicate || !this.realNpcSpawn.EnableUnsafeNativeWrites);
+            ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || instance.IsRestored || instance.IsInvalid || instance.IsDuplicate || !this.realNpcSpawn.EnableUnsafeNativeWrites);
             DrawEnumCombo("##rowCollisionMode", instance.TransformMode, value =>
             {
                 if (!value.Equals(instance.TransformMode))
@@ -1078,12 +1079,12 @@ public sealed class MainWindow : Window
             ImGui.TextWrapped(FormatVector(instance.CurrentScale));
             ImGui.TableSetColumnIndex(14);
             var fullLayoutNeedsConfirmation = instance.TransformMode == LocalLayoutTransformMode.FullLayoutWithCollision && !this.confirmFullLayoutCollisionMode;
-            ImGui.BeginDisabled(!this.realNpcSpawn.EnableUnsafeNativeWrites || instance.IsRestored || instance.IsInvalid || instance.IsDuplicate || instance.IsRenderInvalid || fullLayoutNeedsConfirmation);
+            ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || !this.realNpcSpawn.EnableUnsafeNativeWrites || instance.IsRestored || instance.IsInvalid || instance.IsDuplicate || instance.IsRenderInvalid || fullLayoutNeedsConfirmation);
             if (ImGui.Button("应用 mdl"))
                 this.localLayoutObjects.ApplyMdlPath(instance.Id, instance.CustomModelPath, this.FilteredBgParts(), this.realNpcSpawn.EnableUnsafeNativeWrites, this.confirmFullLayoutCollisionMode);
             ImGui.EndDisabled();
             ImGui.SameLine();
-            ImGui.BeginDisabled(!this.realNpcSpawn.EnableUnsafeNativeWrites || instance.IsRestored || instance.IsInvalid);
+            ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || !this.realNpcSpawn.EnableUnsafeNativeWrites || instance.IsRestored || instance.IsInvalid);
             if (ImGui.Button("恢复原 mdl/transform"))
                 this.localLayoutObjects.RestoreModelAndTransform(instance.Id, this.FilteredBgParts(), this.realNpcSpawn.EnableUnsafeNativeWrites, this.confirmFullLayoutCollisionMode);
             ImGui.EndDisabled();
@@ -1140,6 +1141,7 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"readback：{selected.LastReadback}");
         ImGui.TextWrapped($"错误：{(string.IsNullOrWhiteSpace(selected.LastError) ? "无" : selected.LastError)}");
 
+        ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || selected.IsRestored || selected.IsInvalid || selected.IsDuplicate || !this.realNpcSpawn.EnableUnsafeNativeWrites);
         DrawEnumCombo("复制体 collision 模式", selected.TransformMode, value =>
         {
             if (!value.Equals(selected.TransformMode))
@@ -1149,9 +1151,10 @@ public sealed class MainWindow : Window
                     value,
                     this.FilteredBgParts(),
                     this.realNpcSpawn.EnableUnsafeNativeWrites,
-                    this.confirmFullLayoutCollisionMode);
+                this.confirmFullLayoutCollisionMode);
             }
         });
+        ImGui.EndDisabled();
         var selectedWriteMode = selected.TransformMode;
         var fullLayoutNeedsConfirmation = selectedWriteMode == LocalLayoutTransformMode.FullLayoutWithCollision && !this.confirmFullLayoutCollisionMode;
         ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), selectedWriteMode == LocalLayoutTransformMode.VisualOnly
@@ -1192,7 +1195,7 @@ public sealed class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(selected.GraphicsSafetyDump))
             ImGui.TextWrapped($"Graphics 安全状态：{selected.GraphicsSafetyDump}");
 
-        var disabled = !this.realNpcSpawn.EnableUnsafeNativeWrites || selected.IsDuplicate || selected.IsRestored || selected.IsRenderInvalid || fullLayoutNeedsConfirmation;
+        var disabled = this.localLayoutObjects.IsBusy || !this.realNpcSpawn.EnableUnsafeNativeWrites || selected.IsDuplicate || selected.IsRestored || selected.IsRenderInvalid || fullLayoutNeedsConfirmation;
         if (selected.IsRenderInvalid)
             ImGui.TextColored(new Vector4(1f, 0.35f, 0.25f, 1f), "当前实例 render 已失效，不能再写 Graphics.Scene.Object transform。");
         ImGui.BeginDisabled(disabled);
