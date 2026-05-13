@@ -339,17 +339,14 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped("正式功能：复用当前地图已有 BgPart slot。VisualOnly 写 Graphics.Scene.Object transform，不移动 collision。");
         ImGui.TextWrapped($"状态：{this.localLayoutObjects.LastStatus}");
         ImGui.TextWrapped($"模型状态：{this.localLayoutObjects.LastModelOverrideStatus}");
-        ImGui.TextWrapped($"动画回放：{this.localLayoutObjects.LastAnimatedPlaybackStatus}");
-        ImGui.TextWrapped($"animated playback count：{this.localLayoutObjects.AnimatedPlaybackCount}");
-        ImGui.TextWrapped($"animated group count：{this.localLayoutObjects.AnimatedGroupCount}");
-        ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "custom mdl / SetModel 当前为高风险实验，已禁用自动调用。创建、删除、恢复全部不会调用 SetModel。");
+        ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "v9.8 静态稳定版：动态 BgPart / SharedGroup / controller 驱动物体暂不支持，命中风险对象时会拒绝创建。");
+        ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "custom mdl 使用 DestroyPrimary -> CreatePrimary；不会调用 SetModel。");
         ImGui.TextWrapped($"active occupied slot count：{this.localLayoutObjects.ActiveOccupiedSlotCount}");
         ImGui.TextWrapped($"duplicate slot count：{this.localLayoutObjects.DuplicateSlotCount}");
 
         var unsafeEnabled = this.realNpcSpawn.EnableUnsafeNativeWrites;
         if (ImGui.Checkbox("启用 Unsafe/native 写入", ref unsafeEnabled))
             this.realNpcSpawn.EnableUnsafeNativeWrites = unsafeEnabled;
-        ImGui.TextDisabled("PinTransform 每帧硬锁定已在 v9.6 停用；动态对象改用 source animation sampling -> static carrier playback。");
         if (ImGui.Checkbox("模型和碰撞体一起变化（危险）", ref this.localLayoutFullCollisionMode) && !this.localLayoutFullCollisionMode)
             this.confirmFullLayoutCollisionMode = false;
         if (this.localLayoutFullCollisionMode)
@@ -371,10 +368,6 @@ public sealed class MainWindow : Window
             if (created != null)
                 this.selectedLocalLayoutObjectId = created.Id;
         }
-        ImGui.BeginDisabled();
-        ImGui.Button("创建动态本地实例（已暂停）");
-        ImGui.EndDisabled();
-        ImGui.TextDisabled("v9.7 暂停 AnimatedPlayback；广告牌/动态模型先按静态实例处理。");
         ImGui.EndDisabled();
 
         ImGui.BeginDisabled(!this.realNpcSpawn.EnableUnsafeNativeWrites || this.localLayoutObjects.Instances.Count == 0);
@@ -388,10 +381,7 @@ public sealed class MainWindow : Window
         }
         ImGui.EndDisabled();
         ImGui.SameLine();
-        ImGui.TextDisabled("会自动 StopAllAndDetach 动画回放，并清理重复实例");
-        ImGui.SameLine();
-        if (ImGui.Button("停止全部动画回放"))
-            this.localLayoutObjects.StopAllPlayback();
+        ImGui.TextDisabled("会自动清理动态残留 registry 和重复实例");
         ImGui.SameLine();
         ImGui.BeginDisabled(this.localLayoutObjects.Instances.Count == 0);
         if (ImGui.Button("一键清理重复实例"))
@@ -401,14 +391,6 @@ public sealed class MainWindow : Window
                 this.selectedLocalLayoutObjectId = string.Empty;
         }
         ImGui.EndDisabled();
-
-        if (this.localLayoutObjects.AnimatedGroups.Count > 0 && ImGui.CollapsingHeader("Animated group 状态"))
-        {
-            foreach (var group in this.localLayoutObjects.AnimatedGroups)
-            {
-                ImGui.TextWrapped($"group={group.GroupId}; children={group.ChildInstanceIds.Count}; carriers={group.CarrierSlotAddresses.Count}; playback={group.PlaybackEnabled}; restoring={group.IsRestoring}; restored={group.IsRestored}; status={group.RestoreStatus}; error={group.LastError}");
-            }
-        }
 
         this.DrawLocalLayoutObjectTable();
         this.DrawSelectedLocalLayoutObjectControls();
@@ -738,29 +720,6 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"transform skipped reason：{(string.IsNullOrWhiteSpace(selected.LastTransformWriteSkippedReason) ? "无" : selected.LastTransformWriteSkippedReason)}");
         ImGui.TextWrapped($"applied transform position：{(string.IsNullOrWhiteSpace(selected.AppliedTransformPosition) ? "未写入" : selected.AppliedTransformPosition)}");
         ImGui.TextWrapped($"readback immediate：{(string.IsNullOrWhiteSpace(selected.TransformReadbackImmediate) ? "未记录" : selected.TransformReadbackImmediate)}");
-        ImGui.TextWrapped($"readback +1 frame：{(string.IsNullOrWhiteSpace(selected.TransformReadbackAfter1Frame) ? "未记录" : selected.TransformReadbackAfter1Frame)}");
-        ImGui.TextWrapped($"readback +5 frames：{(string.IsNullOrWhiteSpace(selected.TransformReadbackAfter5Frames) ? "未记录" : selected.TransformReadbackAfter5Frames)}");
-        ImGui.TextWrapped($"readback +30 frames：{(string.IsNullOrWhiteSpace(selected.TransformReadbackAfter30Frames) ? "未记录" : selected.TransformReadbackAfter30Frames)}");
-        ImGui.TextWrapped($"controlled by runtime：{selected.ControlledByRuntime}");
-        ImGui.TextWrapped($"overwrite detail：{(string.IsNullOrWhiteSpace(selected.TransformOverwriteDetails) ? "未检测" : selected.TransformOverwriteDetails)}");
-        ImGui.TextWrapped($"pinTransform enabled：{selected.PinTransformEnabled}");
-        ImGui.TextWrapped($"pin target：{FormatVector(selected.PinTargetPosition)}");
-        ImGui.TextWrapped($"pin write failed count：{selected.PinWriteFailedCount}");
-        ImGui.TextWrapped($"last pin write result：{(string.IsNullOrWhiteSpace(selected.LastPinWriteResult) ? "未执行" : selected.LastPinWriteResult)}");
-        ImGui.TextWrapped($"pin reason：{(string.IsNullOrWhiteSpace(selected.PinTransformReason) ? "无" : selected.PinTransformReason)}");
-        ImGui.TextWrapped($"animation playback：{selected.AnimationPlaybackEnabled} / {selected.AnimationPlaybackMode}");
-        ImGui.TextWrapped($"animation source：{(string.IsNullOrWhiteSpace(selected.AnimationSourceBgPart) ? "无" : selected.AnimationSourceBgPart)} | {selected.AnimationSourceResourcePath}");
-        if (!string.IsNullOrWhiteSpace(selected.AnimationGroupId))
-            ImGui.TextWrapped($"animation group：{selected.AnimationGroupId} | child={selected.AnimationGroupChildIndex}");
-        ImGui.TextWrapped($"source base：{(string.IsNullOrWhiteSpace(selected.AnimationSourceBaseTransform) ? "未记录" : selected.AnimationSourceBaseTransform)}");
-        ImGui.TextWrapped($"local playback base：{(string.IsNullOrWhiteSpace(selected.LocalPlaybackBaseTransform) ? "未记录" : selected.LocalPlaybackBaseTransform)}");
-        ImGui.TextWrapped($"current delta：{(string.IsNullOrWhiteSpace(selected.CurrentDelta) ? "未采样" : selected.CurrentDelta)}");
-        ImGui.TextWrapped($"source rotation：{(string.IsNullOrWhiteSpace(selected.AnimationSourceRotation) ? "未采样" : selected.AnimationSourceRotation)}");
-        ImGui.TextWrapped($"rotation delta：{(string.IsNullOrWhiteSpace(selected.AnimationRotationDelta) ? "未采样" : selected.AnimationRotationDelta)}");
-        ImGui.TextWrapped($"local target rotation：{(string.IsNullOrWhiteSpace(selected.AnimationLocalTargetRotation) ? "未采样" : selected.AnimationLocalTargetRotation)}");
-        ImGui.TextWrapped($"readback rotation：{(string.IsNullOrWhiteSpace(selected.AnimationReadbackRotation) ? "未采样" : selected.AnimationReadbackRotation)}");
-        ImGui.TextWrapped($"playback frame：{selected.PlaybackFrameCount}；last sample：{(string.IsNullOrWhiteSpace(selected.LastSampleTime) ? "无" : selected.LastSampleTime)}");
-        ImGui.TextWrapped($"playback result：{(string.IsNullOrWhiteSpace(selected.AnimationPlaybackLastResult) ? "未执行" : selected.AnimationPlaybackLastResult)}");
         ImGui.TextWrapped($"model result：{selected.LastModelOverrideResult}");
         ImGui.TextWrapped($"model error：{(string.IsNullOrWhiteSpace(selected.LastModelOverrideError) ? "无" : selected.LastModelOverrideError)}");
         ImGui.TextWrapped($"collision resolve：{selected.CollisionSourceResolveResult}");
@@ -771,11 +730,9 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"mdl category：{(string.IsNullOrWhiteSpace(selected.ModelResourceCategoryReadback) ? "未读取" : selected.ModelResourceCategoryReadback)}");
         ImGui.TextWrapped("正式 mdl 替换使用 DestroyPrimary -> CreatePrimary；不会调用 SetModel。FullLayout 模式会自动查找 target mdl 对应 BgPart collision source。");
         ImGui.TextWrapped("支持 bg/...mdl 与 bgcommon/...mdl；其他资源类型暂不支持。");
-        ImGui.TextWrapped("自带动画/动态材质模型可能只显示静态外观；动画需要原 layout controller/shared group/event update 支持，暂未支持。");
+        ImGui.TextWrapped("动态 BgPart / SharedGroup / controller 驱动物体当前版本会被拒绝，避免残留和 native 崩溃。");
         if (!string.IsNullOrWhiteSpace(selected.GraphicsSafetyDump))
             ImGui.TextWrapped($"Graphics 安全状态：{selected.GraphicsSafetyDump}");
-        if (!string.IsNullOrWhiteSpace(selected.AnimationCapabilityDump))
-            ImGui.TextWrapped($"动画能力取证：{selected.AnimationCapabilityDump}");
 
         var disabled = !this.realNpcSpawn.EnableUnsafeNativeWrites || selected.IsDuplicate || selected.IsRestored || selected.IsRenderInvalid || fullLayoutNeedsConfirmation;
         if (selected.IsRenderInvalid)
@@ -810,17 +767,12 @@ public sealed class MainWindow : Window
         if (ImGui.Button("重置 scale")) this.localLayoutObjects.ResetScale(selected.Id);
         ImGui.SameLine();
         if (ImGui.Button("读取当前模型 path / Dump modelResourceHandle")) this.localLayoutObjects.RefreshModel(selected.Id);
-        ImGui.SameLine();
-        if (ImGui.Button("Dump 动画/复杂模型能力"))
-            this.localLayoutObjects.RefreshAnimationCapabilityDump(selected.Id, this.GetSelectedBgPart());
         if (ImGui.Button("删除实例"))
         {
             this.localLayoutObjects.Delete(selected.Id);
             this.selectedLocalLayoutObjectId = string.Empty;
         }
         ImGui.EndDisabled();
-
-        ImGui.TextDisabled("PinTransform 按钮已停用；动态对象请使用 AnimatedPlaybackSystem。");
     }
 
     private void DrawBgPartPool()
@@ -899,76 +851,7 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"Layout status：{this.layoutProbe.LastStatus}");
         ImGui.TextWrapped($"Layer status：{this.layerDump.LastStatus}");
         ImGui.TextWrapped($"Local object status：{this.localLayoutObjects.LastStatus}");
-        ImGui.TextWrapped($"Animated controller probe：{this.animatedBgPartControllerProbe.LastStatus}");
         this.DrawBgPartCollisionSourceProbeDebug();
-        this.DrawAnimatedBgPartControllerProbeDebug();
-    }
-
-    private void DrawAnimatedBgPartControllerProbeDebug()
-    {
-        if (!ImGui.CollapsingHeader("Animated / Dynamic Material BgPart Controller 取证（只读，60 帧采样）"))
-            return;
-
-        var candidate = this.GetSelectedBgPart();
-        var selectedInstance = string.IsNullOrWhiteSpace(this.selectedLocalLayoutObjectId)
-            ? null
-            : this.localLayoutObjects.GetById(this.selectedLocalLayoutObjectId);
-
-        ImGui.TextWrapped("只读优先：对比原地图会动 BgPart 与 recreate 后本地实例。不会调用 CleanupRender，不复制 controller/listener 指针，不写 native controller，不接入正式流程。");
-        ImGui.TextWrapped(candidate == null
-            ? "A 原地图 BgPart：未选择"
-            : $"A 原地图 BgPart：{candidate.ResourcePath} | {candidate.Address} | layer={candidate.LayerAddress}");
-        ImGui.TextWrapped(selectedInstance == null
-            ? "B 本地实例：未选择"
-            : $"B 本地实例：{selectedInstance.CurrentResourcePath} | slot={selectedInstance.OccupiedSlotAddress} | id={selectedInstance.Id}");
-        ImGui.TextWrapped($"采样状态：{this.animatedBgPartControllerProbe.LastStatus}");
-        ImGui.TextWrapped($"已采样帧：{this.animatedBgPartControllerProbe.SamplesCollected}/60");
-
-        ImGui.BeginDisabled(candidate == null || selectedInstance == null);
-        if (ImGui.Button("单帧 dump A/B controller 字段"))
-            this.animatedBgPartControllerProbe.DumpOnce(candidate, selectedInstance);
-        ImGui.SameLine();
-        if (ImGui.Button("开始 60 帧只读采样"))
-            this.animatedBgPartControllerProbe.StartSampling(candidate, selectedInstance);
-        ImGui.EndDisabled();
-
-        ImGui.SameLine();
-        ImGui.BeginDisabled(candidate == null || selectedInstance == null);
-        if (ImGui.Button("UpdateMaterials 前后对比"))
-            this.animatedBgPartControllerProbe.ProbeUpdateMaterialsDiff(candidate, selectedInstance);
-        ImGui.EndDisabled();
-
-        ImGui.SameLine();
-        ImGui.BeginDisabled(!this.animatedBgPartControllerProbe.IsSampling);
-        if (ImGui.Button("取消采样"))
-            this.animatedBgPartControllerProbe.CancelSampling();
-        ImGui.EndDisabled();
-
-        ImGui.Separator();
-        ImGui.TextWrapped("SharedGroup 动态屏幕取证：选中 SharedGroup child 后展开同 parent 的全部 BgPart，并采样 60 帧 visible 序列。只读，不写 SharedGroup container。");
-        ImGui.TextWrapped($"SharedGroup 采样帧：{this.animatedBgPartControllerProbe.GroupSamplesCollected}/60");
-        ImGui.BeginDisabled(candidate == null);
-        if (ImGui.Button("展开当前 SharedGroup children"))
-            this.animatedBgPartControllerProbe.DumpSharedGroupChildren(candidate, this.layoutProbe.Instances);
-        ImGui.SameLine();
-        if (ImGui.Button("开始 SharedGroup 60 帧 visible 采样"))
-            this.animatedBgPartControllerProbe.StartSharedGroupSampling(candidate, this.layoutProbe.Instances);
-        ImGui.EndDisabled();
-
-        if (ImGui.CollapsingHeader("单帧 A/B dump"))
-            ImGui.TextWrapped(this.animatedBgPartControllerProbe.OneShotDump);
-        if (ImGui.CollapsingHeader("60 帧变化摘要"))
-            ImGui.TextWrapped(this.animatedBgPartControllerProbe.SamplingSummary);
-        if (ImGui.CollapsingHeader("UpdateMaterials 前后对比"))
-            ImGui.TextWrapped(this.animatedBgPartControllerProbe.UpdateMaterialsDiffDump);
-        if (ImGui.CollapsingHeader("60 帧逐帧关键字段"))
-            ImGui.TextWrapped(this.animatedBgPartControllerProbe.FrameSamplesDump);
-        if (ImGui.CollapsingHeader("SharedGroup children 展开"))
-            ImGui.TextWrapped(this.animatedBgPartControllerProbe.SharedGroupChildrenDump);
-        if (ImGui.CollapsingHeader("SharedGroup visible 序列摘要"))
-            ImGui.TextWrapped(this.animatedBgPartControllerProbe.SharedGroupSamplingSummary);
-        if (ImGui.CollapsingHeader("SharedGroup 60 帧逐帧"))
-            ImGui.TextWrapped(this.animatedBgPartControllerProbe.SharedGroupFrameSamplesDump);
     }
 
     private void DrawBgPartCollisionSourceProbeDebug()

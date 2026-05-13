@@ -12,6 +12,7 @@ namespace LocalQuestReborn.Services;
 public sealed unsafe class LocalLayoutObjectService
 {
     private const int VisualMatrixOffset = 0x20;
+    private const string DynamicObjectBlockedMessage = "该物体疑似由地图 controller / SharedGroup / 动态材质驱动，当前版本不支持本地移动。为避免闪退已阻止创建。";
 
     private readonly LayoutObjectTransformService transformService = new();
     private readonly BgObjectModelOverrideService modelOverrideService = new();
@@ -65,7 +66,8 @@ public sealed unsafe class LocalLayoutObjectService
         foreach (var instance in this.instances.Where(item => item.TransformMonitorActive).ToList())
             this.UpdateTransformMonitor(instance);
 
-        // v9.7: 动画回放暂停。正式流程只保留静态摆放与可恢复的 slot 占用。
+        // v9.8: 动画回放暂停。Update 只做残留 registry 清理，不写动态 transform / visible。
+        this.animatedPlaybackSystem.Update(this.instances);
     }
 
     public bool IsSlotOccupied(string slotAddress)
@@ -93,6 +95,14 @@ public sealed unsafe class LocalLayoutObjectService
         if (!string.Equals(candidate.Type, "BgPart", StringComparison.Ordinal))
         {
             this.LastStatus = $"当前候选不是 BgPart：{candidate.Type}";
+            return null;
+        }
+
+        var staticBlockReason = GetStaticObjectBlockReason(candidate);
+        if (!string.IsNullOrWhiteSpace(staticBlockReason))
+        {
+            this.LastStatus = $"{DynamicObjectBlockedMessage} 原因：{staticBlockReason}";
+            candidate.CarrierRejectReason = staticBlockReason;
             return null;
         }
 
@@ -223,6 +233,16 @@ public sealed unsafe class LocalLayoutObjectService
             return created;
         }
 
+        if (hasCustomMdlPath)
+        {
+            var dynamicMdlReason = GetDynamicPathBlockReason(customMdlPath);
+            if (!string.IsNullOrWhiteSpace(dynamicMdlReason))
+            {
+                this.LastStatus = $"{DynamicObjectBlockedMessage} 原因：{dynamicMdlReason}";
+                return created;
+            }
+        }
+
         if (hasCustomMdlPath && !unsafeEnabled)
         {
             this.LastStatus = "批量应用 custom mdl path 需要 UnsafeMode=true。";
@@ -235,13 +255,21 @@ public sealed unsafe class LocalLayoutObjectService
             return created;
         }
 
+        var templateBlockReason = GetStaticObjectBlockReason(template);
+        if (!string.IsNullOrWhiteSpace(templateBlockReason))
+        {
+            this.LastStatus = $"{DynamicObjectBlockedMessage} 模板原因：{templateBlockReason}";
+            return created;
+        }
+
         var indexedSlots = candidateSlots
             .Select((slot, index) => new { Slot = slot, Index = index });
 
         var availableSlots = indexedSlots
             .Where(slot => string.Equals(slot.Slot.Type, "BgPart", StringComparison.Ordinal))
             .Where(slot => !string.Equals(slot.Slot.Address, template.Address, StringComparison.OrdinalIgnoreCase))
-            .Where(slot => !this.IsSlotOccupied(slot.Slot.Address));
+            .Where(slot => !this.IsSlotOccupied(slot.Slot.Address))
+            .Where(slot => string.IsNullOrWhiteSpace(GetStaticObjectBlockReason(slot.Slot)));
 
         if (hasCustomMdlPath || allowDifferentResourcePathSlots)
         {
@@ -317,8 +345,8 @@ public sealed unsafe class LocalLayoutObjectService
         bool unsafeEnabled,
         bool fullLayoutConfirmed)
     {
-        this.StopAllPlayback("v9.7 已暂停 AnimatedPlayback；动态实例创建入口禁用。");
-        this.LastStatus = "AnimatedPlayback 已暂停。请使用静态 VisualOnly / FullLayout 创建本地实例。";
+        this.StopAllPlayback("v9.8 静态稳定版已暂停 AnimatedPlayback；动态实例创建入口禁用。");
+        this.LastStatus = $"{DynamicObjectBlockedMessage} 请使用静态 VisualOnly / FullLayout 创建本地实例。";
         return [];
     }
 
@@ -420,6 +448,8 @@ public sealed unsafe class LocalLayoutObjectService
             reason = "SharedGroupChild";
         else if (!IsSupportedMdlPath(slot.ResourcePath))
             reason = "非 bg/bgcommon mdl";
+        else if (!string.IsNullOrWhiteSpace(GetDynamicPathBlockReason(slot.ResourcePath)))
+            reason = GetDynamicPathBlockReason(slot.ResourcePath);
         else if (excludedAddresses.Contains(slot.Address))
             reason = "source/template slot 已排除";
         else if (this.IsSlotOccupied(slot.Address))
@@ -737,20 +767,6 @@ public sealed unsafe class LocalLayoutObjectService
                 ? instance.PendingVisualTransform ? "PendingVisualTransform" : "Applied"
                 : instance.ModelApplyStatus;
             instance.ApplyMdlError = instance.IsRenderInvalid ? instance.TransformWriteDisabledReason : string.Empty;
-            if (!instance.IsRenderInvalid
-                && string.Equals(instance.ModelApplyStatus, "UnsafeComplexModel", StringComparison.Ordinal)
-                && this.AutoPinDynamicTransforms
-                && instance.PinTransformAutoEnabled
-                && !instance.PinFailed)
-            {
-                instance.PinTargetPosition = instance.CurrentPosition;
-                instance.PinTargetRotationEuler = instance.CurrentRotationEuler;
-                instance.PinTargetScale = instance.CurrentScale;
-                instance.PinTransformEnabled = true;
-                instance.ControlledByRuntime = true;
-                instance.PinTransformReason = "复杂/动态模型 recreate 后不做同帧写入，改由 PinTransform 每帧固定到用户目标位置。";
-                instance.LastPinWriteResult = "等待下一次 Framework.Update 写回 pin target。";
-            }
 
             this.LastStatus = instance.LastModelOverrideResult;
             return !instance.IsRenderInvalid;
@@ -820,6 +836,12 @@ public sealed unsafe class LocalLayoutObjectService
             return "custom mdl path 必须以 .mdl 结尾。";
         if (!IsSupportedMdlPath(modelPath.Trim()))
             return "custom mdl path 只支持 bg/...mdl 或 bgcommon/...mdl。";
+        var dynamicMdlReason = GetDynamicPathBlockReason(modelPath.Trim());
+        if (!string.IsNullOrWhiteSpace(dynamicMdlReason))
+            return $"{DynamicObjectBlockedMessage} 原因：{dynamicMdlReason}";
+        var sourceBlockReason = GetStaticObjectBlockReason(instance);
+        if (!string.IsNullOrWhiteSpace(sourceBlockReason))
+            return $"{DynamicObjectBlockedMessage} 实例来源原因：{sourceBlockReason}";
         if (instance.TransformMode == LocalLayoutTransformMode.FullLayoutWithCollision && !fullLayoutConfirmed)
             return "FullLayoutWithCollision 需要二次确认。";
         return string.Empty;
@@ -1272,6 +1294,8 @@ public sealed unsafe class LocalLayoutObjectService
                 return this.FailRestore(instance, "重复 slot 实例不参与恢复，避免覆盖原始 transform。", removeAfterRestore, markInvalid: true);
             if (!instance.CanRestore)
                 return this.FailRestore(instance, "没有可恢复的原始 slot 快照。", removeAfterRestore, markInvalid: false);
+            if (instance.IsRenderInvalid)
+                return this.FailRestore(instance, "实例 render 已失效，无法安全恢复 native transform；请切图/重载地图恢复该 slot。", removeAfterRestore, markInvalid: true);
 
             var originalPath = FirstNonEmpty(instance.OriginalSlotResourcePath, instance.OriginalModelResourcePath, instance.OriginalResourcePath, instance.SourceResourcePath);
             var currentPath = FirstNonEmpty(instance.CurrentResourcePath, instance.AfterModelPath, instance.TargetModelPath);
@@ -1457,7 +1481,7 @@ public sealed unsafe class LocalLayoutObjectService
             instance.TransformOverwriteDetails = "transform 写入未执行，原因见 transform disabled reason / skipped reason。";
         }
 
-        this.LastStatus = $"{action}锛{this.transformService.LastResult}";
+        this.LastStatus = $"{action}：{this.transformService.LastResult}";
     }
 
     private void ScheduleTransformMonitor(LocalLayoutObjectInstance instance, Vector3 expectedPosition, Vector3 expectedRotationEuler, Vector3 expectedScale, string action)
@@ -1514,12 +1538,6 @@ public sealed unsafe class LocalLayoutObjectService
             instance.ControlledByRuntime = true;
             instance.TransformOverwriteDetails =
                 $"readback 偏离目标 {distanceFromExpected:F2}m；到原 slot 位置距离 {sourceDistance:F2}m。疑似被 runtime/controller/layout transform 覆盖。";
-            if (this.AutoPinDynamicTransforms && instance.PinTransformAutoEnabled && !instance.PinFailed)
-            {
-                instance.PinTransformEnabled = true;
-                instance.PinTransformReason = "下一帧 readback 偏离目标，自动启用 PinTransform。";
-                instance.LastPinWriteResult = "等待下一次 Framework.Update 写回 pin target。";
-            }
         }
 
         if (instance.TransformMonitorFrame >= 1 && instance.ControlledByRuntime)
@@ -1920,6 +1938,61 @@ public sealed unsafe class LocalLayoutObjectService
     private static bool IsSupportedMdlPath(string path)
         => path.StartsWith("bg/", StringComparison.OrdinalIgnoreCase)
             || path.StartsWith("bgcommon/", StringComparison.OrdinalIgnoreCase);
+
+    private static string GetStaticObjectBlockReason(LayoutProbeInstance? instance)
+    {
+        if (instance == null)
+            return "未选择 BgPart。";
+        if (string.Equals(instance.SourceKind, "SharedGroup", StringComparison.Ordinal)
+            || !string.IsNullOrWhiteSpace(instance.ParentAddress)
+            || !string.IsNullOrWhiteSpace(instance.SharedGroupPath))
+            return "SharedGroup child 暂不支持作为本地静态物体 source / carrier。";
+
+        return GetDynamicPathBlockReason(instance.ResourcePath);
+    }
+
+    private static string GetStaticObjectBlockReason(LocalLayoutObjectInstance? instance)
+    {
+        if (instance == null)
+            return "未选择本地实例。";
+        if (string.Equals(instance.SourceKind, "SharedGroup", StringComparison.Ordinal)
+            || !string.IsNullOrWhiteSpace(instance.SourceParentAddress)
+            || !string.IsNullOrWhiteSpace(instance.SourceSharedGroupPath))
+            return "该实例来自 SharedGroup child，v9.8 静态稳定版禁止继续修改。";
+
+        return GetDynamicPathBlockReason(FirstNonEmpty(instance.CurrentResourcePath, instance.SourceResourcePath, instance.OriginalResourcePath));
+    }
+
+    private static string GetDynamicPathBlockReason(string? resourcePath)
+    {
+        if (string.IsNullOrWhiteSpace(resourcePath))
+            return string.Empty;
+
+        var path = resourcePath.Replace('\\', '/').ToLowerInvariant();
+        var fileName = path.Split('/').LastOrDefault() ?? path;
+        if (path.Contains("/vfx/", StringComparison.Ordinal))
+            return "路径包含 /vfx/，疑似 VFX / controller 驱动资源。";
+        if (path.Contains("/light/", StringComparison.Ordinal))
+            return "路径包含 /light/，疑似灯光或动态场景资源。";
+        if (path.Contains("/shared/", StringComparison.Ordinal))
+            return "路径包含 /shared/，疑似 SharedGroup / 共享动态资源。";
+        if (path.Contains("/evt/", StringComparison.Ordinal))
+            return "路径包含 /evt/，疑似事件控制资源。";
+        if (path.Contains("/aet/", StringComparison.Ordinal))
+            return "路径包含 /aet/，疑似以太/漂浮/旋转类 controller 驱动资源。";
+        if (path.Contains("/twn/", StringComparison.Ordinal)
+            && (fileName.Contains("scr", StringComparison.Ordinal)
+                || fileName.Contains("screen", StringComparison.Ordinal)
+                || fileName.Contains("monitor", StringComparison.Ordinal)
+                || fileName.Contains("advert", StringComparison.Ordinal)
+                || fileName.Contains("_ad", StringComparison.Ordinal)
+                || fileName.Contains("ad_", StringComparison.Ordinal)))
+        {
+            return "疑似城镇动态屏幕/广告牌类资源。";
+        }
+
+        return string.Empty;
+    }
 
     private readonly record struct LayoutTransformSnapshot(Vector3 Position, Quaternion Rotation, Vector3 Scale);
 
