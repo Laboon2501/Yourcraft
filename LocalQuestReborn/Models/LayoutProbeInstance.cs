@@ -47,4 +47,6 @@ public sealed class LayoutProbeInstance
     public string DebugInfo { get; set; } = string.Empty;
 
     public string CarrierRejectReason { get; set; } = string.Empty;
+
+    public string CarrierWarningReason { get; set; } = string.Empty;
 }

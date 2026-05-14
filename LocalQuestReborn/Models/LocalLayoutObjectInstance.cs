@@ -125,6 +125,8 @@ public sealed class LocalLayoutObjectInstance
 
     public string CarrierRejectReason { get; set; } = string.Empty;
 
+    public string CarrierWarningReason { get; set; } = string.Empty;
+
     public bool IsOccupied { get; set; }
 
     public bool IsRestored { get; set; }

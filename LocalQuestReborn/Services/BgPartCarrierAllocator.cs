@@ -9,6 +9,8 @@ public sealed class BgPartCarrierAllocationResult
 
     public Dictionary<string, int> Rejected { get; } = new(StringComparer.OrdinalIgnoreCase);
 
+    public Dictionary<string, int> AcceptedWarnings { get; } = new(StringComparer.OrdinalIgnoreCase);
+
     public List<LayoutProbeInstance> AcceptedTop10 { get; } = [];
 
     public List<LayoutProbeInstance> RejectedTop10 { get; } = [];
@@ -37,6 +39,18 @@ public sealed class BgPartCarrierAllocationResult
         this.Rejected[key] = this.Rejected.TryGetValue(key, out var count) ? count + 1 : 1;
     }
 
+    public void AddAcceptedWarning(string warning)
+    {
+        if (string.IsNullOrWhiteSpace(warning))
+            return;
+
+        foreach (var item in warning.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        {
+            var key = NormalizeWarningReason(item);
+            this.AcceptedWarnings[key] = this.AcceptedWarnings.TryGetValue(key, out var count) ? count + 1 : 1;
+        }
+    }
+
     private static string NormalizeRejectReason(string reason)
     {
         if (string.IsNullOrWhiteSpace(reason))
@@ -63,6 +77,23 @@ public sealed class BgPartCarrierAllocationResult
             return "NoSnapshot";
         return reason;
     }
+
+    private static string NormalizeWarningReason(string warning)
+    {
+        if (string.IsNullOrWhiteSpace(warning))
+            return "Other";
+        if (warning.Contains("SharedGroupChild", StringComparison.OrdinalIgnoreCase))
+            return "SharedGroupChild";
+        if (warning.Contains("Dynamic", StringComparison.OrdinalIgnoreCase)
+            || warning.Contains("Animated", StringComparison.OrdinalIgnoreCase)
+            || warning.Contains("controller", StringComparison.OrdinalIgnoreCase)
+            || warning.Contains("UnsafeComplexModel", StringComparison.OrdinalIgnoreCase))
+        {
+            return "DynamicSuspected";
+        }
+
+        return warning;
+    }
 }
 
 public sealed class BgPartCarrierAllocator
@@ -75,6 +106,7 @@ public sealed class BgPartCarrierAllocator
         Vector3? playerPosition,
         Func<LayoutProbeInstance?, ISet<string>, string> getBasicRejectReason,
         Func<LayoutProbeInstance, CarrierAllocationPolicy, string> getFallbackRejectReason,
+        Func<LayoutProbeInstance, string> getWarningReason,
         Func<string, bool> isOccupied,
         Func<string, bool> isReserved)
     {
@@ -98,6 +130,9 @@ public sealed class BgPartCarrierAllocator
         var accepted = new List<LayoutProbeInstance>();
         foreach (var slot in bgParts)
         {
+            slot.CarrierRejectReason = string.Empty;
+            slot.CarrierWarningReason = string.Empty;
+
             var basicReject = getBasicRejectReason(slot, excluded);
             if (!string.IsNullOrWhiteSpace(basicReject))
             {
@@ -118,6 +153,9 @@ public sealed class BgPartCarrierAllocator
 
                 sameModel.Add(slot);
                 accepted.Add(slot);
+                var warning = getWarningReason(slot);
+                slot.CarrierWarningReason = warning;
+                result.AddAcceptedWarning(warning);
                 slot.CarrierRejectReason = string.Empty;
                 continue;
             }
@@ -132,6 +170,9 @@ public sealed class BgPartCarrierAllocator
 
             fallback.Add(slot);
             accepted.Add(slot);
+            var fallbackWarning = getWarningReason(slot);
+            slot.CarrierWarningReason = fallbackWarning;
+            result.AddAcceptedWarning(fallbackWarning);
             slot.CarrierRejectReason = string.Empty;
         }
 
@@ -169,8 +210,8 @@ public sealed class BgPartCarrierAllocator
 
     public static IOrderedEnumerable<LayoutProbeInstance> SortByFarthestFromPlayer(IEnumerable<LayoutProbeInstance> slots, Vector3? playerPosition)
         => slots
-            .OrderByDescending(slot => !slot.Visible)
-            .ThenByDescending(slot => GetDistance(slot, playerPosition))
+            .OrderByDescending(slot => GetDistance(slot, playerPosition))
+            .ThenByDescending(slot => !slot.Visible)
             .ThenBy(slot => slot.Address);
 
     private static IOrderedEnumerable<LayoutProbeInstance> SortByNearestFromPlayer(IEnumerable<LayoutProbeInstance> slots, Vector3? playerPosition)

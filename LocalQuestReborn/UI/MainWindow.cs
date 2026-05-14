@@ -47,6 +47,7 @@ public sealed class MainWindow : Window
     private LocalLayoutTransformMode layoutCopyDefaultMode = LocalLayoutTransformMode.VisualOnly;
     private Vector3 layoutCopyDefaultRotationEuler;
     private Vector3 layoutCopyDefaultScale = Vector3.One;
+    private bool layoutCopyUseTemplateScale;
     private bool layoutUseManualBasePosition;
     private Vector3 layoutManualBasePosition;
     private string layoutBatchCustomMdlPath = string.Empty;
@@ -794,7 +795,19 @@ public sealed class MainWindow : Window
         ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || this.localLayoutObjects.IsCreateQueueActive || !this.realNpcSpawn.EnableUnsafeNativeWrites || candidate == null || !this.runtime.PlayerPosition.HasValue || fullLayoutBlocked);
         if (ImGui.Button(this.localLayoutFullCollisionMode ? "从候选创建本地物件（FullLayoutWithCollision，危险）" : "从候选创建本地物件（VisualOnly，推荐）"))
         {
-            var created = this.localLayoutObjects.CreateCopyFromTemplate(candidate, this.AllBgParts(), this.runtime.PlayerPosition!.Value, mode, this.carrierAllocationPolicy, this.realNpcSpawn.EnableUnsafeNativeWrites, this.confirmFullLayoutCollisionMode);
+            var desiredScale = this.layoutCopyUseTemplateScale && candidate != null
+                ? candidate.Scale
+                : this.layoutCopyDefaultScale;
+            var created = this.localLayoutObjects.CreateCopyFromTemplate(
+                candidate,
+                this.AllBgParts(),
+                this.runtime.PlayerPosition!.Value,
+                mode,
+                this.carrierAllocationPolicy,
+                this.realNpcSpawn.EnableUnsafeNativeWrites,
+                this.confirmFullLayoutCollisionMode,
+                this.layoutCopyDefaultRotationEuler,
+                desiredScale);
             if (created != null)
                 this.selectedLocalLayoutObjectId = created.Id;
         }
@@ -897,6 +910,10 @@ public sealed class MainWindow : Window
         if (ImGui.InputFloat("默认 Roll Z (deg)", ref copyRotationDegrees.Z))
             this.layoutCopyDefaultRotationEuler.Z = DegreesToRadians(copyRotationDegrees.Z);
         var copyDefaultScale = this.layoutCopyDefaultScale;
+        ImGui.Checkbox("使用模板缩放", ref this.layoutCopyUseTemplateScale);
+        ImGui.TextWrapped(this.layoutCopyUseTemplateScale
+            ? "新复制体会继承模板 scale。"
+            : "新复制体默认 scale = X 1, Y 1, Z 1；下面输入框可手动改默认 scale。");
         if (ImGui.InputFloat("默认 Scale X", ref copyDefaultScale.X)) this.layoutCopyDefaultScale = Vector3.Max(copyDefaultScale, new Vector3(0.01f));
         copyDefaultScale = this.layoutCopyDefaultScale;
         if (ImGui.InputFloat("默认 Scale Y", ref copyDefaultScale.Y)) this.layoutCopyDefaultScale = Vector3.Max(copyDefaultScale, new Vector3(0.01f));
@@ -991,7 +1008,7 @@ public sealed class MainWindow : Window
             this.realNpcSpawn.EnableUnsafeNativeWrites,
             this.confirmFullLayoutCollisionMode,
             this.layoutCopyDefaultRotationEuler,
-            this.layoutCopyDefaultScale,
+            this.layoutCopyUseTemplateScale && template != null ? template.Scale : this.layoutCopyDefaultScale,
             this.carrierAllocationPolicy,
             this.createAsManyAsPossible,
             this.runtime.PlayerPosition);
@@ -1026,12 +1043,15 @@ public sealed class MainWindow : Window
             ImGui.TextWrapped(string.IsNullOrWhiteSpace(carrierReject)
                 ? "carrier 状态：可作为静态 carrier"
                 : $"carrierRejectReason：{carrierReject}");
+            var carrierWarning = this.localLayoutObjects.GetCarrierWarningReason(candidate);
+            if (!string.IsNullOrWhiteSpace(carrierWarning))
+                ImGui.TextWrapped($"carrierWarningReason：{carrierWarning}");
             this.DrawProtectedBgPartControls(candidate);
         }
         ImGui.InputText("搜索 resourcePath/type", ref this.bgPartSearchText, 256);
 
         var rows = this.FilteredBgParts().Take(80).ToList();
-        if (!ImGui.BeginTable("BgPartSelectionTable", 10, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 180f)))
+        if (!ImGui.BeginTable("BgPartSelectionTable", 11, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 180f)))
             return;
         ImGui.TableSetupColumn("选择");
         ImGui.TableSetupColumn("distance");
@@ -1043,6 +1063,7 @@ public sealed class MainWindow : Window
         ImGui.TableSetupColumn("parent shared group");
         ImGui.TableSetupColumn("child");
         ImGui.TableSetupColumn("carrier reject");
+        ImGui.TableSetupColumn("carrier warning");
         ImGui.TableHeadersRow();
         foreach (var item in rows)
         {
@@ -1072,6 +1093,8 @@ public sealed class MainWindow : Window
             ImGui.TextUnformatted(item.ChildIndex >= 0 ? item.ChildIndex.ToString() : "-");
             ImGui.TableSetColumnIndex(9);
             ImGui.TextWrapped(this.localLayoutObjects.GetCarrierRejectReason(item, this.carrierAllocationPolicy));
+            ImGui.TableSetColumnIndex(10);
+            ImGui.TextWrapped(this.localLayoutObjects.GetCarrierWarningReason(item));
             ImGui.PopID();
         }
         ImGui.EndTable();
@@ -1387,6 +1410,8 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"original visible：{selected.OriginalVisible}；current visible：{selected.Visible}");
         if (!string.IsNullOrWhiteSpace(selected.CarrierRejectReason))
             ImGui.TextWrapped($"carrier reject reason：{selected.CarrierRejectReason}");
+        if (!string.IsNullOrWhiteSpace(selected.CarrierWarningReason))
+            ImGui.TextWrapped($"carrier warning reason：{selected.CarrierWarningReason}");
         ImGui.TextWrapped($"readback：{selected.LastReadback}");
         ImGui.TextWrapped($"错误：{(string.IsNullOrWhiteSpace(selected.LastError) ? "无" : selected.LastError)}");
 
@@ -1559,7 +1584,9 @@ public sealed class MainWindow : Window
                     LocalLayoutTransformMode.VisualOnly,
                     this.carrierAllocationPolicy,
                     this.realNpcSpawn.EnableUnsafeNativeWrites,
-                    fullLayoutConfirmed: true);
+                    fullLayoutConfirmed: true,
+                    defaultRotationEuler: this.layoutCopyDefaultRotationEuler,
+                    defaultScale: this.layoutCopyUseTemplateScale && templateSlot != null ? templateSlot.Scale : this.layoutCopyDefaultScale);
                 if (created != null) this.selectedLocalLayoutObjectId = created.Id;
             }
             ImGui.EndDisabled();

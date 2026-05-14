@@ -150,19 +150,16 @@ public sealed unsafe class LocalLayoutObjectService
         LocalLayoutTransformMode mode,
         CarrierAllocationPolicy carrierPolicy,
         bool unsafeEnabled,
-        bool fullLayoutConfirmed)
+        bool fullLayoutConfirmed,
+        Vector3 defaultRotationEuler = default,
+        Vector3? defaultScale = null)
     {
         if (template == null)
         {
             this.LastStatus = "请先选择模板 BgPart。";
             return null;
         }
-        var templatePathBlock = GetStaticObjectBlockReason(template);
-        if (!string.IsNullOrWhiteSpace(templatePathBlock))
-        {
-            this.LastStatus = $"{DynamicObjectBlockedMessage} 原因：{templatePathBlock}";
-            return null;
-        }
+        var templateWarning = this.GetCarrierWarningReason(template);
 
         var allocation = this.AllocateCarriers(template, candidateSlots, requestedCount: 1, carrierPolicy, position);
         var carrier = allocation.Selected.FirstOrDefault();
@@ -177,6 +174,10 @@ public sealed unsafe class LocalLayoutObjectService
         if (instance == null)
             return null;
 
+        var desiredScale = NormalizeDesiredScale(defaultScale ?? Vector3.One);
+        instance.CurrentRotationEuler = defaultRotationEuler;
+        instance.CurrentScale = desiredScale;
+
         if (!string.Equals(carrier.ResourcePath, template.ResourcePath, StringComparison.OrdinalIgnoreCase))
         {
             instance.CustomModelPath = template.ResourcePath;
@@ -184,8 +185,12 @@ public sealed unsafe class LocalLayoutObjectService
             if (!applied && !instance.PendingVisualTransform && !string.Equals(instance.InstanceState, "PendingRecreateStabilize", StringComparison.OrdinalIgnoreCase))
                 instance.ApplyMdlError = FirstNonEmpty(instance.ApplyMdlError, this.LastStatus);
         }
+        else
+        {
+            this.WriteInstanceTransform(instance, position, instance.CurrentRotationEuler, instance.CurrentScale, "从模板创建复制体默认 transform");
+        }
 
-        this.LastStatus = $"已从模板创建复制体：template={template.Address}; carrier={carrier.Address}; policy={carrierPolicy}; targetMdl={template.ResourcePath}; {this.LastStatus}";
+        this.LastStatus = $"已从模板创建复制体：template={template.Address}; carrier={carrier.Address}; policy={carrierPolicy}; targetMdl={template.ResourcePath}; scale={FormatVector(desiredScale)}; warning={FirstNonEmpty(templateWarning, carrier.CarrierWarningReason, "无")}; {this.LastStatus}";
         return instance;
     }
 
@@ -298,12 +303,13 @@ public sealed unsafe class LocalLayoutObjectService
             CurrentVisualTranslation = mode == LocalLayoutTransformMode.VisualOnly ? playerPosition : originalVisual.Position,
             CurrentVisualMatrix = originalVisualMatrix,
             CurrentPosition = playerPosition,
-            CurrentRotation = mode == LocalLayoutTransformMode.VisualOnly ? originalVisual.Rotation : originalLayout.Value.Rotation,
+            CurrentRotation = Quaternion.Identity,
             CurrentRotationEuler = Vector3.Zero,
-            CurrentScale = mode == LocalLayoutTransformMode.VisualOnly ? originalVisual.Scale : originalLayout.Value.Scale,
+            CurrentScale = NormalizeDesiredScale(Vector3.One),
             Visible = candidate.Visible,
             OriginalVisible = candidate.Visible,
             CarrierRejectReason = string.Empty,
+            CarrierWarningReason = this.GetCarrierWarningReason(candidate),
             IsOccupied = true,
             CanRestore = true,
             InstanceState = "Ready",
@@ -313,6 +319,8 @@ public sealed unsafe class LocalLayoutObjectService
                 ? "VisualOnly：只写 Graphics.Scene.Object transform，不移动 layout/collision。"
                 : "危险：FullLayoutWithCollision 会写 layout transform 并移动碰撞体。",
         };
+        if (!string.IsNullOrWhiteSpace(instance.CarrierWarningReason))
+            instance.Notes += $" warning={instance.CarrierWarningReason}。该对象会按静态外观尝试复制；动画/controller 效果不保证复制。";
 
         if (!this.collisionExperimentService.SaveSnapshot(instance))
         {
@@ -426,14 +434,7 @@ public sealed unsafe class LocalLayoutObjectService
             return created;
         }
 
-        var templateBlockReason = GetStaticObjectBlockReason(template);
-        if (!string.IsNullOrWhiteSpace(templateBlockReason))
-        {
-            this.LastStatus = $"{DynamicObjectBlockedMessage} 原因：{templateBlockReason}";
-            return created;
-        }
-
-        var templateWarning = string.Empty;
+        var templateWarning = this.GetCarrierWarningReason(template);
 
         var plan = this.GetFreshAllocationPlanOrFail(template, candidateSlots, count, carrierPolicy, playerPosition, createAsManyAsPossible);
         if (plan == null)
@@ -455,17 +456,16 @@ public sealed unsafe class LocalLayoutObjectService
         var targetMdlPath = hasCustomMdlPath ? customMdlPath : template.ResourcePath;
         var dynamicMdlReason = GetDynamicPathBlockReason(targetMdlPath);
         if (!string.IsNullOrWhiteSpace(dynamicMdlReason))
-        {
-            this.LastStatus = $"{DynamicObjectBlockedMessage} 原因：{dynamicMdlReason}";
-            return created;
-        }
+            templateWarning = string.IsNullOrWhiteSpace(templateWarning)
+                ? $"DynamicSuspected: {dynamicMdlReason}"
+                : $"{templateWarning}; DynamicSuspected: {dynamicMdlReason}";
 
         var pending = slots
             .Select((slot, index) => new PendingCreateItem(
                 slot,
                 basePosition + spacing * index,
                 defaultRotationEuler,
-                defaultScale ?? Vector3.One,
+                NormalizeDesiredScale(defaultScale ?? Vector3.One),
                 string.Equals(slot.ResourcePath, targetMdlPath, StringComparison.OrdinalIgnoreCase) ? string.Empty : targetMdlPath))
             .ToList();
 
@@ -536,6 +536,12 @@ public sealed unsafe class LocalLayoutObjectService
         else
             lines.AddRange(allocation.Rejected.OrderBy(pair => pair.Key).Select(pair => $"  {pair.Key}: {pair.Value}"));
 
+        lines.Add("accepted with warning：");
+        if (allocation.AcceptedWarnings.Count == 0)
+            lines.Add("  无");
+        else
+            lines.AddRange(allocation.AcceptedWarnings.OrderBy(pair => pair.Key).Select(pair => $"  {pair.Key}: {pair.Value}"));
+
         lines.Add("allocated carrier list：");
         if (selected.Count == 0)
         {
@@ -549,12 +555,12 @@ public sealed unsafe class LocalLayoutObjectService
                 var reason = template != null && string.Equals(slot.ResourcePath, template.ResourcePath, StringComparison.OrdinalIgnoreCase)
                     ? "SameResource"
                     : hasCustomMdlPath ? "FarthestSafeCustomMdlCarrier" : allowDifferentResourcePathSlots ? "FarthestSafeDifferentResourceAllowed" : "FarthestSafeFallback";
-                lines.Add($"  [{index}] slot={slot.Address}; path={slot.ResourcePath}; position={FormatVector(slot.Position)}; distance={BgPartCarrierAllocator.GetDistance(slot, playerPosition):F1}; selectedReason={reason}");
+                lines.Add($"  [{index}] slot={slot.Address}; path={slot.ResourcePath}; position={FormatVector(slot.Position)}; distance={BgPartCarrierAllocator.GetDistance(slot, playerPosition):F1}; selectedReason={reason}; warningReason={FirstNonEmpty(slot.CarrierWarningReason, "无")}");
             }
         }
 
         lines.Add("top 10 farthest accepted slots：");
-        lines.AddRange(allocation.AcceptedTop10.Select((slot, index) => $"  [{index}] slot={slot.Address}; path={slot.ResourcePath}; position={FormatVector(slot.Position)}; distance={BgPartCarrierAllocator.GetDistance(slot, playerPosition):F1}"));
+        lines.AddRange(allocation.AcceptedTop10.Select((slot, index) => $"  [{index}] slot={slot.Address}; path={slot.ResourcePath}; position={FormatVector(slot.Position)}; distance={BgPartCarrierAllocator.GetDistance(slot, playerPosition):F1}; warningReason={FirstNonEmpty(slot.CarrierWarningReason, "无")}"));
         lines.Add("top 10 farthest rejected slots：");
         lines.AddRange(allocation.RejectedTop10.Select((slot, index) => $"  [{index}] slot={slot.Address}; path={slot.ResourcePath}; position={FormatVector(slot.Position)}; distance={BgPartCarrierAllocator.GetDistance(slot, playerPosition):F1}; rejectReason={slot.CarrierRejectReason}"));
 
@@ -886,6 +892,7 @@ public sealed unsafe class LocalLayoutObjectService
             playerPosition,
             this.GetBasicCarrierRejectReason,
             this.GetFallbackCarrierRejectReason,
+            this.GetCarrierWarningReason,
             address => TryNormalizeSlotAddress(address, out var normalized) && this.occupiedSlots.ContainsKey(normalized),
             address => TryNormalizeSlotAddress(address, out var normalized) && this.reservedSlots.Contains(normalized));
     }
@@ -952,6 +959,27 @@ public sealed unsafe class LocalLayoutObjectService
 
     public string GetCarrierRejectReason(LayoutProbeInstance? slot, CarrierAllocationPolicy policy)
         => this.GetCarrierRejectReason(slot, new HashSet<string>(StringComparer.OrdinalIgnoreCase), policy);
+
+    public string GetCarrierWarningReason(LayoutProbeInstance? slot)
+    {
+        if (slot == null)
+            return string.Empty;
+
+        var warnings = new List<string>();
+        if (string.Equals(slot.SourceKind, "SharedGroup", StringComparison.Ordinal)
+            || !string.IsNullOrWhiteSpace(slot.ParentAddress)
+            || !string.IsNullOrWhiteSpace(slot.SharedGroupPath)
+            || slot.ChildIndex >= 0)
+        {
+            warnings.Add("SharedGroupChild");
+        }
+
+        var dynamicReason = GetDynamicPathBlockReason(slot.ResourcePath);
+        if (!string.IsNullOrWhiteSpace(dynamicReason))
+            warnings.Add($"DynamicSuspected: {dynamicReason}");
+
+        return string.Join("; ", warnings);
+    }
 
     private string GetCarrierRejectReasonForAllocatedTemplateCarrier(LayoutProbeInstance? slot, LayoutProbeInstance template, CarrierAllocationPolicy policy)
     {
@@ -1025,11 +1053,6 @@ public sealed unsafe class LocalLayoutObjectService
             return "非 bg/bgcommon mdl";
         if (!this.IsCarrierGraphicsUsable(slot, out var graphicsReason))
             return graphicsReason;
-        if (string.Equals(slot.SourceKind, "SharedGroup", StringComparison.Ordinal))
-            return "SharedGroupChild";
-        var dynamicReason = GetDynamicPathBlockReason(slot.ResourcePath);
-        if (!string.IsNullOrWhiteSpace(dynamicReason))
-            return $"DynamicControlled: {dynamicReason}";
         return string.Empty;
     }
 
@@ -1677,9 +1700,6 @@ public sealed unsafe class LocalLayoutObjectService
             return "custom mdl path 必须以 .mdl 结尾。";
         if (!IsSupportedMdlPath(modelPath.Trim()))
             return "custom mdl path 只支持 bg/...mdl 或 bgcommon/...mdl。";
-        var dynamicMdlReason = GetDynamicPathBlockReason(modelPath.Trim());
-        if (!string.IsNullOrWhiteSpace(dynamicMdlReason))
-            return $"{DynamicObjectBlockedMessage} 原因：{dynamicMdlReason}";
         if (instance.TransformMode == LocalLayoutTransformMode.FullLayoutWithCollision && !fullLayoutConfirmed)
             return "FullLayoutWithCollision 需要二次确认。";
         return string.Empty;
@@ -3363,6 +3383,12 @@ public sealed unsafe class LocalLayoutObjectService
             && Math.Abs(scale.X) > 0.0001f
             && Math.Abs(scale.Y) > 0.0001f
             && Math.Abs(scale.Z) > 0.0001f;
+
+    private static Vector3 NormalizeDesiredScale(Vector3 scale)
+        => new(
+            Math.Abs(scale.X) < 0.0001f ? 1f : Math.Abs(scale.X),
+            Math.Abs(scale.Y) < 0.0001f ? 1f : Math.Abs(scale.Y),
+            Math.Abs(scale.Z) < 0.0001f ? 1f : Math.Abs(scale.Z));
 
     private static bool IsVectorNormal(Vector3 value)
         => float.IsFinite(value.X)
