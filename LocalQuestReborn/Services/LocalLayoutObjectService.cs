@@ -112,12 +112,63 @@ public sealed unsafe class LocalLayoutObjectService
     }
 
     public LocalLayoutObjectInstance? CreateFromCandidate(LayoutProbeInstance? candidate, Vector3 playerPosition, LocalLayoutTransformMode mode)
-        => this.CreateFromCandidate(candidate, playerPosition, mode, template: null, applyTemplateModel: false, allowReservedSlot: false);
+        => this.CreateFromCandidate(candidate, playerPosition, mode, template: null, applyTemplateModel: false, allowReservedSlot: false, CarrierAllocationPolicy.SafeOnly);
 
     public LocalLayoutObjectInstance? CreateFromTemplate(LayoutProbeInstance? template, LayoutProbeInstance? targetSlot, Vector3 position, LocalLayoutTransformMode mode, bool applyTemplateModel = false)
-        => this.CreateFromCandidate(targetSlot, position, mode, template, applyTemplateModel, allowReservedSlot: false);
+        => this.CreateFromCandidate(targetSlot, position, mode, template, applyTemplateModel, allowReservedSlot: false, CarrierAllocationPolicy.SafeOnly);
 
-    private LocalLayoutObjectInstance? CreateFromCandidate(LayoutProbeInstance? candidate, Vector3 playerPosition, LocalLayoutTransformMode mode, LayoutProbeInstance? template, bool applyTemplateModel, bool allowReservedSlot)
+    public LocalLayoutObjectInstance? CreateCopyFromTemplate(
+        LayoutProbeInstance? template,
+        IEnumerable<LayoutProbeInstance> candidateSlots,
+        Vector3 position,
+        LocalLayoutTransformMode mode,
+        CarrierAllocationPolicy carrierPolicy,
+        bool unsafeEnabled,
+        bool fullLayoutConfirmed)
+    {
+        if (template == null)
+        {
+            this.LastStatus = "请先选择模板 BgPart。";
+            return null;
+        }
+        var templatePathBlock = GetDynamicPathBlockReason(template.ResourcePath);
+        if (!string.IsNullOrWhiteSpace(templatePathBlock))
+        {
+            this.LastStatus = $"{DynamicObjectBlockedMessage} 原因：{templatePathBlock}";
+            return null;
+        }
+
+        var excluded = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { template.Address };
+        var carrier = candidateSlots
+            .Where(slot => string.Equals(slot.Type, "BgPart", StringComparison.Ordinal))
+            .Where(slot => string.IsNullOrWhiteSpace(this.GetCarrierRejectReason(slot, excluded, carrierPolicy)))
+            .OrderBy(slot => string.Equals(slot.ResourcePath, template.ResourcePath, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+            .ThenBy(slot => slot.DistanceToPlayer)
+            .FirstOrDefault();
+
+        if (carrier == null)
+        {
+            this.LastStatus = $"没有可用 carrier slot：policy={carrierPolicy}。请查看 CreateMany Dry Run Preview。";
+            return null;
+        }
+
+        var instance = this.CreateFromCandidate(carrier, position, mode, template, applyTemplateModel: false, allowReservedSlot: false, carrierPolicy);
+        if (instance == null)
+            return null;
+
+        if (!string.Equals(carrier.ResourcePath, template.ResourcePath, StringComparison.OrdinalIgnoreCase))
+        {
+            instance.CustomModelPath = template.ResourcePath;
+            var applied = this.ApplyMdlPath(instance.Id, template.ResourcePath, candidateSlots, unsafeEnabled, fullLayoutConfirmed || mode == LocalLayoutTransformMode.VisualOnly);
+            if (!applied && !instance.PendingVisualTransform && !string.Equals(instance.InstanceState, "PendingRecreateStabilize", StringComparison.OrdinalIgnoreCase))
+                instance.ApplyMdlError = FirstNonEmpty(instance.ApplyMdlError, this.LastStatus);
+        }
+
+        this.LastStatus = $"已从模板创建复制体：template={template.Address}; carrier={carrier.Address}; policy={carrierPolicy}; targetMdl={template.ResourcePath}; {this.LastStatus}";
+        return instance;
+    }
+
+    private LocalLayoutObjectInstance? CreateFromCandidate(LayoutProbeInstance? candidate, Vector3 playerPosition, LocalLayoutTransformMode mode, LayoutProbeInstance? template, bool applyTemplateModel, bool allowReservedSlot, CarrierAllocationPolicy carrierPolicy)
     {
         if (this.IsBusy)
         {
@@ -138,11 +189,11 @@ public sealed unsafe class LocalLayoutObjectService
             return null;
         }
 
-        var staticBlockReason = GetStaticObjectBlockReason(candidate);
-        if (!string.IsNullOrWhiteSpace(staticBlockReason))
+        var carrierBlockReason = this.GetCarrierRejectReason(candidate, new HashSet<string>(StringComparer.OrdinalIgnoreCase), carrierPolicy);
+        if (!string.IsNullOrWhiteSpace(carrierBlockReason))
         {
-            this.LastStatus = $"{DynamicObjectBlockedMessage} 原因：{staticBlockReason}";
-            candidate.CarrierRejectReason = staticBlockReason;
+            this.LastStatus = $"当前 carrier 不可用：{carrierBlockReason}";
+            candidate.CarrierRejectReason = carrierBlockReason;
             return null;
         }
 
@@ -276,6 +327,39 @@ public sealed unsafe class LocalLayoutObjectService
         bool fullLayoutConfirmed = false,
         Vector3 defaultRotationEuler = default,
         Vector3? defaultScale = null)
+        => this.CreateManyFromTemplate(
+            template,
+            candidateSlots,
+            count,
+            basePosition,
+            mode,
+            spacing,
+            allowDifferentResourcePathSlots,
+            defaultCustomMdlPath,
+            bgParts,
+            unsafeEnabled,
+            fullLayoutConfirmed,
+            defaultRotationEuler,
+            defaultScale,
+            CarrierAllocationPolicy.ExpandedStatic,
+            createAsManyAsPossible: true);
+
+    public IReadOnlyList<LocalLayoutObjectInstance> CreateManyFromTemplate(
+        LayoutProbeInstance? template,
+        IEnumerable<LayoutProbeInstance> candidateSlots,
+        int count,
+        Vector3 basePosition,
+        LocalLayoutTransformMode mode,
+        Vector3 spacing,
+        bool allowDifferentResourcePathSlots,
+        string defaultCustomMdlPath,
+        IEnumerable<LayoutProbeInstance>? bgParts,
+        bool unsafeEnabled,
+        bool fullLayoutConfirmed,
+        Vector3 defaultRotationEuler,
+        Vector3? defaultScale,
+        CarrierAllocationPolicy carrierPolicy,
+        bool createAsManyAsPossible)
     {
         var created = new List<LocalLayoutObjectInstance>();
         if (this.IsBusy)
@@ -304,16 +388,6 @@ public sealed unsafe class LocalLayoutObjectService
             return created;
         }
 
-        if (hasCustomMdlPath)
-        {
-            var dynamicMdlReason = GetDynamicPathBlockReason(customMdlPath);
-            if (!string.IsNullOrWhiteSpace(dynamicMdlReason))
-            {
-                this.LastStatus = $"{DynamicObjectBlockedMessage} 原因：{dynamicMdlReason}";
-                return created;
-            }
-        }
-
         if (hasCustomMdlPath && !unsafeEnabled)
         {
             this.LastStatus = "批量应用 custom mdl path 需要 UnsafeMode=true。";
@@ -338,23 +412,9 @@ public sealed unsafe class LocalLayoutObjectService
 
         var availableSlots = indexedSlots
             .Where(slot => string.Equals(slot.Slot.Type, "BgPart", StringComparison.Ordinal))
-            .Where(slot => !string.Equals(slot.Slot.Address, template.Address, StringComparison.OrdinalIgnoreCase))
-            .Where(slot => !this.IsSlotOccupied(slot.Slot.Address))
-            .Where(slot => string.IsNullOrWhiteSpace(this.GetCarrierRejectReason(slot.Slot, excluded)));
-
-        if (hasCustomMdlPath || allowDifferentResourcePathSlots)
-        {
-            availableSlots = availableSlots
-                .Where(slot => IsSupportedMdlPath(slot.Slot.ResourcePath))
-                .OrderBy(slot => string.Equals(slot.Slot.ResourcePath, template.ResourcePath, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
-                .ThenBy(slot => slot.Index);
-        }
-        else
-        {
-            availableSlots = availableSlots
-                .Where(slot => string.Equals(slot.Slot.ResourcePath, template.ResourcePath, StringComparison.OrdinalIgnoreCase))
-                .OrderBy(slot => slot.Index);
-        }
+            .Where(slot => string.IsNullOrWhiteSpace(this.GetCarrierRejectReason(slot.Slot, excluded, carrierPolicy)))
+            .OrderBy(slot => string.Equals(slot.Slot.ResourcePath, template.ResourcePath, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+            .ThenBy(slot => slot.Index);
 
         var slots = availableSlots
             .Select(slot => slot.Slot)
@@ -363,17 +423,21 @@ public sealed unsafe class LocalLayoutObjectService
 
         if (slots.Count < count)
         {
-            if (slots.Count == 0)
+            if (slots.Count == 0 || !createAsManyAsPossible)
             {
-                this.LastStatus = hasCustomMdlPath || allowDifferentResourcePathSlots
-                ? $"可用 slot 不足：请求 {count}，可用 {slots.Count}。模板本体 slot 已排除。"
-                : $"同 resourcePath 可用 slot 不足：请求 {count}，可用 {slots.Count}。模板本体 slot 已排除；未填写 custom mdl path 时不会使用不同外观 slot。";
+                this.LastStatus = $"可用 carrier 不足：请求 {count}，可用 {slots.Count}。policy={carrierPolicy}。请查看 CreateMany Dry Run Preview。";
                 return created;
             }
 
-            this.LastStatus = hasCustomMdlPath || allowDifferentResourcePathSlots
-                ? $"可用 slot 不足：请求 {count}，可用 {slots.Count}。将按“尽可能创建”继续创建 {slots.Count} 个。"
-                : $"同 resourcePath 可用 slot 不足：请求 {count}，可用 {slots.Count}。将按“尽可能创建”继续创建 {slots.Count} 个。";
+            this.LastStatus = $"可用 carrier 不足：请求 {count}，可用 {slots.Count}。policy={carrierPolicy}；按“尽可能创建”继续创建 {slots.Count} 个。";
+        }
+
+        var targetMdlPath = hasCustomMdlPath ? customMdlPath : template.ResourcePath;
+        var dynamicMdlReason = GetDynamicPathBlockReason(targetMdlPath);
+        if (!string.IsNullOrWhiteSpace(dynamicMdlReason))
+        {
+            this.LastStatus = $"{DynamicObjectBlockedMessage} 原因：{dynamicMdlReason}";
+            return created;
         }
 
         var pending = slots
@@ -382,7 +446,7 @@ public sealed unsafe class LocalLayoutObjectService
                 basePosition + spacing * index,
                 defaultRotationEuler,
                 defaultScale ?? Vector3.One,
-                customMdlPath))
+                string.Equals(slot.ResourcePath, targetMdlPath, StringComparison.OrdinalIgnoreCase) ? string.Empty : targetMdlPath))
             .ToList();
 
         foreach (var pendingSlot in pending)
@@ -399,8 +463,9 @@ public sealed unsafe class LocalLayoutObjectService
             unsafeEnabled,
             fullLayoutConfirmed,
             templateWarning,
-            count);
-        this.LastStatus = $"已创建批量复制队列：requested={count}; queued={pending.Count}; 每帧处理 1 个实例。{templateWarning}";
+            count,
+            carrierPolicy);
+        this.LastStatus = $"已创建批量复制队列：requested={count}; queued={pending.Count}; policy={carrierPolicy}; targetMdl={targetMdlPath}; 每帧处理 1 个实例。{templateWarning}";
         return created;
     }
 
@@ -409,7 +474,8 @@ public sealed unsafe class LocalLayoutObjectService
         IEnumerable<LayoutProbeInstance> candidateSlots,
         int requestedCount,
         bool allowDifferentResourcePathSlots,
-        string defaultCustomMdlPath)
+        string defaultCustomMdlPath,
+        CarrierAllocationPolicy carrierPolicy)
     {
         this.RebuildOccupiedSlotRegistry();
         var slots = candidateSlots.ToList();
@@ -424,7 +490,7 @@ public sealed unsafe class LocalLayoutObjectService
         var stable = new List<LayoutProbeInstance>();
         foreach (var slot in bgParts)
         {
-            var reason = this.GetCarrierRejectReason(slot, excluded);
+            var reason = this.GetCarrierRejectReason(slot, excluded, carrierPolicy);
             if (string.IsNullOrWhiteSpace(reason))
             {
                 stable.Add(slot);
@@ -436,10 +502,6 @@ public sealed unsafe class LocalLayoutObjectService
         }
 
         var selected = stable
-            .Where(slot => template == null
-                || hasCustomMdlPath
-                || allowDifferentResourcePathSlots
-                || string.Equals(slot.ResourcePath, template.ResourcePath, StringComparison.OrdinalIgnoreCase))
             .OrderBy(slot => template != null && string.Equals(slot.ResourcePath, template.ResourcePath, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
             .ThenBy(slot => slot.DistanceToPlayer)
             .Take(Math.Max(0, requestedCount))
@@ -457,7 +519,8 @@ public sealed unsafe class LocalLayoutObjectService
             $"occupied slots={occupiedCount}",
             $"reserved slots={reservedCount}",
             $"free slots={Math.Max(0, bgParts.Count - occupiedCount - reservedCount)}",
-            $"stable carrier slots={stable.Count}",
+            $"available under selected policy={stable.Count}",
+            $"carrierAllocationPolicy={carrierPolicy}",
             $"实际将分配 carrier 数={selected.Count}",
             "rejected slots：",
         };
@@ -587,7 +650,7 @@ public sealed unsafe class LocalLayoutObjectService
         if (TryNormalizeSlotAddress(item.Slot.Address, out var reservedSlot))
             this.reservedSlots.Remove(reservedSlot);
 
-        var instance = this.CreateFromCandidate(item.Slot, item.Position, job.Mode, job.Template, applyTemplateModel: false, allowReservedSlot: true);
+        var instance = this.CreateFromCandidate(item.Slot, item.Position, job.Mode, job.Template, applyTemplateModel: false, allowReservedSlot: true, job.Policy);
         if (instance == null)
         {
             this.FailCreateJob(job, item, $"slot={item.Slot.Address}: {this.LastStatus}");
@@ -813,43 +876,87 @@ public sealed unsafe class LocalLayoutObjectService
     {
         var excluded = excludedAddresses.ToHashSet(StringComparer.OrdinalIgnoreCase);
         return allBgParts
-            .Where(slot => string.IsNullOrWhiteSpace(this.GetCarrierRejectReason(slot, excluded)))
+            .Where(slot => string.IsNullOrWhiteSpace(this.GetCarrierRejectReason(slot, excluded, CarrierAllocationPolicy.SafeOnly)))
             .OrderByDescending(slot => !slot.Visible)
             .ThenBy(slot => IsSmallDecorativeCarrier(slot) ? 0 : 1)
             .ThenByDescending(slot => slot.DistanceToPlayer);
     }
 
     public string GetCarrierRejectReason(LayoutProbeInstance? slot)
-        => this.GetCarrierRejectReason(slot, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+        => this.GetCarrierRejectReason(slot, CarrierAllocationPolicy.SafeOnly);
 
-    private string GetCarrierRejectReason(LayoutProbeInstance? slot, ISet<string> excludedAddresses)
+    public string GetCarrierRejectReason(LayoutProbeInstance? slot, CarrierAllocationPolicy policy)
+        => this.GetCarrierRejectReason(slot, new HashSet<string>(StringComparer.OrdinalIgnoreCase), policy);
+
+    private string GetCarrierRejectReason(LayoutProbeInstance? slot, ISet<string> excludedAddresses, CarrierAllocationPolicy policy)
     {
         if (slot == null)
             return "空 slot";
         string reason;
         if (!string.Equals(slot.Type, "BgPart", StringComparison.Ordinal))
             reason = "不是 BgPart";
-        else if (string.Equals(slot.SourceKind, "SharedGroup", StringComparison.Ordinal))
-            reason = "SharedGroupChild";
-        else if (!IsSupportedMdlPath(slot.ResourcePath))
-            reason = "非 bg/bgcommon mdl";
-        else if (!string.IsNullOrWhiteSpace(GetDynamicPathBlockReason(slot.ResourcePath)))
-            reason = GetDynamicPathBlockReason(slot.ResourcePath);
         else if (excludedAddresses.Contains(slot.Address))
             reason = "TemplateSlot";
         else if (TryNormalizeSlotAddress(slot.Address, out var normalizedAddress) && this.occupiedSlots.ContainsKey(normalizedAddress))
             reason = "AlreadyOccupied";
         else if (TryNormalizeSlotAddress(slot.Address, out normalizedAddress) && this.reservedSlots.Contains(normalizedAddress))
             reason = "Reserved";
-        else if (IsTerrainLikeCarrier(slot.ResourcePath))
+        else if (!IsSupportedMdlPath(slot.ResourcePath))
+            reason = "非 bg/bgcommon mdl";
+        else if (!this.IsCarrierGraphicsUsable(slot, out reason))
+        {
+            // reason is set by IsCarrierGraphicsUsable.
+        }
+        else if (policy == CarrierAllocationPolicy.AnyValidBgPart)
+        {
+            reason = string.Empty;
+        }
+        else if (string.Equals(slot.SourceKind, "SharedGroup", StringComparison.Ordinal))
+            reason = "SharedGroupChild";
+        else if (!string.IsNullOrWhiteSpace(GetDynamicPathBlockReason(slot.ResourcePath)))
+            reason = GetDynamicPathBlockReason(slot.ResourcePath);
+        else if (policy == CarrierAllocationPolicy.SafeOnly && IsTerrainLikeCarrier(slot.ResourcePath))
             reason = "TerrainLike";
-        else if (IsTooLargeCarrier(slot))
+        else if (policy == CarrierAllocationPolicy.SafeOnly && IsTooLargeCarrier(slot))
             reason = "TooLarge";
         else
             reason = string.Empty;
 
         slot.CarrierRejectReason = reason;
         return reason;
+    }
+
+    private bool IsCarrierGraphicsUsable(LayoutProbeInstance slot, out string reason)
+    {
+        reason = string.Empty;
+        if (!TryGetPointer(slot.Address, out var pointer) || pointer == null)
+        {
+            reason = "InvalidGraphicsObject: slot pointer unreadable";
+            return false;
+        }
+
+        if (!TryGetGraphicsObjectAddress(pointer, out var graphicsAddress) || graphicsAddress == 0)
+        {
+            reason = "InvalidGraphicsObject: GraphicsObject=null";
+            return false;
+        }
+
+        try
+        {
+            var bg = (SceneBgObject*)graphicsAddress;
+            if (bg->ModelResourceHandle == null)
+            {
+                reason = "InvalidGraphicsObject: ModelResourceHandle=null";
+                return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            reason = $"InvalidGraphicsObject: {ex.Message}";
+            return false;
+        }
+
+        return true;
     }
 
     private static bool IsTerrainLikeCarrier(string resourcePath)
@@ -1379,9 +1486,6 @@ public sealed unsafe class LocalLayoutObjectService
         var dynamicMdlReason = GetDynamicPathBlockReason(modelPath.Trim());
         if (!string.IsNullOrWhiteSpace(dynamicMdlReason))
             return $"{DynamicObjectBlockedMessage} 原因：{dynamicMdlReason}";
-        var sourceBlockReason = GetStaticObjectBlockReason(instance);
-        if (!string.IsNullOrWhiteSpace(sourceBlockReason))
-            return $"{DynamicObjectBlockedMessage} 实例来源原因：{sourceBlockReason}";
         if (instance.TransformMode == LocalLayoutTransformMode.FullLayoutWithCollision && !fullLayoutConfirmed)
             return "FullLayoutWithCollision 需要二次确认。";
         return string.Empty;
@@ -3147,7 +3251,8 @@ public sealed unsafe class LocalLayoutObjectService
         bool unsafeEnabled,
         bool fullLayoutConfirmed,
         string templateWarning,
-        int requestedCount)
+        int requestedCount,
+        CarrierAllocationPolicy policy)
     {
         public LayoutProbeInstance Template { get; } = template;
 
@@ -3164,6 +3269,8 @@ public sealed unsafe class LocalLayoutObjectService
         public string TemplateWarning { get; } = templateWarning;
 
         public int RequestedCount { get; } = requestedCount;
+
+        public CarrierAllocationPolicy Policy { get; } = policy;
 
         public int TotalCount => this.Items.Count;
 

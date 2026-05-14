@@ -35,6 +35,8 @@ public sealed class MainWindow : Window
     private bool localLayoutFullCollisionMode;
     private bool confirmFullLayoutCollisionMode;
     private bool allowDifferentResourcePathSlots;
+    private bool createAsManyAsPossible = true;
+    private CarrierAllocationPolicy carrierAllocationPolicy = CarrierAllocationPolicy.ExpandedStatic;
     private int layoutCopyCount = 1;
     private float layoutCopySpacing = 2f;
     private float layoutCopySpacingY;
@@ -772,7 +774,7 @@ public sealed class MainWindow : Window
         ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || this.localLayoutObjects.IsCreateQueueActive || !this.realNpcSpawn.EnableUnsafeNativeWrites || candidate == null || !this.runtime.PlayerPosition.HasValue || fullLayoutBlocked);
         if (ImGui.Button(this.localLayoutFullCollisionMode ? "从候选创建本地物件（FullLayoutWithCollision，危险）" : "从候选创建本地物件（VisualOnly，推荐）"))
         {
-            var created = this.localLayoutObjects.CreateFromCandidate(candidate, this.runtime.PlayerPosition!.Value, mode);
+            var created = this.localLayoutObjects.CreateCopyFromTemplate(candidate, this.AllBgParts(), this.runtime.PlayerPosition!.Value, mode, this.carrierAllocationPolicy, this.realNpcSpawn.EnableUnsafeNativeWrites, this.confirmFullLayoutCollisionMode);
             if (created != null)
                 this.selectedLocalLayoutObjectId = created.Id;
         }
@@ -904,6 +906,10 @@ public sealed class MainWindow : Window
             this.allowDifferentResourcePathSlots = allowDifferent;
         if (this.allowDifferentResourcePathSlots)
             ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "警告：未填写 custom mdl path 时，使用不同 resourcePath slot 不是复制模板，只是移动不同物体。");
+        DrawEnumCombo("Carrier 分配策略", this.carrierAllocationPolicy, value => this.carrierAllocationPolicy = value);
+        if (this.carrierAllocationPolicy == CarrierAllocationPolicy.AnyValidBgPart)
+            ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "数量优先：会临时占用地图更多原始物件，恢复全部后还原。");
+        ImGui.Checkbox("可用不足时尽可能创建", ref this.createAsManyAsPossible);
         var mode = this.layoutCopyDefaultMode;
         var fullLayoutBlocked = mode == LocalLayoutTransformMode.FullLayoutWithCollision && !this.confirmFullLayoutCollisionMode;
         var hasBasePosition = this.layoutUseManualBasePosition || this.runtime.PlayerPosition.HasValue;
@@ -929,7 +935,7 @@ public sealed class MainWindow : Window
             : $"模板 resourcePath：{template.ResourcePath}");
         ImGui.TextWrapped($"同 resourcePath 可用 slot 数：{sameResourceAvailable}；bg/bgcommon 可用 slot 数：{anySupportedAvailable}；当前将创建：{Math.Min(this.layoutCopyCount, plannedAvailable)}");
         if (ImGui.Button("CreateMany Dry Run Preview"))
-            this.localLayoutObjects.BuildCreateManyDryRunPreview(template, allBgParts, this.layoutCopyCount, this.allowDifferentResourcePathSlots, this.layoutBatchCustomMdlPath);
+            this.localLayoutObjects.BuildCreateManyDryRunPreview(template, allBgParts, this.layoutCopyCount, this.allowDifferentResourcePathSlots, this.layoutBatchCustomMdlPath, this.carrierAllocationPolicy);
         if (!string.IsNullOrWhiteSpace(this.localLayoutObjects.LastCreateManyDryRunPreview) && ImGui.CollapsingHeader("CreateMany 分配预览"))
             ImGui.TextWrapped(this.localLayoutObjects.LastCreateManyDryRunPreview);
 
@@ -959,7 +965,9 @@ public sealed class MainWindow : Window
             this.realNpcSpawn.EnableUnsafeNativeWrites,
             this.confirmFullLayoutCollisionMode,
             this.layoutCopyDefaultRotationEuler,
-            this.layoutCopyDefaultScale);
+            this.layoutCopyDefaultScale,
+            this.carrierAllocationPolicy,
+            this.createAsManyAsPossible);
         var last = created.LastOrDefault();
         if (last != null)
             this.selectedLocalLayoutObjectId = last.Id;
@@ -987,7 +995,7 @@ public sealed class MainWindow : Window
             : $"当前选中 BgPart：{candidate.ResourcePath} | {candidate.Address} | source={candidate.SourceKind} | parent={candidate.ParentAddress} | child={candidate.ChildIndex} | 距离 {candidate.DistanceToPlayer:F1}y | {FormatVector(candidate.Position)}");
         if (candidate != null)
         {
-            var carrierReject = this.localLayoutObjects.GetCarrierRejectReason(candidate);
+            var carrierReject = this.localLayoutObjects.GetCarrierRejectReason(candidate, this.carrierAllocationPolicy);
             ImGui.TextWrapped(string.IsNullOrWhiteSpace(carrierReject)
                 ? "carrier 状态：可作为静态 carrier"
                 : $"carrierRejectReason：{carrierReject}");
@@ -1035,7 +1043,7 @@ public sealed class MainWindow : Window
             ImGui.TableSetColumnIndex(8);
             ImGui.TextUnformatted(item.ChildIndex >= 0 ? item.ChildIndex.ToString() : "-");
             ImGui.TableSetColumnIndex(9);
-            ImGui.TextWrapped(this.localLayoutObjects.GetCarrierRejectReason(item));
+            ImGui.TextWrapped(this.localLayoutObjects.GetCarrierRejectReason(item, this.carrierAllocationPolicy));
             ImGui.PopID();
         }
         ImGui.EndTable();
