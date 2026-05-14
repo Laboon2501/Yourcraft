@@ -18,8 +18,15 @@ public sealed class ActorAnimationService
         => this.PlayTimeline(actor, animationId, out reason);
 
     public bool PlayTimeline(RuntimeActorInstance actor, uint animationId, out string reason)
+        => this.PlayTimeline(actor, animationId, updateDefaultAnimation: true, out reason);
+
+    public bool PlayTransientTimeline(RuntimeActorInstance actor, uint animationId, out string reason)
+        => this.PlayTimeline(actor, animationId, updateDefaultAnimation: false, out reason);
+
+    private bool PlayTimeline(RuntimeActorInstance actor, uint animationId, bool updateDefaultAnimation, out string reason)
     {
-        actor.DefaultAnimationId = animationId;
+        if (updateDefaultAnimation)
+            actor.DefaultAnimationId = animationId;
         if (animationId == 0)
         {
             reason = "动画 ID 为 0。";

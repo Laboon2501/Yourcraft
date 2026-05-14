@@ -18,6 +18,7 @@ public sealed class RealNpcSpawnService
     private readonly AppearanceApplyService appearanceApplyService;
     private readonly AppearanceApplyQueue appearanceApplyQueue;
     private readonly ActorAnimationService animationService;
+    private readonly ActorActionSequenceService actionSequenceService;
     private readonly ActorLookAtService lookAtService;
     private readonly PlayerLookAtActorService playerLookAtActorService;
     private readonly ActorValidityMonitorService validityMonitorService;
@@ -47,6 +48,7 @@ public sealed class RealNpcSpawnService
         AppearanceApplyService appearanceApplyService,
         AppearanceApplyQueue appearanceApplyQueue,
         ActorAnimationService animationService,
+        ActorActionSequenceService actionSequenceService,
         ActorLookAtService lookAtService,
         PlayerLookAtActorService playerLookAtActorService,
         ActorValidityMonitorService validityMonitorService,
@@ -71,6 +73,7 @@ public sealed class RealNpcSpawnService
         this.appearanceApplyService = appearanceApplyService;
         this.appearanceApplyQueue = appearanceApplyQueue;
         this.animationService = animationService;
+        this.actionSequenceService = actionSequenceService;
         this.lookAtService = lookAtService;
         this.playerLookAtActorService = playerLookAtActorService;
         this.validityMonitorService = validityMonitorService;
@@ -296,6 +299,7 @@ public sealed class RealNpcSpawnService
             instance.LookAtPlayerEnabled = npc.LookAtPlayerEnabled;
             instance.LookAtRadius = Math.Max(0.1f, npc.LookAtRadius);
             instance.LookAtMode = NpcLookAtMode.NativeLookAt;
+            this.actionSequenceService.Reset(instance);
             this.nameplateService.TryReadActorName(instance);
             this.targetabilityService.TryReadTargetability(instance);
             this.ApplyActorTransform(instance.RuntimeId, spawnPosition, spawnRotation, spawnScale);
@@ -346,6 +350,7 @@ public sealed class RealNpcSpawnService
     private void PrepareActorForDespawn(RuntimeActorInstance instance)
     {
         this.lookAtService.Stop(instance, out _);
+        this.actionSequenceService.Stop(instance);
         this.appearanceApplyQueue.RemoveJobsForActor(instance.RuntimeId);
 
         if (instance.AnimationEnabled && instance.IsValid && instance.CharacterObject != null)
@@ -595,6 +600,40 @@ public sealed class RealNpcSpawnService
 
         var success = this.animationService.Stop(instance, out var reason);
         this.LastMessage = success ? "已停止动画并尝试恢复 idle。" : $"停止动画失败：{reason}";
+        return success;
+    }
+
+    public void ResetActionSequence(string runtimeId)
+    {
+        var instance = this.registry.GetByRuntimeId(runtimeId);
+        if (instance == null)
+        {
+            this.LastMessage = $"Runtime Actor not found: {runtimeId}";
+            return;
+        }
+
+        this.actionSequenceService.Reset(instance);
+        this.LastMessage = $"Reset Actor action sequence: {ShortRuntimeId(runtimeId)}";
+    }
+
+    public bool TestActionSequenceStep(string runtimeId, Guid stepId)
+    {
+        var instance = this.registry.GetByRuntimeId(runtimeId);
+        if (instance == null)
+        {
+            this.LastMessage = $"Runtime Actor not found: {runtimeId}";
+            return false;
+        }
+
+        var step = instance.ActionSequence.FirstOrDefault(item => item.Id == stepId);
+        if (step == null)
+        {
+            this.LastMessage = "Action sequence step not found.";
+            return false;
+        }
+
+        var success = this.actionSequenceService.TestStep(instance, step, out var reason);
+        this.LastMessage = success ? $"Tested action sequence step: {step.Name}" : $"Action sequence step test failed: {reason}";
         return success;
     }
 
@@ -1059,6 +1098,7 @@ public sealed class RealNpcSpawnService
     {
         this.appearanceApplyQueue.Update();
         this.validityMonitorService.Update(this.registry.GetAll());
+        this.actionSequenceService.Update(this.registry.GetAll());
         this.lookAtService.Update(this.registry.GetAll(), this.database);
         var selectedActor = string.IsNullOrWhiteSpace(this.CurrentSelectedActorRuntimeId)
             ? null

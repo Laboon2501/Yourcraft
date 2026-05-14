@@ -561,6 +561,7 @@ public sealed class MainWindow : Window
 
         this.DrawSelectedActorTransformEditor(selectedActor, npc);
         this.DrawSelectedActorBehaviorEditor(selectedActor, npc);
+        this.DrawSelectedActorActionSequenceEditor(selectedActor);
         this.DrawSelectedActorAppearanceEditor(selectedActor, npc);
         ImGui.PopID();
     }
@@ -700,6 +701,128 @@ public sealed class MainWindow : Window
         ImGui.EndDisabled();
     }
 
+    private void DrawSelectedActorActionSequenceEditor(RuntimeActorInstance actor)
+    {
+        ImGui.Separator();
+        if (!ImGui.TreeNode("动作序列 + 头顶气泡"))
+            return;
+
+        var enabled = actor.EnableActionSequence;
+        if (ImGui.Checkbox("启用动作序列", ref enabled))
+        {
+            actor.EnableActionSequence = enabled;
+            this.realNpcSpawn.ResetActionSequence(actor.RuntimeId);
+        }
+
+        var loop = actor.ActionSequenceLoop;
+        if (ImGui.Checkbox("循环播放", ref loop))
+            actor.ActionSequenceLoop = loop;
+
+        var loopDelay = actor.ActionSequenceLoopDelay;
+        if (ImGui.InputFloat("循环间隔（秒）", ref loopDelay))
+            actor.ActionSequenceLoopDelay = Math.Max(0f, loopDelay);
+
+        ImGui.TextWrapped($"状态：{actor.ActionSequenceStatus}");
+        ImGui.TextWrapped($"错误：{(string.IsNullOrWhiteSpace(actor.LastActionSequenceError) ? "无" : actor.LastActionSequenceError)}");
+
+        if (ImGui.Button("添加步骤"))
+            actor.ActionSequence.Add(new ActorActionSequenceStep { Name = $"Step {actor.ActionSequence.Count + 1}", DurationSeconds = 3f });
+        ImGui.SameLine();
+        if (ImGui.Button("从当前默认动作创建步骤"))
+        {
+            actor.ActionSequence.Add(new ActorActionSequenceStep
+            {
+                Name = $"Default {actor.DefaultAnimationId}",
+                Kind = ActorActionStepKind.Timeline,
+                TimelineId = (ushort)Math.Clamp(actor.DefaultAnimationId, 0, ushort.MaxValue),
+                DurationSeconds = 3f,
+            });
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("重置序列运行状态"))
+            this.realNpcSpawn.ResetActionSequence(actor.RuntimeId);
+
+        for (var i = 0; i < actor.ActionSequence.Count; i++)
+        {
+            var step = actor.ActionSequence[i];
+            ImGui.PushID(step.Id.ToString("N"));
+            if (ImGui.TreeNode($"{i + 1}. {step.Name}##ActionStep"))
+            {
+                EditString("步骤名称", step.Name, 96, value => step.Name = value);
+                DrawActorActionStepKindCombo(step);
+
+                if (step.Kind == ActorActionStepKind.Emote)
+                {
+                    var emoteId = (int)step.EmoteId;
+                    if (ImGui.InputInt("EmoteId", ref emoteId))
+                        step.EmoteId = (ushort)Math.Clamp(emoteId, 0, ushort.MaxValue);
+                }
+                else if (step.Kind == ActorActionStepKind.Timeline)
+                {
+                    var timelineId = (int)step.TimelineId;
+                    if (ImGui.InputInt("TimelineId", ref timelineId))
+                        step.TimelineId = (ushort)Math.Clamp(timelineId, 0, ushort.MaxValue);
+                }
+
+                var duration = step.DurationSeconds;
+                if (ImGui.InputFloat("DurationSeconds", ref duration))
+                    step.DurationSeconds = Math.Max(0f, duration);
+
+                var loopEmote = step.LoopEmote;
+                if (ImGui.Checkbox("LoopEmote", ref loopEmote))
+                    step.LoopEmote = loopEmote;
+                ImGui.SameLine();
+                var stayInPose = step.StayInPose;
+                if (ImGui.Checkbox("StayInPose", ref stayInPose))
+                    step.StayInPose = stayInPose;
+
+                var showBubble = step.ShowBubbleOnEnter;
+                if (ImGui.Checkbox("进入步骤时显示气泡", ref showBubble))
+                    step.ShowBubbleOnEnter = showBubble;
+                EditString("BubbleText", step.BubbleText, 240, value => step.BubbleText = value);
+                var bubbleDuration = step.BubbleDurationSeconds;
+                if (ImGui.InputFloat("BubbleDurationSeconds", ref bubbleDuration))
+                    step.BubbleDurationSeconds = Math.Max(0f, bubbleDuration);
+
+                ImGui.BeginDisabled(i == 0);
+                if (ImGui.Button("上移"))
+                {
+                    (actor.ActionSequence[i - 1], actor.ActionSequence[i]) = (actor.ActionSequence[i], actor.ActionSequence[i - 1]);
+                    this.realNpcSpawn.ResetActionSequence(actor.RuntimeId);
+                }
+                ImGui.EndDisabled();
+                ImGui.SameLine();
+                ImGui.BeginDisabled(i >= actor.ActionSequence.Count - 1);
+                if (ImGui.Button("下移"))
+                {
+                    (actor.ActionSequence[i + 1], actor.ActionSequence[i]) = (actor.ActionSequence[i], actor.ActionSequence[i + 1]);
+                    this.realNpcSpawn.ResetActionSequence(actor.RuntimeId);
+                }
+                ImGui.EndDisabled();
+                ImGui.SameLine();
+                ImGui.BeginDisabled(!actor.IsValid || actor.CharacterObject == null);
+                if (ImGui.Button("测试当前步骤"))
+                    this.realNpcSpawn.TestActionSequenceStep(actor.RuntimeId, step.Id);
+                ImGui.EndDisabled();
+                ImGui.SameLine();
+                if (ImGui.Button("删除步骤"))
+                {
+                    actor.ActionSequence.RemoveAt(i);
+                    this.realNpcSpawn.ResetActionSequence(actor.RuntimeId);
+                    ImGui.TreePop();
+                    ImGui.PopID();
+                    break;
+                }
+
+                ImGui.TreePop();
+            }
+
+            ImGui.PopID();
+        }
+
+        ImGui.TreePop();
+    }
+
     private void DrawSelectedActorAppearanceEditor(RuntimeActorInstance actor, CustomNpc? npc)
     {
         ImGui.Separator();
@@ -731,6 +854,23 @@ public sealed class MainWindow : Window
             this.realNpcSpawn.EnqueueNpcAppearance(actor.RuntimeId);
         ImGui.EndDisabled();
         ImGui.EndDisabled();
+    }
+
+    private static void DrawActorActionStepKindCombo(ActorActionSequenceStep step)
+    {
+        if (!ImGui.BeginCombo("Kind", step.Kind.ToString()))
+            return;
+
+        foreach (var kind in Enum.GetValues<ActorActionStepKind>())
+        {
+            var selected = step.Kind == kind;
+            if (ImGui.Selectable(kind.ToString(), selected))
+                step.Kind = kind;
+            if (selected)
+                ImGui.SetItemDefaultFocus();
+        }
+
+        ImGui.EndCombo();
     }
 
     private void DrawActorBatchSpawnControls(CustomNpc npc)

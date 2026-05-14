@@ -36,6 +36,8 @@ public sealed class Plugin : IDalamudPlugin
     private readonly AppearanceApplyService appearanceApply;
     private readonly AppearanceApplyQueue appearanceApplyQueue;
     private readonly ActorAnimationService actorAnimation;
+    private readonly ActorBubbleService actorBubble;
+    private readonly ActorActionSequenceService actorActionSequence;
     private readonly ActorLookAtService actorLookAt;
     private readonly PlayerLookAtActorService playerLookAtActor;
     private readonly ActorValidityMonitorService actorValidityMonitor;
@@ -86,6 +88,7 @@ public sealed class Plugin : IDalamudPlugin
         IObjectTable objectTable,
         ITargetManager targetManager,
         IDataManager dataManager,
+        IGameGui gameGui,
         IFramework framework,
         IPluginLog log)
     {
@@ -115,6 +118,8 @@ public sealed class Plugin : IDalamudPlugin
         this.appearanceApply = new AppearanceApplyService(pluginInterface, this.glamourerIpcProbe, this.glamourerIpcBridge, this.gameNpcAppearanceResolver, this.gameNpcAppearanceApply, log);
         this.appearanceApplyQueue = new AppearanceApplyQueue(this.database, this.runtimeActorRegistry, this.appearanceApply, log);
         this.actorAnimation = new ActorAnimationService(this.brioAssemblyBridge, log);
+        this.actorBubble = new ActorBubbleService();
+        this.actorActionSequence = new ActorActionSequenceService(this.actorAnimation, this.actorBubble);
         this.actorLookAt = new ActorLookAtService(objectTable, this.brioAssemblyBridge, log);
         this.playerLookAtActor = new PlayerLookAtActorService(objectTable, this.brioAssemblyBridge, log);
         this.actorValidityMonitor = new ActorValidityMonitorService(clientState, objectTable);
@@ -126,7 +131,7 @@ public sealed class Plugin : IDalamudPlugin
         this.experimentalEventNpcService = new ExperimentalEventNpcService(this.brioAssemblyBridge, this.nativeGameObjectDump, log);
         this.nativeTalkProbe = new NativeTalkProbeService(targetManager);
         this.eventNpcHost = new EventNpcHostService(targetManager, clientState, this.database);
-        this.realNpcSpawn = new RealNpcSpawnService(clientState, targetManager, this.database, this.runtimeActorRegistry, this.brioNpcBridge, this.brioAssemblyBridge, this.brioCapabilityBridge, this.appearanceApply, this.appearanceApplyQueue, this.actorAnimation, this.actorLookAt, this.playerLookAtActor, this.actorValidityMonitor, this.actorNameplate, this.actorTargetability, this.targetProbe, this.nativeNpcProbe, this.nativeGameObjectDump, this.experimentalEventNpcService, this.nativeTalkProbe, this.glamourerIpcProbe, this.glamourerIpcBridge, log);
+        this.realNpcSpawn = new RealNpcSpawnService(clientState, targetManager, this.database, this.runtimeActorRegistry, this.brioNpcBridge, this.brioAssemblyBridge, this.brioCapabilityBridge, this.appearanceApply, this.appearanceApplyQueue, this.actorAnimation, this.actorActionSequence, this.actorLookAt, this.playerLookAtActor, this.actorValidityMonitor, this.actorNameplate, this.actorTargetability, this.targetProbe, this.nativeNpcProbe, this.nativeGameObjectDump, this.experimentalEventNpcService, this.nativeTalkProbe, this.glamourerIpcProbe, this.glamourerIpcBridge, log);
         this.realNpcSpawn.SetEventNpcHostService(this.eventNpcHost);
         this.brioPropBridge = new BrioPropBridgeService(this.brioAssemblyBridge, log);
         this.propModel = new PropModelService(this.brioAssemblyBridge, log);
@@ -158,6 +163,7 @@ public sealed class Plugin : IDalamudPlugin
         this.mainWindow = new MainWindow(this.configuration, this.database, this.runtime, this.experimentalNpc, this.realNpcSpawn, this.propRuntime, this.layoutProbe, this.layoutTransform, this.layoutClone, this.layerDump, this.localLayoutObjects, this.localLights, this.bgPartVisualProbe, this.rotationMatrixExperiment, this.bgPartVisualRescue, this.visualOnlyRotationDeepProbe, this.drawObjectUpdateDirtyProbe, this.graphicsSceneObjectTransform, this.bgPartCollisionSourceProbe, this.animatedBgPartControllerProbe, this.standaloneBgObjectProbe, this.standaloneRenderListProbe, this.meddleSceneProbe, this.gameNpcCatalog, this.gameNpcAppearanceResolver, this.glamourerDesignCatalog, this.Reload);
 
         this.windowSystem.AddWindow(this.mainWindow);
+        this.windowSystem.AddWindow(new ActorBubbleOverlayWindow(this.actorBubble, this.realNpcSpawn, gameGui));
 
         this.commandManager.AddHandler(CommandName, new CommandInfo(this.OnCommand)
         {

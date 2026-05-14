@@ -118,6 +118,18 @@ public sealed class RuntimeActorInstance
 
     public string LastAnimationError { get; set; } = string.Empty;
 
+    public bool EnableActionSequence { get; set; }
+
+    public bool ActionSequenceLoop { get; set; }
+
+    public float ActionSequenceLoopDelay { get; set; }
+
+    public List<ActorActionSequenceStep> ActionSequence { get; set; } = [];
+
+    public string ActionSequenceStatus { get; set; } = "Stopped";
+
+    public string LastActionSequenceError { get; set; } = string.Empty;
+
     public bool LookAtPlayerEnabled { get; set; }
 
     public float LookAtRadius { get; set; } = 8f;
