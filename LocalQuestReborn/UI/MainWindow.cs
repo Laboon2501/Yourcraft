@@ -805,6 +805,13 @@ public sealed class MainWindow : Window
             if (!string.IsNullOrWhiteSpace(this.selectedLocalLayoutObjectId) && this.localLayoutObjects.GetById(this.selectedLocalLayoutObjectId) == null)
                 this.selectedLocalLayoutObjectId = string.Empty;
         }
+        ImGui.SameLine();
+        if (ImGui.Button("强制清理坏实例"))
+        {
+            this.localLayoutObjects.ForceClearBadInstances();
+            if (!string.IsNullOrWhiteSpace(this.selectedLocalLayoutObjectId) && this.localLayoutObjects.GetById(this.selectedLocalLayoutObjectId) == null)
+                this.selectedLocalLayoutObjectId = string.Empty;
+        }
         ImGui.EndDisabled();
 
         this.DrawLocalLayoutObjectTable();
@@ -1149,6 +1156,8 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"after restore path：{(string.IsNullOrWhiteSpace(selected.AfterRestorePath) ? "未记录" : selected.AfterRestorePath)}");
         ImGui.TextWrapped($"after restore position：{(string.IsNullOrWhiteSpace(selected.AfterRestorePosition) ? "未记录" : selected.AfterRestorePosition)}");
         ImGui.TextWrapped($"after restore visible：{(string.IsNullOrWhiteSpace(selected.AfterRestoreVisible) ? "未记录" : selected.AfterRestoreVisible)}");
+        ImGui.TextWrapped($"restore debug：{(string.IsNullOrWhiteSpace(selected.RestoreDebugInfo) ? "未记录" : selected.RestoreDebugInfo)}");
+        ImGui.TextWrapped($"snapshot original path：{(string.IsNullOrWhiteSpace(selected.OriginalSlotSnapshot?.OriginalResourcePath) ? "缺失" : selected.OriginalSlotSnapshot!.OriginalResourcePath)}");
         ImGui.TextWrapped($"complex risk：{(string.IsNullOrWhiteSpace(selected.ComplexModelRisk) ? "StaticOk" : selected.ComplexModelRisk)}");
         if (!string.IsNullOrWhiteSpace(selected.ComplexModelRiskReason))
             ImGui.TextWrapped($"risk reason：{selected.ComplexModelRiskReason}");
@@ -1249,6 +1258,14 @@ public sealed class MainWindow : Window
         if (ImGui.Button("删除实例"))
         {
             this.localLayoutObjects.Delete(selected.Id);
+            this.selectedLocalLayoutObjectId = string.Empty;
+        }
+        ImGui.EndDisabled();
+
+        ImGui.BeginDisabled(this.localLayoutObjects.IsBusy);
+        if (ImGui.Button("强制从列表移除选中实例（不写 native）"))
+        {
+            this.localLayoutObjects.ForceRemoveInstance(selected.Id);
             this.selectedLocalLayoutObjectId = string.Empty;
         }
         ImGui.EndDisabled();

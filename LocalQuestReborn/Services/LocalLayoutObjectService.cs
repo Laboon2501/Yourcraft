@@ -13,6 +13,7 @@ public sealed unsafe class LocalLayoutObjectService
 {
     private const int VisualMatrixOffset = 0x20;
     private const string DynamicObjectBlockedMessage = "该物体疑似由地图 controller / SharedGroup / 动态材质驱动，当前版本不支持本地移动。为避免闪退已阻止创建。";
+    private const string ForbiddenDefaultRestorePath = "bgcommon/hou/common/general/0001/bgparts/com_b0_m0001.mdl";
 
     private readonly LayoutObjectTransformService transformService = new();
     private readonly BgObjectModelOverrideService modelOverrideService = new();
@@ -136,23 +137,17 @@ public sealed unsafe class LocalLayoutObjectService
 
         var originalPrimaryPath = FirstNonEmpty(ReadPrimaryPath(pointer), candidate.ResourcePath);
 
-        var graphicsObjectAddress = string.Empty;
-        var originalVisualMatrix = Matrix4x4.Identity;
-        var originalVisualTranslation = originalLayout.Value.Position;
-        var originalVisual = new SceneTransformSnapshot(originalLayout.Value.Position, originalLayout.Value.Rotation, originalLayout.Value.Scale, false);
-        if (mode == LocalLayoutTransformMode.VisualOnly)
+        if (!TryGetGraphicsObjectAddress(pointer, out var graphicsAddress) || graphicsAddress == 0)
         {
-            if (!TryGetGraphicsObjectAddress(pointer, out var graphicsAddress))
-            {
-                this.LastStatus = "读取 BgPart GraphicsObject 失败，无法创建 VisualOnly 本地物件。";
-                return null;
-            }
-
-            graphicsObjectAddress = $"0x{graphicsAddress:X}";
-            originalVisualMatrix = ReadVisualMatrix(graphicsAddress, VisualMatrixOffset);
-            originalVisualTranslation = GetMatrixTranslation(originalVisualMatrix);
-            originalVisual = ReadSceneObjectTransform(graphicsAddress) ?? originalVisual;
+            this.LastStatus = "读取 BgPart GraphicsObject 失败，未创建本地物件。";
+            return null;
         }
+
+        var graphicsObjectAddress = $"0x{graphicsAddress:X}";
+        var originalVisualMatrix = ReadVisualMatrix(graphicsAddress, VisualMatrixOffset);
+        var originalVisualTranslation = GetMatrixTranslation(originalVisualMatrix);
+        var originalVisual = ReadSceneObjectTransform(graphicsAddress)
+            ?? new SceneTransformSnapshot(originalLayout.Value.Position, originalLayout.Value.Rotation, originalLayout.Value.Scale, false);
 
         var instance = new LocalLayoutObjectInstance
         {
@@ -183,14 +178,14 @@ public sealed unsafe class LocalLayoutObjectService
             OriginalLayoutRotation = originalLayout.Value.Rotation,
             OriginalLayoutScale = originalLayout.Value.Scale,
             OriginalLayoutTransform = FormatSnapshot(originalLayout.Value),
-            OriginalVisualTransform = mode == LocalLayoutTransformMode.VisualOnly ? FormatSceneSnapshot(originalVisual) : "FullLayout 模式不使用视觉字段",
+            OriginalVisualTransform = FormatSceneSnapshot(originalVisual),
             OriginalVisualTranslation = originalVisualTranslation,
             OriginalVisualPosition = originalVisual.Position,
             OriginalVisualRotation = originalVisual.Rotation,
             OriginalVisualScale = originalVisual.Scale,
             OriginalVisualMatrix = originalVisualMatrix,
-            CurrentVisualTranslation = mode == LocalLayoutTransformMode.VisualOnly ? playerPosition : Vector3.Zero,
-            CurrentVisualMatrix = mode == LocalLayoutTransformMode.VisualOnly ? originalVisualMatrix : Matrix4x4.Identity,
+            CurrentVisualTranslation = mode == LocalLayoutTransformMode.VisualOnly ? playerPosition : originalVisual.Position,
+            CurrentVisualMatrix = originalVisualMatrix,
             CurrentPosition = playerPosition,
             CurrentRotation = mode == LocalLayoutTransformMode.VisualOnly ? originalVisual.Rotation : originalLayout.Value.Rotation,
             CurrentRotationEuler = Vector3.Zero,
@@ -208,7 +203,19 @@ public sealed unsafe class LocalLayoutObjectService
                 : "危险：FullLayoutWithCollision 会写 layout transform 并移动碰撞体。",
         };
 
-        this.collisionExperimentService.SaveSnapshot(instance);
+        if (!this.collisionExperimentService.SaveSnapshot(instance))
+        {
+            this.LastStatus = $"保存原始 collision 快照失败，未创建实例：{this.collisionExperimentService.LastResult}";
+            return null;
+        }
+
+        instance.OriginalSlotSnapshot = this.BuildOriginalSlotSnapshot(instance, originalPrimaryPath, originalLayout.Value, originalVisual, candidate);
+        if (!this.ValidateOriginalSlotSnapshot(instance, out var snapshotError))
+        {
+            this.LastStatus = $"原始 slot 快照不完整，未创建实例：{snapshotError}";
+            return null;
+        }
+
         this.instances.Add(instance);
         if (TryNormalizeSlotAddress(instance.OccupiedSlotAddress, out var occupiedSlotAddress))
             this.occupiedSlots[occupiedSlotAddress] = instance;
@@ -638,22 +645,29 @@ public sealed unsafe class LocalLayoutObjectService
             return;
 
         instance.LastOperation = "RestoreTransformOnly";
+        if (!this.TryGetOriginalSlotSnapshot(instance, out var snapshot, out var snapshotError))
+        {
+            instance.LastError = $"仅恢复 transform 失败：{snapshotError}";
+            this.LastStatus = instance.LastError;
+            return;
+        }
+
         if (instance.TransformMode == LocalLayoutTransformMode.VisualOnly)
         {
             this.WriteInstanceTransform(
                 instance,
-                instance.OriginalVisualPosition,
+                snapshot.OriginalGraphicsPosition,
                 Vector3.Zero,
-                instance.OriginalVisualScale,
+                snapshot.OriginalGraphicsScale,
                 "仅恢复 VisualOnly transform");
             return;
         }
 
         this.WriteInstanceTransform(
             instance,
-            instance.OriginalLayoutPosition,
+            snapshot.OriginalLayoutPosition,
             Vector3.Zero,
-            instance.OriginalLayoutScale,
+            snapshot.OriginalLayoutScale,
             "仅恢复 FullLayout transform");
     }
 
@@ -1270,7 +1284,9 @@ public sealed unsafe class LocalLayoutObjectService
             this.animatedPlaybackSystem.StopAllAndDetach(this.instances, "RestoreAll 前全局停止动画回放。");
             var preCleanupCount = this.CleanupDuplicateInstances(auto: true);
             this.RebuildOccupiedSlotRegistry();
-            var restoreTargets = this.occupiedSlots.Values.ToList();
+            var restoreTargets = this.instances
+                .Where(instance => IsActiveInstance(instance, out _))
+                .ToList();
             var restoreCount = restoreTargets.Count;
             var restoredCount = 0;
             var skippedCount = 0;
@@ -1289,7 +1305,7 @@ public sealed unsafe class LocalLayoutObjectService
                     var restored = this.RestoreOriginalSlotSnapshot(
                         instance,
                         unsafeEnabled,
-                        fullLayoutConfirmed || instance.TransformMode == LocalLayoutTransformMode.VisualOnly,
+                        fullLayoutConfirmed: true,
                         removeAfterRestore);
                     if (restored)
                     {
@@ -1440,6 +1456,34 @@ public sealed unsafe class LocalLayoutObjectService
         return removed;
     }
 
+    public bool ForceRemoveInstance(string id)
+    {
+        var instance = this.instances.FirstOrDefault(item => string.Equals(item.Id, id, StringComparison.Ordinal));
+        if (instance == null)
+        {
+            this.LastStatus = $"找不到要强制移除的实例：{id}";
+            return false;
+        }
+
+        if (TryNormalizeSlotAddress(instance.OccupiedSlotAddress, out var slotAddress))
+            this.occupiedSlots.Remove(slotAddress);
+
+        this.instances.Remove(instance);
+        this.RebuildOccupiedSlotRegistry();
+        this.LastStatus = $"已强制从 UI/registry 移除实例 {id}。未执行任何 native 写入。";
+        return true;
+    }
+
+    public int ForceClearBadInstances()
+    {
+        var removed = this.instances.RemoveAll(item => item.IsRestored || item.IsInvalid || item.IsDuplicate || !item.IsOccupied || IsFailedState(item));
+        this.RebuildOccupiedSlotRegistry();
+        this.LastStatus = removed == 0
+            ? "没有 Restored/Invalid/Failed 残留实例需要强制清理。"
+            : $"已强制清理 Restored/Invalid/Failed 残留实例 {removed} 条。未执行任何 native 写入。";
+        return removed;
+    }
+
     public LocalLayoutObjectInstance? GetById(string id)
     {
         if (string.IsNullOrWhiteSpace(id))
@@ -1502,6 +1546,107 @@ public sealed unsafe class LocalLayoutObjectService
         this.RestoreOriginalSlotSnapshot(instance, unsafeEnabled: true, fullLayoutConfirmed: true, removeAfterRestore);
     }
 
+    private OriginalSlotSnapshot BuildOriginalSlotSnapshot(
+        LocalLayoutObjectInstance instance,
+        string originalPrimaryPath,
+        LayoutTransformSnapshot originalLayout,
+        SceneTransformSnapshot originalVisual,
+        LayoutProbeInstance candidate)
+    {
+        var originalHadCollider =
+            instance.CollisionSnapshotMeshPathCrc != 0
+            || instance.CollisionSnapshotAnalyticShapeDataCrc != 0
+            || (!string.IsNullOrWhiteSpace(instance.CollisionSnapshotColliderAddress)
+                && !string.Equals(instance.CollisionSnapshotColliderAddress, "0x0", StringComparison.OrdinalIgnoreCase));
+
+        return new OriginalSlotSnapshot
+        {
+            InstanceId = instance.Id,
+            OccupiedSlotAddress = instance.OccupiedSlotAddress,
+            OriginalResourcePath = originalPrimaryPath,
+            OriginalPrimaryPath = originalPrimaryPath,
+            OriginalModelHandlePath = originalPrimaryPath,
+            OriginalLayoutPosition = originalLayout.Position,
+            OriginalLayoutRotation = originalLayout.Rotation,
+            OriginalLayoutScale = originalLayout.Scale,
+            OriginalGraphicsPosition = originalVisual.Position,
+            OriginalGraphicsRotation = originalVisual.Rotation,
+            OriginalGraphicsScale = originalVisual.Scale,
+            OriginalVisible = candidate.Visible,
+            OriginalCollisionMeshPathCrc = instance.CollisionSnapshotMeshPathCrc,
+            OriginalAnalyticShapeDataCrc = instance.CollisionSnapshotAnalyticShapeDataCrc,
+            OriginalMaterialIdLow = instance.CollisionSnapshotMaterialIdLow,
+            OriginalMaterialMaskLow = instance.CollisionSnapshotMaterialMaskLow,
+            OriginalMaterialIdHigh = instance.CollisionSnapshotMaterialIdHigh,
+            OriginalMaterialMaskHigh = instance.CollisionSnapshotMaterialMaskHigh,
+            OriginalHadCollider = originalHadCollider,
+            OriginalSecondaryPath = instance.CollisionSnapshotSecondaryPath,
+            OriginalSourceType = candidate.SourceKind,
+            SourceLabel = $"{candidate.ResourcePath} | {candidate.Address}",
+        };
+    }
+
+    private bool ValidateOriginalSlotSnapshot(LocalLayoutObjectInstance instance, out string reason)
+    {
+        reason = string.Empty;
+        if (!this.TryGetOriginalSlotSnapshot(instance, out var snapshot, out reason))
+            return false;
+
+        if (!TryNormalizeSlotAddress(snapshot.OccupiedSlotAddress, out var snapshotSlot)
+            || !TryNormalizeSlotAddress(instance.OccupiedSlotAddress, out var instanceSlot)
+            || snapshotSlot != instanceSlot)
+        {
+            reason = $"OriginalSlotSnapshot slot 不匹配：snapshot={snapshot.OccupiedSlotAddress}; instance={instance.OccupiedSlotAddress}";
+            return false;
+        }
+
+        if (!IsTransformNormal(snapshot.OriginalLayoutPosition, snapshot.OriginalLayoutRotation, snapshot.OriginalLayoutScale))
+        {
+            reason = "OriginalSlotSnapshot 原始 layout transform 数值异常。";
+            return false;
+        }
+
+        if (!IsTransformNormal(snapshot.OriginalGraphicsPosition, snapshot.OriginalGraphicsRotation, snapshot.OriginalGraphicsScale))
+        {
+            reason = "OriginalSlotSnapshot 原始 Graphics.Scene.Object transform 数值异常。";
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool TryGetOriginalSlotSnapshot(LocalLayoutObjectInstance instance, out OriginalSlotSnapshot snapshot, out string reason)
+    {
+        snapshot = instance.OriginalSlotSnapshot ?? new OriginalSlotSnapshot();
+        reason = string.Empty;
+
+        if (instance.OriginalSlotSnapshot == null)
+        {
+            reason = "MissingOriginalSlotSnapshot";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(snapshot.OriginalResourcePath))
+        {
+            reason = "MissingOriginalResourcePath";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(snapshot.OccupiedSlotAddress))
+        {
+            reason = "MissingOriginalOccupiedSlotAddress";
+            return false;
+        }
+
+        return true;
+    }
+
+    private string BuildRestoreDebugInfo(LocalLayoutObjectInstance instance, OriginalSlotSnapshot snapshot, string restoreTargetPath, string step)
+        => $"step={step}; instanceId={instance.Id}; slot={instance.OccupiedSlotAddress}; mode={instance.TransformMode}; " +
+           $"originalResourcePath={snapshot.OriginalResourcePath}; currentModelPath={instance.CurrentModelPath}; customModelPath={instance.CustomModelPath}; " +
+           $"restoreTargetPath={restoreTargetPath}; originalHadCollider={snapshot.OriginalHadCollider}; " +
+           $"mesh=0x{snapshot.OriginalCollisionMeshPathCrc:X8}; analytic=0x{snapshot.OriginalAnalyticShapeDataCrc:X8}";
+
     private bool RestoreOriginalSlotSnapshot(
         LocalLayoutObjectInstance instance,
         bool unsafeEnabled,
@@ -1529,10 +1674,25 @@ public sealed unsafe class LocalLayoutObjectService
                 return this.FailRestore(instance, "重复 slot 实例不参与恢复，避免覆盖原始 transform。", removeAfterRestore, markInvalid: true);
             if (!instance.CanRestore)
                 return this.FailRestore(instance, "没有可恢复的原始 slot 快照。", removeAfterRestore, markInvalid: false);
+            if (!this.TryGetOriginalSlotSnapshot(instance, out var snapshot, out var snapshotError))
+                return this.FailRestore(instance, snapshotError, removeAfterRestore, markInvalid: false);
+            if (!this.ValidateOriginalSlotSnapshot(instance, out var validateError))
+                return this.FailRestore(instance, validateError, removeAfterRestore, markInvalid: false);
             if (!TryGetPointer(instance.OccupiedSlotAddress, out var pointer) || pointer == null)
                 return this.FailRestore(instance, $"occupied slot 指针重新读取失败：{instance.OccupiedSlotAddress}", removeAfterRestore, markInvalid: true);
 
-            var originalPath = FirstNonEmpty(instance.OriginalSlotResourcePath, instance.OriginalModelResourcePath, instance.OriginalResourcePath, instance.SourceResourcePath);
+            var originalPath = snapshot.OriginalResourcePath.Trim();
+            instance.RestoreDebugInfo = this.BuildRestoreDebugInfo(instance, snapshot, originalPath, "Prepare");
+            if (string.IsNullOrWhiteSpace(originalPath))
+                return this.FailRestore(instance, "MissingOriginalResourcePath", removeAfterRestore, markInvalid: false);
+            var legacyOriginalPath = FirstNonEmpty(instance.OriginalResourcePath, instance.OriginalModelResourcePath, instance.SourceResourcePath);
+            if (string.Equals(originalPath, ForbiddenDefaultRestorePath, StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(legacyOriginalPath)
+                && !string.Equals(legacyOriginalPath, ForbiddenDefaultRestorePath, StringComparison.OrdinalIgnoreCase))
+            {
+                return this.FailRestore(instance, "RestoreTargetPathMismatch", removeAfterRestore, markInvalid: false);
+            }
+
             var currentPath = FirstNonEmpty(ReadPrimaryPath(pointer), instance.CurrentResourcePath, instance.AfterModelPath, instance.TargetModelPath);
             if (!string.IsNullOrWhiteSpace(originalPath)
                 && !string.Equals(currentPath, originalPath, StringComparison.OrdinalIgnoreCase))
@@ -1552,25 +1712,33 @@ public sealed unsafe class LocalLayoutObjectService
                     return this.FailRestore(instance, "恢复原 mdl 后 occupied slot 指针重新读取失败。", removeAfterRestore, markInvalid: true);
             }
 
-            instance.RestoreStep = "Restore original visible";
-            this.RestoreCarrierVisible(instance);
-
-            instance.RestoreStep = "Restore original layout transform";
             instance.PendingVisualTransform = false;
             instance.PendingVisualTransformFrameWait = 0;
             instance.PendingRecreateStabilizeAttempts = 0;
-            var layoutRestored = this.RestoreOriginalLayoutTransformDirect(instance, out var layoutResult);
-
-            instance.RestoreStep = "Restore original graphics transform";
-            var graphicsRestored = this.RestoreOriginalGraphicsTransformDirect(instance, out var graphicsResult);
+            instance.PendingVisualTransformResult = "恢复流程已重新接管 transform，取消 recreate 延迟写入。";
 
             instance.RestoreStep = "Restore original collision";
-            var collisionRestored = this.RestoreOriginalCollisionDirect(instance, unsafeEnabled, out var collisionResult);
+            var collisionRestored = this.RestoreOriginalCollisionDirect(instance, snapshot, unsafeEnabled, out var collisionResult);
             if (!collisionRestored)
                 instance.CollisionError = $"恢复原 collision 失败：{collisionResult}";
 
+            instance.RestoreStep = "Restore original layout transform";
+            var layoutRestored = this.RestoreOriginalLayoutTransformDirect(instance, snapshot, out var layoutResult);
+
+            instance.RestoreStep = "Restore original graphics transform";
+            var skipGraphicsVerification = instance.TransformMode == LocalLayoutTransformMode.FullLayoutWithCollision;
+            var graphicsRestored = true;
+            var graphicsResult = "FullLayoutWithCollision：跳过直接写 Graphics.Scene.Object transform，使用 LayoutInstance transform 同步视觉。";
+            if (instance.TransformMode == LocalLayoutTransformMode.VisualOnly)
+                graphicsRestored = this.RestoreOriginalGraphicsTransformDirect(instance, snapshot, out graphicsResult);
+            else
+                this.RefreshGraphicsObjectAddressForRestore(instance, out graphicsResult);
+
+            instance.RestoreStep = "Restore original visible";
+            this.RestoreCarrierVisible(instance, snapshot);
+
             instance.RestoreStep = "Verify restore readback";
-            var verifyResult = this.BuildRestoreVerification(instance, originalPath);
+            var verifyResult = this.BuildRestoreVerification(instance, snapshot, skipGraphicsVerification);
 
             instance.ModelOverrideApplied = false;
             instance.CurrentResourcePath = originalPath;
@@ -1583,7 +1751,7 @@ public sealed unsafe class LocalLayoutObjectService
             instance.RestoreStatus = restoredOk ? "Restored" : "Failed";
             instance.RestoreError = restoredOk ? string.Empty : $"{layoutResult}; {graphicsResult}; {collisionResult}; {verifyResult.Message}";
             instance.AfterRestorePosition = layoutRestored ? layoutResult : graphicsResult;
-            instance.AfterRestoreVisible = instance.OriginalVisible.ToString();
+            instance.AfterRestoreVisible = snapshot.OriginalVisible.ToString();
             if (restoredOk)
             {
                 instance.IsOccupied = false;
@@ -1598,7 +1766,7 @@ public sealed unsafe class LocalLayoutObjectService
             }
 
             this.LastStatus = restoredOk
-                ? $"已恢复原 slot：{instance.Id}；model={originalPath}; layout={layoutResult}; graphics={graphicsResult}; collision={collisionResult}; visible={instance.OriginalVisible}"
+                ? $"已恢复原 slot：{instance.Id}；model={originalPath}; layout={layoutResult}; graphics={graphicsResult}; collision={collisionResult}; visible={snapshot.OriginalVisible}"
                 : $"恢复未通过验证：{instance.Id}；{instance.RestoreError}";
             if (!restoredOk)
                 instance.InstanceState = "Failed";
@@ -1636,6 +1804,19 @@ public sealed unsafe class LocalLayoutObjectService
     }
 
     private bool RestoreOriginalLayoutTransformDirect(LocalLayoutObjectInstance instance, out string result)
+        => this.TryGetOriginalSlotSnapshot(instance, out var snapshot, out _)
+            ? this.RestoreOriginalLayoutTransformDirect(instance, snapshot, out result)
+            : this.RestoreOriginalLayoutTransformDirect(
+                instance,
+                new OriginalSlotSnapshot
+                {
+                    OriginalLayoutPosition = instance.OriginalLayoutPosition,
+                    OriginalLayoutRotation = instance.OriginalLayoutRotation,
+                    OriginalLayoutScale = instance.OriginalLayoutScale,
+                },
+                out result);
+
+    private bool RestoreOriginalLayoutTransformDirect(LocalLayoutObjectInstance instance, OriginalSlotSnapshot snapshot, out string result)
     {
         result = string.Empty;
         if (!TryGetPointer(instance.OccupiedSlotAddress, out var pointer))
@@ -1644,30 +1825,21 @@ public sealed unsafe class LocalLayoutObjectService
             return false;
         }
 
-        var original = new LayoutTransformSnapshot(instance.OriginalLayoutPosition, instance.OriginalLayoutRotation, instance.OriginalLayoutScale);
+        var original = new LayoutTransformSnapshot(snapshot.OriginalLayoutPosition, snapshot.OriginalLayoutRotation, snapshot.OriginalLayoutScale);
         var ok = WriteLayoutTransform(pointer, original);
         var readback = ReadLayoutTransform(pointer);
         result = readback == null ? "layout readback failed" : FormatSnapshot(readback.Value);
         return ok && readback != null;
     }
 
-    private bool RestoreOriginalGraphicsTransformDirect(LocalLayoutObjectInstance instance, out string result)
+    private bool RestoreOriginalGraphicsTransformDirect(LocalLayoutObjectInstance instance, OriginalSlotSnapshot snapshot, out string result)
     {
         result = string.Empty;
-        if (!TryGetPointer(instance.OccupiedSlotAddress, out var pointer))
-        {
-            result = $"slot 地址解析失败：{instance.OccupiedSlotAddress}";
+        if (!this.TryGetSafeGraphicsObjectAddressForRestore(instance, out var graphicsAddress, out _, out result))
             return false;
-        }
-
-        if (!TryGetGraphicsObjectAddress(pointer, out var graphicsAddress) || graphicsAddress == 0)
-        {
-            result = "GraphicsObject=null";
-            return false;
-        }
 
         instance.GraphicsObjectAddress = $"0x{graphicsAddress:X}";
-        var original = new SceneTransformSnapshot(instance.OriginalVisualPosition, instance.OriginalVisualRotation, instance.OriginalVisualScale, false);
+        var original = new SceneTransformSnapshot(snapshot.OriginalGraphicsPosition, snapshot.OriginalGraphicsRotation, snapshot.OriginalGraphicsScale, false);
         try
         {
             WriteSceneObjectTransform(graphicsAddress, original);
@@ -1688,7 +1860,82 @@ public sealed unsafe class LocalLayoutObjectService
         }
     }
 
-    private void RestoreCarrierVisible(LocalLayoutObjectInstance instance)
+    private bool RefreshGraphicsObjectAddressForRestore(LocalLayoutObjectInstance instance, out string result)
+    {
+        if (!this.TryGetSafeGraphicsObjectAddressForRestore(instance, out var graphicsAddress, out var readback, out result))
+        {
+            instance.RestoreDebugInfo = $"{instance.RestoreDebugInfo}; graphicsTransformRestoreSkipped={result}";
+            return false;
+        }
+
+        instance.GraphicsObjectAddress = $"0x{graphicsAddress:X}";
+        instance.LastReadback = FormatSceneSnapshot(readback);
+        result = $"GraphicsObject 已重新读取但未直接写入：{FormatSceneSnapshot(readback)}";
+        return true;
+    }
+
+    private bool TryGetSafeGraphicsObjectAddressForRestore(
+        LocalLayoutObjectInstance instance,
+        out nint graphicsAddress,
+        out SceneTransformSnapshot readback,
+        out string reason)
+    {
+        graphicsAddress = 0;
+        readback = default;
+        reason = string.Empty;
+
+        if (!TryGetPointer(instance.OccupiedSlotAddress, out var pointer) || pointer == null)
+        {
+            reason = $"slot 地址解析失败：{instance.OccupiedSlotAddress}";
+            return false;
+        }
+
+        if (!TryGetGraphicsObjectAddress(pointer, out graphicsAddress) || graphicsAddress == 0)
+        {
+            reason = "GraphicsObject=null";
+            return false;
+        }
+
+        try
+        {
+            var bg = (SceneBgObject*)graphicsAddress;
+            if (bg->ModelResourceHandle == null)
+            {
+                reason = "ModelResourceHandle=null";
+                return false;
+            }
+
+            if (bg->ModelResourceHandle->LoadState < 7)
+            {
+                reason = $"LoadState={bg->ModelResourceHandle->LoadState}";
+                return false;
+            }
+
+            var scene = ReadSceneObjectTransform(graphicsAddress);
+            if (scene == null)
+            {
+                reason = "Scene.Object transform readback failed";
+                return false;
+            }
+
+            if (!IsTransformNormal(scene.Value.Position, scene.Value.Rotation, scene.Value.Scale))
+            {
+                reason = $"Scene.Object transform 数值异常：{FormatSceneSnapshot(scene.Value)}";
+                return false;
+            }
+
+            readback = scene.Value;
+            reason = "GraphicsObject safe";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            reason = $"GraphicsObject 安全检查异常：{ex.Message}";
+            return false;
+        }
+    }
+
+    private void RestoreCarrierVisible(LocalLayoutObjectInstance instance, OriginalSlotSnapshot snapshot)
     {
         if (!TryGetPointer(instance.OccupiedSlotAddress, out var pointer))
             return;
@@ -1703,9 +1950,9 @@ public sealed unsafe class LocalLayoutObjectService
             if (bg->ModelResourceHandle == null || bg->ModelResourceHandle->LoadState != 7)
                 return;
 
-            bg->IsVisible = instance.OriginalVisible;
+            bg->IsVisible = snapshot.OriginalVisible;
             bg->UpdateRender();
-            instance.Visible = instance.OriginalVisible;
+            instance.Visible = snapshot.OriginalVisible;
         }
         catch (Exception ex)
         {
@@ -1713,7 +1960,7 @@ public sealed unsafe class LocalLayoutObjectService
         }
     }
 
-    private bool RestoreOriginalCollisionDirect(LocalLayoutObjectInstance instance, bool unsafeEnabled, out string result)
+    private bool RestoreOriginalCollisionDirect(LocalLayoutObjectInstance instance, OriginalSlotSnapshot snapshot, bool unsafeEnabled, out string result)
     {
         result = string.Empty;
         if (!unsafeEnabled)
@@ -1732,22 +1979,25 @@ public sealed unsafe class LocalLayoutObjectService
         {
             var bgPart = (BgPartsLayoutInstance*)pointer;
             pointer->DestroySecondary();
-            bgPart->CollisionMeshPathCrc = instance.CollisionSnapshotMeshPathCrc;
-            bgPart->AnalyticShapeDataCrc = instance.CollisionSnapshotAnalyticShapeDataCrc;
-            bgPart->CollisionMaterialIdLow = instance.CollisionSnapshotMaterialIdLow;
-            bgPart->CollisionMaterialMaskLow = instance.CollisionSnapshotMaterialMaskLow;
-            bgPart->CollisionMaterialIdHigh = instance.CollisionSnapshotMaterialIdHigh;
-            bgPart->CollisionMaterialMaskHigh = instance.CollisionSnapshotMaterialMaskHigh;
+            bgPart->CollisionMeshPathCrc = snapshot.OriginalCollisionMeshPathCrc;
+            bgPart->AnalyticShapeDataCrc = snapshot.OriginalAnalyticShapeDataCrc;
+            bgPart->CollisionMaterialIdLow = snapshot.OriginalMaterialIdLow;
+            bgPart->CollisionMaterialMaskLow = snapshot.OriginalMaterialMaskLow;
+            bgPart->CollisionMaterialIdHigh = snapshot.OriginalMaterialIdHigh;
+            bgPart->CollisionMaterialMaskHigh = snapshot.OriginalMaterialMaskHigh;
 
-            if (instance.CollisionSnapshotMeshPathCrc != 0 || instance.CollisionSnapshotAnalyticShapeDataCrc != 0)
+            if (snapshot.OriginalHadCollider
+                && (snapshot.OriginalCollisionMeshPathCrc != 0 || snapshot.OriginalAnalyticShapeDataCrc != 0))
+            {
                 pointer->CreateSecondary();
+            }
 
             instance.CollisionAfterColliderAddress = $"0x{(nint)bgPart->Collider:X}";
             instance.CollisionAfterMeshPathCrc = bgPart->CollisionMeshPathCrc;
             instance.CollisionAfterAnalyticShapeDataCrc = bgPart->AnalyticShapeDataCrc;
             instance.CollisionAfterColliderType = bgPart->Collider == null
                 ? "None"
-                : instance.CollisionSnapshotMeshPathCrc != 0 ? "Mesh" : instance.CollisionSnapshotAnalyticShapeDataCrc != 0 ? "Analytic" : "Unknown";
+                : snapshot.OriginalCollisionMeshPathCrc != 0 ? "Mesh" : snapshot.OriginalAnalyticShapeDataCrc != 0 ? "Analytic" : "Unknown";
             instance.CollisionAfterSecondaryPath = ReadSecondaryPath(pointer);
             instance.CollisionApplied = false;
             instance.CollisionError = string.Empty;
@@ -1762,12 +2012,13 @@ public sealed unsafe class LocalLayoutObjectService
         }
     }
 
-    private RestoreVerification BuildRestoreVerification(LocalLayoutObjectInstance instance, string originalPath)
+    private RestoreVerification BuildRestoreVerification(LocalLayoutObjectInstance instance, OriginalSlotSnapshot snapshot, bool skipGraphicsPositionCheck)
     {
         var failures = new List<string>();
         if (!TryGetPointer(instance.OccupiedSlotAddress, out var pointer) || pointer == null)
             return new RestoreVerification(false, "slot 指针 readback 失败。");
 
+        var originalPath = snapshot.OriginalResourcePath;
         var currentPath = ReadPrimaryPath(pointer);
         if (!string.IsNullOrWhiteSpace(originalPath)
             && !string.IsNullOrWhiteSpace(currentPath)
@@ -1779,14 +2030,15 @@ public sealed unsafe class LocalLayoutObjectService
         {
             failures.Add("layout readback failed");
         }
-        else if (Vector3.Distance(layout.Value.Position, instance.OriginalLayoutPosition) > 0.05f)
+        else if (Vector3.Distance(layout.Value.Position, snapshot.OriginalLayoutPosition) > 0.05f)
         {
-            failures.Add($"layout position current={FormatVector(layout.Value.Position)}, original={FormatVector(instance.OriginalLayoutPosition)}");
+            failures.Add($"layout position current={FormatVector(layout.Value.Position)}, original={FormatVector(snapshot.OriginalLayoutPosition)}");
         }
 
         if (!TryGetGraphicsObjectAddress(pointer, out var graphicsAddress) || graphicsAddress == 0)
         {
-            failures.Add("GraphicsObject=null");
+            if (!skipGraphicsPositionCheck)
+                failures.Add("GraphicsObject=null");
         }
         else
         {
@@ -1794,19 +2046,20 @@ public sealed unsafe class LocalLayoutObjectService
             var graphics = ReadSceneObjectTransform(graphicsAddress);
             if (graphics == null)
             {
-                failures.Add("graphics transform readback failed");
+                if (!skipGraphicsPositionCheck)
+                    failures.Add("graphics transform readback failed");
             }
-            else if (Vector3.Distance(graphics.Value.Position, instance.OriginalVisualPosition) > 0.05f)
+            else if (!skipGraphicsPositionCheck && Vector3.Distance(graphics.Value.Position, snapshot.OriginalGraphicsPosition) > 0.05f)
             {
-                failures.Add($"graphics position current={FormatVector(graphics.Value.Position)}, original={FormatVector(instance.OriginalVisualPosition)}");
+                failures.Add($"graphics position current={FormatVector(graphics.Value.Position)}, original={FormatVector(snapshot.OriginalGraphicsPosition)}");
             }
 
             try
             {
                 var bg = (SceneBgObject*)graphicsAddress;
                 instance.AfterRestoreVisible = bg->IsVisible.ToString();
-                if (bg->IsVisible != instance.OriginalVisible)
-                    failures.Add($"visible current={bg->IsVisible}, original={instance.OriginalVisible}");
+                if (bg->IsVisible != snapshot.OriginalVisible)
+                    failures.Add($"visible current={bg->IsVisible}, original={snapshot.OriginalVisible}");
             }
             catch (Exception ex)
             {
@@ -1817,17 +2070,13 @@ public sealed unsafe class LocalLayoutObjectService
         try
         {
             var bgPart = (BgPartsLayoutInstance*)pointer;
-            var originalHadCollider = instance.CollisionSnapshotMeshPathCrc != 0
-                || instance.CollisionSnapshotAnalyticShapeDataCrc != 0
-                || (!string.IsNullOrWhiteSpace(instance.CollisionSnapshotColliderAddress)
-                    && !string.Equals(instance.CollisionSnapshotColliderAddress, "0x0", StringComparison.OrdinalIgnoreCase));
             var currentHasCollider = bgPart->Collider != null;
-            if (originalHadCollider != currentHasCollider)
-                failures.Add($"collider current={currentHasCollider}, original={originalHadCollider}");
-            if (bgPart->CollisionMeshPathCrc != instance.CollisionSnapshotMeshPathCrc)
-                failures.Add($"meshCrc current=0x{bgPart->CollisionMeshPathCrc:X8}, original=0x{instance.CollisionSnapshotMeshPathCrc:X8}");
-            if (bgPart->AnalyticShapeDataCrc != instance.CollisionSnapshotAnalyticShapeDataCrc)
-                failures.Add($"analyticCrc current=0x{bgPart->AnalyticShapeDataCrc:X8}, original=0x{instance.CollisionSnapshotAnalyticShapeDataCrc:X8}");
+            if (snapshot.OriginalHadCollider != currentHasCollider)
+                failures.Add($"collider current={currentHasCollider}, original={snapshot.OriginalHadCollider}");
+            if (bgPart->CollisionMeshPathCrc != snapshot.OriginalCollisionMeshPathCrc)
+                failures.Add($"meshCrc current=0x{bgPart->CollisionMeshPathCrc:X8}, original=0x{snapshot.OriginalCollisionMeshPathCrc:X8}");
+            if (bgPart->AnalyticShapeDataCrc != snapshot.OriginalAnalyticShapeDataCrc)
+                failures.Add($"analyticCrc current=0x{bgPart->AnalyticShapeDataCrc:X8}, original=0x{snapshot.OriginalAnalyticShapeDataCrc:X8}");
         }
         catch (Exception ex)
         {
@@ -2315,6 +2564,10 @@ public sealed unsafe class LocalLayoutObjectService
             || !TryNormalizeSlotAddress(instance.OccupiedSlotAddress, out var slotAddress)
             || slotAddress == 0;
 
+    private static bool IsFailedState(LocalLayoutObjectInstance instance)
+        => string.Equals(instance.InstanceState, "Failed", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(instance.RestoreStatus, "Failed", StringComparison.OrdinalIgnoreCase);
+
     private static bool TryNormalizeSlotAddress(string? raw, out ulong address)
     {
         address = 0;
@@ -2347,6 +2600,29 @@ public sealed unsafe class LocalLayoutObjectService
     private static bool IsSupportedMdlPath(string path)
         => path.StartsWith("bg/", StringComparison.OrdinalIgnoreCase)
             || path.StartsWith("bgcommon/", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsTransformNormal(Vector3 position, Quaternion rotation, Vector3 scale)
+        => IsVectorNormal(position)
+            && IsQuaternionNormal(rotation)
+            && IsVectorNormal(scale)
+            && Math.Abs(scale.X) > 0.0001f
+            && Math.Abs(scale.Y) > 0.0001f
+            && Math.Abs(scale.Z) > 0.0001f;
+
+    private static bool IsVectorNormal(Vector3 value)
+        => float.IsFinite(value.X)
+            && float.IsFinite(value.Y)
+            && float.IsFinite(value.Z)
+            && Math.Abs(value.X) < 1_000_000f
+            && Math.Abs(value.Y) < 1_000_000f
+            && Math.Abs(value.Z) < 1_000_000f;
+
+    private static bool IsQuaternionNormal(Quaternion value)
+        => float.IsFinite(value.X)
+            && float.IsFinite(value.Y)
+            && float.IsFinite(value.Z)
+            && float.IsFinite(value.W)
+            && value.LengthSquared() is > 0.0001f and < 10f;
 
     private static string GetStaticObjectBlockReason(LayoutProbeInstance? instance)
     {

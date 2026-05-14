@@ -280,14 +280,6 @@ public sealed unsafe class LayoutObjectTransformService
             return;
 
         instance.GraphicsObjectAddress = $"0x{graphicsAddress:X}";
-        var originalVisual = ReadSceneObjectTransform(graphicsAddress);
-        if (originalVisual == null)
-            return;
-
-        instance.OriginalVisualPosition = originalVisual.Value.Position;
-        instance.OriginalVisualRotation = originalVisual.Value.Rotation;
-        instance.OriginalVisualScale = originalVisual.Value.Scale;
-        instance.OriginalVisualTransform = FormatSceneSnapshot(originalVisual.Value);
     }
 
     private static SceneTransformSnapshot? ReadSceneObjectTransform(nint graphicsObjectAddress)

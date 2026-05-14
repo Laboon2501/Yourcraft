@@ -141,6 +141,10 @@ public sealed class LocalLayoutObjectInstance
 
     public string LastOperation { get; set; } = string.Empty;
 
+    public OriginalSlotSnapshot? OriginalSlotSnapshot { get; set; }
+
+    public string RestoreDebugInfo { get; set; } = string.Empty;
+
     public bool ModelExperimentFailed { get; set; }
 
     public string TransformWriteDisabledReason { get; set; } = string.Empty;
