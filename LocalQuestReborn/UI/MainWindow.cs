@@ -15,6 +15,7 @@ public sealed class MainWindow : Window
     private readonly LayoutProbeService layoutProbe;
     private readonly LayerDumpService layerDump;
     private readonly LocalLayoutObjectService localLayoutObjects;
+    private readonly LocalLightNativeService localLights;
     private readonly BgPartCollisionSourceProbeService bgPartCollisionSourceProbe;
     private readonly AnimatedBgPartControllerProbeService animatedBgPartControllerProbe;
     private readonly StandaloneBgObjectProbeService standaloneBgObjectProbe;
@@ -26,6 +27,7 @@ public sealed class MainWindow : Window
     private string selectedNpcId = string.Empty;
     private string selectedActorRuntimeId = string.Empty;
     private string selectedLocalLayoutObjectId = string.Empty;
+    private string selectedLocalLightId = string.Empty;
     private string selectedBgPartAddress = string.Empty;
     private string templateBgPartAddress = string.Empty;
     private string bgPartSearchText = string.Empty;
@@ -72,6 +74,7 @@ public sealed class MainWindow : Window
         LayoutInstanceCloneService layoutClone,
         LayerDumpService layerDump,
         LocalLayoutObjectService localLayoutObjects,
+        LocalLightNativeService localLights,
         BgPartVisualTransformProbeService bgPartVisualProbe,
         RotationMatrixExperimentService rotationMatrixExperiment,
         BgPartVisualRescueService bgPartVisualRescue,
@@ -96,6 +99,7 @@ public sealed class MainWindow : Window
         this.layoutProbe = layoutProbe;
         this.layerDump = layerDump;
         this.localLayoutObjects = localLayoutObjects;
+        this.localLights = localLights;
         this.bgPartCollisionSourceProbe = bgPartCollisionSourceProbe;
         this.animatedBgPartControllerProbe = animatedBgPartControllerProbe;
         this.standaloneBgObjectProbe = standaloneBgObjectProbe;
@@ -152,6 +156,12 @@ public sealed class MainWindow : Window
             ImGui.EndTabItem();
         }
 
+        if (ImGui.BeginTabItem("本地灯光"))
+        {
+            this.DrawLocalLights();
+            ImGui.EndTabItem();
+        }
+
         if (ImGui.BeginTabItem("BgPart Slot Pool"))
         {
             this.DrawBgPartPool();
@@ -194,6 +204,7 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"外观队列：长度 {this.realNpcSpawn.AppearanceQueueLength}，当前 {this.realNpcSpawn.AppearanceQueueCurrentActor}");
         ImGui.TextWrapped($"本地场景物体：{this.localLayoutObjects.LastStatus}");
         ImGui.TextWrapped($"模型 override：{this.localLayoutObjects.LastModelOverrideStatus}");
+        ImGui.TextWrapped($"本地灯光：{this.localLights.LastStatus} | pending={this.localLights.PendingOperationCount}");
     }
 
     private void DrawNpcManagement()
@@ -1706,6 +1717,236 @@ public sealed class MainWindow : Window
         ImGui.EndDisabled();
     }
 
+    private void DrawLocalLights()
+    {
+        ImGui.TextWrapped("LocalLights 使用 Graphics.Scene.Light / Render.Light 创建插件自有本地灯光；不走 BgPart carrier，不占用场景物体 slot。当前仍是 Debug-first 路线，请先用 PointLight 验证 GPose 外可见性。");
+        ImGui.TextWrapped($"状态：{this.localLights.LastStatus}");
+        ImGui.TextWrapped($"灯光数量：{this.localLights.Instances.Count} | native 队列：{this.localLights.PendingOperationCount}");
+
+        var unsafeEnabled = this.realNpcSpawn.EnableUnsafeNativeWrites;
+        if (!unsafeEnabled)
+            ImGui.TextColored(new Vector4(1f, 0.35f, 0.25f, 1f), "Unsafe/native 写入未开启，不能创建或修改 native SceneLight。");
+
+        if (!unsafeEnabled)
+            ImGui.BeginDisabled();
+
+        if (ImGui.Button("Debug Spawn PointLight At Player"))
+        {
+            var instance = this.localLights.CreateDebugPointAt(this.runtime.PlayerPosition ?? Vector3.Zero);
+            this.selectedLocalLightId = instance.Id;
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("创建点光"))
+        {
+            var instance = this.localLights.Create(LocalLightKind.Point, "Point Light", this.runtime.PlayerPosition ?? Vector3.Zero, Vector3.Zero, Vector3.One);
+            this.selectedLocalLightId = instance.Id;
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("创建聚焦光"))
+        {
+            var instance = this.localLights.Create(LocalLightKind.Spot, "Spot Light", this.runtime.PlayerPosition ?? Vector3.Zero, Vector3.Zero, Vector3.One);
+            this.selectedLocalLightId = instance.Id;
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("创建面光"))
+        {
+            var instance = this.localLights.Create(LocalLightKind.Area, "Area Light", this.runtime.PlayerPosition ?? Vector3.Zero, Vector3.Zero, Vector3.One);
+            this.selectedLocalLightId = instance.Id;
+        }
+
+        if (!unsafeEnabled)
+            ImGui.EndDisabled();
+
+        ImGui.SameLine();
+        if (ImGui.Button("删除全部灯光"))
+        {
+            this.localLights.RequestDeleteAll();
+            this.selectedLocalLightId = string.Empty;
+        }
+
+        ImGui.Separator();
+
+        var lights = this.localLights.Instances;
+        if (lights.Count == 0)
+        {
+            ImGui.TextDisabled("还没有本地灯光。先点击 Debug Spawn PointLight At Player。");
+            return;
+        }
+
+        if (!lights.Any(item => string.Equals(item.Id, this.selectedLocalLightId, StringComparison.OrdinalIgnoreCase)))
+            this.selectedLocalLightId = lights[0].Id;
+
+        var leftWidth = Math.Min(360f, Math.Max(260f, ImGui.GetContentRegionAvail().X * 0.35f));
+        if (ImGui.BeginChild("LocalLightsListPanel", new Vector2(leftWidth, 0f), true, ImGuiWindowFlags.AlwaysVerticalScrollbar))
+        {
+            foreach (var light in lights)
+            {
+                var label = $"{light.Name} | {light.LightKind} | {(light.IsNativeCreated ? "native" : "no native")}##{light.Id}";
+                var selected = string.Equals(light.Id, this.selectedLocalLightId, StringComparison.OrdinalIgnoreCase);
+                if (ImGui.Selectable(label, selected))
+                    this.selectedLocalLightId = light.Id;
+                if (selected)
+                    ImGui.SetItemDefaultFocus();
+            }
+        }
+        ImGui.EndChild();
+
+        ImGui.SameLine();
+
+        var selectedLight = this.localLights.GetById(this.selectedLocalLightId);
+        if (selectedLight == null)
+        {
+            ImGui.TextDisabled("未选择灯光。");
+            return;
+        }
+
+        if (ImGui.BeginChild("LocalLightsEditPanel", Vector2.Zero, true, ImGuiWindowFlags.AlwaysVerticalScrollbar))
+        {
+            ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "灯光实例");
+            ImGui.TextWrapped($"Id：{selectedLight.Id}");
+            ImGui.TextWrapped($"NativeSceneLight：0x{selectedLight.NativeSceneLight:X}");
+            ImGui.TextWrapped($"NativeRenderLight：0x{selectedLight.NativeRenderLight:X}");
+            ImGui.TextWrapped($"Last operation：{selectedLight.LastOperation}");
+            if (!string.IsNullOrWhiteSpace(selectedLight.LastError))
+                ImGui.TextColored(new Vector4(1f, 0.35f, 0.25f, 1f), $"Last error：{selectedLight.LastError}");
+            if (!string.IsNullOrWhiteSpace(selectedLight.LastReadback))
+                ImGui.TextWrapped($"Readback：{selectedLight.LastReadback}");
+
+            EditString("名称##LocalLightName", selectedLight.Name, 128, value => selectedLight.Name = value);
+
+            var enabled = selectedLight.Enabled;
+            if (ImGui.Checkbox("启用 native light", ref enabled))
+                this.localLights.RequestSetEnabled(selectedLight.Id, enabled);
+
+            var hidden = selectedLight.Hidden;
+            if (ImGui.Checkbox("隐藏", ref hidden))
+            {
+                selectedLight.Hidden = hidden;
+                this.localLights.RequestApply(selectedLight.Id);
+            }
+
+            DrawLocalLightKindCombo(selectedLight);
+            DrawLocalLightFalloffCombo(selectedLight);
+
+            ImGui.Separator();
+            ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "Transform");
+            var position = selectedLight.Position;
+            if (ImGui.InputFloat3("Position X/Y/Z", ref position))
+                selectedLight.Position = position;
+            var rotationDegrees = RadiansVectorToDegrees(selectedLight.Rotation);
+            if (ImGui.InputFloat3("Rotation Pitch/Yaw/Roll (deg)", ref rotationDegrees))
+                selectedLight.Rotation = DegreesVectorToRadians(rotationDegrees);
+            var scale = selectedLight.Scale;
+            if (ImGui.InputFloat3("Scale X/Y/Z", ref scale))
+                selectedLight.Scale = scale;
+
+            if (ImGui.Button("移动到玩家当前位置"))
+            {
+                selectedLight.Position = this.runtime.PlayerPosition ?? selectedLight.Position;
+                this.localLights.RequestApply(selectedLight.Id);
+            }
+
+            ImGui.Separator();
+            ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "Light");
+            var color = selectedLight.ColorRgb;
+            if (ImGui.ColorEdit3("Color RGB", ref color))
+                selectedLight.ColorRgb = color;
+            var intensity = selectedLight.Intensity;
+            if (ImGui.InputFloat("Intensity", ref intensity))
+                selectedLight.Intensity = intensity;
+            var range = selectedLight.Range;
+            if (ImGui.InputFloat("Range", ref range))
+                selectedLight.Range = range;
+            var falloff = selectedLight.Falloff;
+            if (ImGui.InputFloat("Falloff", ref falloff))
+                selectedLight.Falloff = falloff;
+            var spotAngle = selectedLight.LightAngle;
+            if (ImGui.InputFloat("Spot Angle", ref spotAngle))
+                selectedLight.LightAngle = spotAngle;
+            var falloffAngle = selectedLight.FalloffAngle;
+            if (ImGui.InputFloat("Falloff Angle", ref falloffAngle))
+                selectedLight.FalloffAngle = falloffAngle;
+            var area = new Vector2(selectedLight.AreaAngleX, selectedLight.AreaAngleY);
+            if (ImGui.InputFloat2("Area X/Y", ref area))
+            {
+                selectedLight.AreaAngleX = area.X;
+                selectedLight.AreaAngleY = area.Y;
+            }
+
+            if (ImGui.TreeNode("阴影/高级参数（默认关闭）"))
+            {
+                var specular = selectedLight.EnableSpecular;
+                if (ImGui.Checkbox("Specular highlights", ref specular))
+                    selectedLight.EnableSpecular = specular;
+                var shadows = selectedLight.EnableDynamicShadows;
+                if (ImGui.Checkbox("Dynamic shadows（高风险/性能开销）", ref shadows))
+                    selectedLight.EnableDynamicShadows = shadows;
+                ImGui.TreePop();
+            }
+
+            ImGui.Separator();
+            if (!unsafeEnabled)
+                ImGui.BeginDisabled();
+
+            if (ImGui.Button("应用参数"))
+                this.localLights.RequestApply(selectedLight.Id);
+            ImGui.SameLine();
+            if (ImGui.Button("删除选中"))
+            {
+                this.localLights.RequestDelete(selectedLight.Id);
+                this.selectedLocalLightId = string.Empty;
+            }
+
+            if (!unsafeEnabled)
+                ImGui.EndDisabled();
+
+            if (ImGui.Button("人工确认：GPose 外可见"))
+                this.localLights.MarkVisibleResult(selectedLight.Id, visible: true);
+            ImGui.SameLine();
+            if (ImGui.Button("人工确认：仍不可见"))
+                this.localLights.MarkVisibleResult(selectedLight.Id, visible: false);
+            ImGui.TextWrapped($"人工确认：visible={selectedLight.ManuallyConfirmedVisible}; notVisible={selectedLight.ManuallyConfirmedNotVisible}");
+        }
+        ImGui.EndChild();
+    }
+
+    private static void DrawLocalLightKindCombo(LocalLightInstance light)
+    {
+        if (!ImGui.BeginCombo("Light Kind", light.LightKind.ToString()))
+            return;
+
+        foreach (var kind in Enum.GetValues<LocalLightKind>())
+        {
+            var selected = light.LightKind == kind;
+            if (ImGui.Selectable(kind.ToString(), selected))
+                light.LightKind = kind;
+            if (selected)
+                ImGui.SetItemDefaultFocus();
+        }
+
+        ImGui.EndCombo();
+    }
+
+    private static void DrawLocalLightFalloffCombo(LocalLightInstance light)
+    {
+        if (!ImGui.BeginCombo("Falloff Type", light.FalloffType.ToString()))
+            return;
+
+        foreach (var falloff in Enum.GetValues<LocalLightFalloffType>())
+        {
+            var selected = light.FalloffType == falloff;
+            if (ImGui.Selectable(falloff.ToString(), selected))
+                light.FalloffType = falloff;
+            if (selected)
+                ImGui.SetItemDefaultFocus();
+        }
+
+        ImGui.EndCombo();
+    }
+
     private void DrawBgPartPool()
     {
         ImGui.TextWrapped("按 resourcePath 分组的 BgPart slot 库存池。");
@@ -2368,6 +2609,12 @@ public sealed class MainWindow : Window
     private static bool IsSupportedMdlPath(string path)
         => path.StartsWith("bg/", StringComparison.OrdinalIgnoreCase)
             || path.StartsWith("bgcommon/", StringComparison.OrdinalIgnoreCase);
+
+    private static Vector3 RadiansVectorToDegrees(Vector3 radians)
+        => new(RadiansToDegrees(radians.X), RadiansToDegrees(radians.Y), RadiansToDegrees(radians.Z));
+
+    private static Vector3 DegreesVectorToRadians(Vector3 degrees)
+        => new(DegreesToRadians(degrees.X), DegreesToRadians(degrees.Y), DegreesToRadians(degrees.Z));
 
     private static float RadiansToDegrees(float radians)
         => radians * 180f / MathF.PI;

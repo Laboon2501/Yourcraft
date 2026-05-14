@@ -14,6 +14,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private readonly IDalamudPluginInterface pluginInterface;
     private readonly ICommandManager commandManager;
+    private readonly IClientState clientState;
     private readonly IFramework framework;
     private readonly IPluginLog log;
     private readonly WindowSystem windowSystem = new("本地 NPC 实验室");
@@ -57,6 +58,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly ProtectedBgPartRegistry protectedBgParts;
     private readonly PreferredModifyBgPartRegistry preferredModifyBgParts;
     private readonly LocalLayoutObjectService localLayoutObjects;
+    private readonly LocalLightNativeService localLights;
     private readonly BgPartVisualTransformProbeService bgPartVisualProbe;
     private readonly RotationMatrixExperimentService rotationMatrixExperiment;
     private readonly BgPartVisualRescueService bgPartVisualRescue;
@@ -74,6 +76,8 @@ public sealed class Plugin : IDalamudPlugin
     private readonly GlamourerDesignCatalogService glamourerDesignCatalog;
     private readonly MainWindow mainWindow;
     private uint lastLayoutObjectTerritoryType;
+    private bool lastLocalLightGposeState;
+    private bool lastLocalLightPlayerAvailable;
 
     public Plugin(
         IDalamudPluginInterface pluginInterface,
@@ -87,6 +91,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         this.pluginInterface = pluginInterface;
         this.commandManager = commandManager;
+        this.clientState = clientState;
         this.framework = framework;
         this.log = log;
 
@@ -133,6 +138,7 @@ public sealed class Plugin : IDalamudPlugin
         this.protectedBgParts = new ProtectedBgPartRegistry(this.configuration, () => this.runtime.TerritoryType, () => this.pluginInterface.SavePluginConfig(this.configuration));
         this.preferredModifyBgParts = new PreferredModifyBgPartRegistry(this.configuration, () => this.runtime.TerritoryType, () => this.pluginInterface.SavePluginConfig(this.configuration));
         this.localLayoutObjects = new LocalLayoutObjectService(this.protectedBgParts, this.preferredModifyBgParts);
+        this.localLights = new LocalLightNativeService(this.configuration, log, () => this.pluginInterface.SavePluginConfig(this.configuration));
         this.bgPartVisualProbe = new BgPartVisualTransformProbeService();
         this.rotationMatrixExperiment = new RotationMatrixExperimentService(this.bgPartVisualProbe);
         this.bgPartVisualRescue = new BgPartVisualRescueService(this.bgPartVisualProbe);
@@ -146,8 +152,10 @@ public sealed class Plugin : IDalamudPlugin
         this.meddleSceneProbe = new MeddleStyleSceneProbeService(objectTable, log);
         this.glamourerDesignCatalog = new GlamourerDesignCatalogService(pluginInterface, log);
         this.lastLayoutObjectTerritoryType = clientState.TerritoryType;
+        this.lastLocalLightGposeState = clientState.IsGPosing;
+        this.lastLocalLightPlayerAvailable = this.runtime.PlayerPosition.HasValue;
 
-        this.mainWindow = new MainWindow(this.configuration, this.database, this.runtime, this.experimentalNpc, this.realNpcSpawn, this.propRuntime, this.layoutProbe, this.layoutTransform, this.layoutClone, this.layerDump, this.localLayoutObjects, this.bgPartVisualProbe, this.rotationMatrixExperiment, this.bgPartVisualRescue, this.visualOnlyRotationDeepProbe, this.drawObjectUpdateDirtyProbe, this.graphicsSceneObjectTransform, this.bgPartCollisionSourceProbe, this.animatedBgPartControllerProbe, this.standaloneBgObjectProbe, this.standaloneRenderListProbe, this.meddleSceneProbe, this.gameNpcCatalog, this.gameNpcAppearanceResolver, this.glamourerDesignCatalog, this.Reload);
+        this.mainWindow = new MainWindow(this.configuration, this.database, this.runtime, this.experimentalNpc, this.realNpcSpawn, this.propRuntime, this.layoutProbe, this.layoutTransform, this.layoutClone, this.layerDump, this.localLayoutObjects, this.localLights, this.bgPartVisualProbe, this.rotationMatrixExperiment, this.bgPartVisualRescue, this.visualOnlyRotationDeepProbe, this.drawObjectUpdateDirtyProbe, this.graphicsSceneObjectTransform, this.bgPartCollisionSourceProbe, this.animatedBgPartControllerProbe, this.standaloneBgObjectProbe, this.standaloneRenderListProbe, this.meddleSceneProbe, this.gameNpcCatalog, this.gameNpcAppearanceResolver, this.glamourerDesignCatalog, this.Reload);
 
         this.windowSystem.AddWindow(this.mainWindow);
 
@@ -203,6 +211,7 @@ public sealed class Plugin : IDalamudPlugin
         this.pluginInterface.UiBuilder.OpenMainUi -= this.OpenMainUi;
         this.pluginInterface.UiBuilder.OpenConfigUi -= this.OpenConfigUi;
         this.commandManager.RemoveHandler(CommandName);
+        this.localLights.DestroyAllNative("插件卸载", keepInstances: true);
         this.standaloneBgObjectProbe.MarkAllInvalid("插件卸载：Standalone 对象没有安全销毁入口，已停止写入并标记失效。");
         this.localLayoutObjects.RestoreAllAndClear();
         this.realNpcSpawn.DespawnAll();
@@ -236,10 +245,23 @@ public sealed class Plugin : IDalamudPlugin
         this.runtime.Update();
         this.realNpcSpawn.Update();
         this.localLayoutObjects.Update();
+        this.localLights.Update();
         this.standaloneBgObjectProbe.Update();
         this.animatedBgPartControllerProbe.Update();
+        if (this.clientState.IsGPosing != this.lastLocalLightGposeState)
+        {
+            this.localLights.DestroyAllNative("GPose enter/exit，销毁 native light 并等待重建", keepInstances: true);
+            this.lastLocalLightGposeState = this.clientState.IsGPosing;
+        }
+
+        var playerAvailable = this.runtime.PlayerPosition.HasValue;
+        if (!playerAvailable && this.lastLocalLightPlayerAvailable)
+            this.localLights.DestroyAllNative("LocalPlayer 不可用/可能登出，销毁 native light", keepInstances: true);
+        this.lastLocalLightPlayerAvailable = playerAvailable;
+
         if (this.runtime.TerritoryType != this.lastLayoutObjectTerritoryType)
         {
+            this.localLights.DestroyAllNative("区域切换，销毁 native light 并等待重建", keepInstances: true);
             this.standaloneBgObjectProbe.MarkAllInvalid("区域切换：Standalone 对象指针可能已由游戏清理，已停止写入并标记失效。");
             this.localLayoutObjects.RestoreAllAndClear();
             this.lastLayoutObjectTerritoryType = this.runtime.TerritoryType;

@@ -24,4 +24,6 @@ public sealed class Configuration : IPluginConfiguration
     public List<PreferredModifyBgPartSlot> PreferredModifyBgPartSlots { get; set; } = [];
 
     public List<PreferredModifyBgPartResourcePath> PreferredModifyBgPartResourcePaths { get; set; } = [];
+
+    public List<LocalLightInstance> LocalLights { get; set; } = [];
 }
