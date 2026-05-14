@@ -9,6 +9,7 @@ public sealed class AppearanceApplyService
     private readonly IDalamudPluginInterface pluginInterface;
     private readonly GlamourerIpcProbeService glamourerIpcProbe;
     private readonly GlamourerIpcBridgeService glamourerIpcBridge;
+    private readonly PenumbraIpcService penumbraIpc;
     private readonly GameNpcAppearanceResolver gameNpcResolver;
     private readonly GameNpcAppearanceApplyService gameNpcApplyService;
     private readonly IPluginLog log;
@@ -17,6 +18,7 @@ public sealed class AppearanceApplyService
         IDalamudPluginInterface pluginInterface,
         GlamourerIpcProbeService glamourerIpcProbe,
         GlamourerIpcBridgeService glamourerIpcBridge,
+        PenumbraIpcService penumbraIpc,
         GameNpcAppearanceResolver gameNpcResolver,
         GameNpcAppearanceApplyService gameNpcApplyService,
         IPluginLog log)
@@ -24,6 +26,7 @@ public sealed class AppearanceApplyService
         this.pluginInterface = pluginInterface;
         this.glamourerIpcProbe = glamourerIpcProbe;
         this.glamourerIpcBridge = glamourerIpcBridge;
+        this.penumbraIpc = penumbraIpc;
         this.gameNpcResolver = gameNpcResolver;
         this.gameNpcApplyService = gameNpcApplyService;
         this.log = log;
@@ -50,6 +53,12 @@ public sealed class AppearanceApplyService
         {
             var appearance = npc.Appearance ?? new CustomNpcAppearance();
             actor.AppearanceSourceType = appearance.SourceType.ToString();
+            if (!this.penumbraIpc.ApplyCollection(npc, actor, out var penumbraReason))
+            {
+                actor.LastPenumbraCollectionError = penumbraReason;
+                this.log.Warning("Penumbra collection stage failed but appearance pipeline will continue. Actor={Actor}, Reason={Reason}", actor.RuntimeId, penumbraReason);
+            }
+
             var success = appearance.SourceType switch
             {
                 CustomNpcAppearanceSourceType.None => this.ApplyNone(actor),
@@ -57,7 +66,7 @@ public sealed class AppearanceApplyService
                 CustomNpcAppearanceSourceType.GlamourerDesign => this.ApplyGlamourerDesign(appearance, actor),
                 CustomNpcAppearanceSourceType.GameNpc => this.ApplyGameNpc(appearance, actor),
                 CustomNpcAppearanceSourceType.MCDF => this.Fail(actor, "MCDF", "MCDF 外观应用暂未接入安全接口。"),
-                CustomNpcAppearanceSourceType.PenumbraCollection => this.Fail(actor, "PenumbraCollection", "Penumbra Collection 切换暂未实现。"),
+                CustomNpcAppearanceSourceType.PenumbraCollection => this.ApplyPenumbraAppearanceSource(actor),
                 _ => this.Fail(actor, appearance.SourceType.ToString(), $"未知外观来源：{appearance.SourceType}"),
             };
 
@@ -89,6 +98,16 @@ public sealed class AppearanceApplyService
         actor.LastAppearanceError = string.Empty;
         actor.LastAppearanceApplyResult = "保持 Brio CreateCharacter 生成的玩家 clone 外观。";
         return true;
+    }
+
+    private bool ApplyPenumbraAppearanceSource(RuntimeActorInstance actor)
+    {
+        actor.LastAppearanceMethod = "PenumbraCollection";
+        actor.LastAppearanceError = actor.LastPenumbraCollectionError;
+        actor.LastAppearanceApplyResult = string.IsNullOrWhiteSpace(actor.LastPenumbraCollectionResult)
+            ? "Penumbra collection handled by NPC-level collection stage."
+            : actor.LastPenumbraCollectionResult;
+        return string.IsNullOrWhiteSpace(actor.LastPenumbraCollectionError);
     }
 
     private bool ApplyGlamourerDesign(CustomNpcAppearance appearance, RuntimeActorInstance actor)

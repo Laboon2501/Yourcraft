@@ -82,6 +82,22 @@ public sealed class RuntimeActorInstance
 
     public DateTime? LastAppearanceAppliedAt { get; set; }
 
+    public PenumbraCollectionMode PenumbraMode { get; set; } = PenumbraCollectionMode.DoNotTouch;
+
+    public Guid? PenumbraCollectionId { get; set; }
+
+    public string PenumbraCollectionNameCache { get; set; } = string.Empty;
+
+    public bool WeAppliedPenumbraCollection { get; set; }
+
+    public int LastAppliedPenumbraGameObjectIndex { get; set; } = -1;
+
+    public Guid? LastAppliedPenumbraCollectionId { get; set; }
+
+    public string LastPenumbraCollectionResult { get; set; } = string.Empty;
+
+    public string LastPenumbraCollectionError { get; set; } = string.Empty;
+
     public string ExpectedName { get; set; } = string.Empty;
 
     public string CurrentNativeName { get; set; } = "不可用";
@@ -129,6 +145,20 @@ public sealed class RuntimeActorInstance
     public string ActionSequenceStatus { get; set; } = "Stopped";
 
     public string LastActionSequenceError { get; set; } = string.Empty;
+
+    public ActorVisibilityRuntimeState VisibilityRuntimeState { get; set; } = ActorVisibilityRuntimeState.Visible;
+
+    public bool LookAtPausedByActionSequence { get; set; }
+
+    public ActorAnimationRigPreset AnimationRigPreset { get; set; } = ActorAnimationRigPreset.Current;
+
+    public byte CustomRigRace { get; set; }
+
+    public byte CustomRigSex { get; set; }
+
+    public byte CustomRigTribe { get; set; }
+
+    public string AnimationRigStatus { get; set; } = "Current";
 
     public bool LookAtPlayerEnabled { get; set; }
 

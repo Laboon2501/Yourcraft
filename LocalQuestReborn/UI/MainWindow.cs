@@ -22,6 +22,8 @@ public sealed class MainWindow : Window
     private readonly StandaloneRenderListProbeService standaloneRenderListProbe;
     private readonly GameNpcCatalogService gameNpcCatalog;
     private readonly GlamourerDesignCatalogService glamourerDesignCatalog;
+    private readonly ActorAnimationCatalogService actorAnimationCatalog;
+    private readonly PenumbraIpcService penumbraIpc;
     private readonly Action reloadAction;
 
     private string selectedNpcId = string.Empty;
@@ -61,6 +63,10 @@ public sealed class MainWindow : Window
     private Vector3 standaloneRotationDegrees;
     private Vector3 standaloneScale = Vector3.One;
     private bool confirmStandaloneBgObjectExperiment;
+    private string animationPickerSearchText = string.Empty;
+    private ActorAnimationPickerMode animationPickerMode = ActorAnimationPickerMode.EmoteActionsOnly;
+    private string animationPickerTitle = "选择动画";
+    private Action<ushort>? animationPickerApply;
 
     public MainWindow(
         Configuration configuration,
@@ -89,6 +95,8 @@ public sealed class MainWindow : Window
         GameNpcCatalogService gameNpcCatalog,
         GameNpcAppearanceResolver gameNpcAppearanceResolver,
         GlamourerDesignCatalogService glamourerDesignCatalog,
+        ActorAnimationCatalogService actorAnimationCatalog,
+        PenumbraIpcService penumbraIpc,
         Action reloadAction)
         : base("任务编辑器##LocalQuestRebornMain")
     {
@@ -106,6 +114,8 @@ public sealed class MainWindow : Window
         this.standaloneRenderListProbe = standaloneRenderListProbe;
         this.gameNpcCatalog = gameNpcCatalog;
         this.glamourerDesignCatalog = glamourerDesignCatalog;
+        this.actorAnimationCatalog = actorAnimationCatalog;
+        this.penumbraIpc = penumbraIpc;
         this.reloadAction = reloadAction;
         this.SizeConstraints = new WindowSizeConstraints
         {
@@ -187,6 +197,7 @@ public sealed class MainWindow : Window
         }
 
         ImGui.EndTabBar();
+        this.DrawAnimationPickerPopup();
     }
 
     private void DrawRuntimeDebug()
@@ -201,6 +212,9 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"Brio Assembly：{this.realNpcSpawn.BrioAssemblyStatus}");
         ImGui.TextWrapped($"Brio IPC：{this.realNpcSpawn.BrioIpcProbeMessage}");
         ImGui.TextWrapped($"Glamourer/Penumbra：{this.realNpcSpawn.GlamourerIpcProbeMessage}");
+        ImGui.TextWrapped($"Penumbra IPC：available={this.penumbraIpc.IsAvailable}, enabled={this.penumbraIpc.IsEnabled}, api={this.penumbraIpc.ApiVersionText}, collections={this.penumbraIpc.Collections.Count}");
+        if (!string.IsNullOrWhiteSpace(this.penumbraIpc.LastError))
+            ImGui.TextWrapped($"Penumbra IPC error：{this.penumbraIpc.LastError}");
         ImGui.TextWrapped($"外观队列：长度 {this.realNpcSpawn.AppearanceQueueLength}，当前 {this.realNpcSpawn.AppearanceQueueCurrentActor}");
         ImGui.TextWrapped($"本地场景物体：{this.localLayoutObjects.LastStatus}");
         ImGui.TextWrapped($"模型 override：{this.localLayoutObjects.LastModelOverrideStatus}");
@@ -261,6 +275,8 @@ public sealed class MainWindow : Window
         var defaultAnimation = (int)Math.Min(currentNpc.DefaultAnimationId, int.MaxValue);
         if (ImGui.InputInt("默认动画 ID", ref defaultAnimation))
             currentNpc.DefaultAnimationId = (uint)Math.Max(0, defaultAnimation);
+        ImGui.SameLine();
+        this.DrawAnimationPickerButton("##NpcDefaultAnimationPicker", ActorAnimationPickerMode.EmoteActionsOnly, id => currentNpc.DefaultAnimationId = id);
         var autoPlay = currentNpc.AutoPlayDefaultAnimation;
         if (ImGui.Checkbox("生成后自动播放默认动画", ref autoPlay))
             currentNpc.AutoPlayDefaultAnimation = autoPlay;
@@ -324,12 +340,99 @@ public sealed class MainWindow : Window
                 ImGui.TextWrapped("MCDF 外观应用接口仍是占位，当前只保存配置。");
                 break;
             case CustomNpcAppearanceSourceType.PenumbraCollection:
-                EditString("Penumbra Collection", appearance.PenumbraCollectionName, 256, value => appearance.PenumbraCollectionName = value);
-                ImGui.TextWrapped("Penumbra collection 会在后续 redraw/apply 管线里使用。");
+                ImGui.TextWrapped("旧版 Penumbra 外观来源已改为下方 NPC 级 Collection 选择器。这里不再单独保存 collection 名称。");
                 break;
         }
 
+        this.DrawNpcPenumbraCollectionSelector(npc);
         EditString("notes/debugInfo", appearance.Notes, 512, value => appearance.Notes = value);
+    }
+
+    private void DrawNpcPenumbraCollectionSelector(CustomNpc npc)
+    {
+        ImGui.Separator();
+        ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "Penumbra 预设组 / Collection");
+        ImGui.TextWrapped($"IPC：available={this.penumbraIpc.IsAvailable}, enabled={this.penumbraIpc.IsEnabled}, api={this.penumbraIpc.ApiVersionText}");
+        ImGui.TextWrapped(this.penumbraIpc.LastStatus);
+        if (!string.IsNullOrWhiteSpace(this.penumbraIpc.LastError))
+            ImGui.TextWrapped($"错误：{this.penumbraIpc.LastError}");
+
+        if (ImGui.Button("重新获取 Penumbra IPC"))
+            this.penumbraIpc.TryConnectOrRefresh("npc ui");
+        ImGui.SameLine();
+        if (ImGui.Button("刷新 Penumbra 预设组"))
+            this.penumbraIpc.RefreshCollections();
+
+        var currentLabel = this.GetNpcPenumbraCollectionLabel(npc);
+        if (ImGui.BeginCombo("该 NPC 启用 Penumbra 哪组预设 / Collection", currentLabel))
+        {
+            if (ImGui.Selectable("不使用 / 不修改 Penumbra", npc.PenumbraMode == PenumbraCollectionMode.DoNotTouch))
+                this.SetNpcPenumbraSelection(npc, PenumbraCollectionMode.DoNotTouch, null, string.Empty);
+            if (ImGui.Selectable("继承默认 / 清除单独分配", npc.PenumbraMode == PenumbraCollectionMode.InheritDefault))
+                this.SetNpcPenumbraSelection(npc, PenumbraCollectionMode.InheritDefault, null, string.Empty);
+
+            var currentId = npc.PenumbraCollectionId;
+            var missingSelection = npc.PenumbraMode == PenumbraCollectionMode.UseCollection &&
+                currentId.HasValue &&
+                this.penumbraIpc.Collections.All(item => item.Id != currentId.Value);
+            if (missingSelection)
+            {
+                ImGui.Separator();
+                ImGui.TextDisabled($"Missing: {npc.PenumbraCollectionNameCache} / {currentId}");
+            }
+
+            if (this.penumbraIpc.Collections.Count > 0)
+                ImGui.Separator();
+
+            foreach (var collection in this.penumbraIpc.Collections)
+            {
+                var selected = npc.PenumbraMode == PenumbraCollectionMode.UseCollection && npc.PenumbraCollectionId == collection.Id;
+                if (ImGui.Selectable($"{collection.Name}##{collection.Id}", selected))
+                    this.SetNpcPenumbraSelection(npc, PenumbraCollectionMode.UseCollection, collection.Id, collection.Name);
+                if (selected)
+                    ImGui.SetItemDefaultFocus();
+            }
+
+            ImGui.EndCombo();
+        }
+
+        if (!this.penumbraIpc.IsAvailable)
+            ImGui.TextDisabled("Penumbra IPC 未连接，插件会自动重试；当前保存值不会被清空。");
+        if (npc.PenumbraMode == PenumbraCollectionMode.UseCollection && npc.PenumbraCollectionId.HasValue)
+            ImGui.TextDisabled($"保存依据：{npc.PenumbraCollectionId}；名称缓存：{npc.PenumbraCollectionNameCache}");
+    }
+
+    private string GetNpcPenumbraCollectionLabel(CustomNpc npc)
+    {
+        return npc.PenumbraMode switch
+        {
+            PenumbraCollectionMode.DoNotTouch => "不使用 / 不修改 Penumbra",
+            PenumbraCollectionMode.InheritDefault => "继承默认 / 清除单独分配",
+            PenumbraCollectionMode.UseCollection => this.GetCollectionDisplayName(npc.PenumbraCollectionId, npc.PenumbraCollectionNameCache),
+            _ => npc.PenumbraMode.ToString(),
+        };
+    }
+
+    private string GetCollectionDisplayName(Guid? id, string nameCache)
+    {
+        if (id == null)
+            return "Missing: 未选择 Collection";
+
+        var found = this.penumbraIpc.Collections.FirstOrDefault(item => item.Id == id.Value);
+        if (found != null)
+            return found.Name;
+
+        return $"Missing: {nameCache} / {id}";
+    }
+
+    private void SetNpcPenumbraSelection(CustomNpc npc, PenumbraCollectionMode mode, Guid? collectionId, string collectionName)
+    {
+        npc.PenumbraMode = mode;
+        npc.PenumbraCollectionId = collectionId;
+        npc.PenumbraCollectionNameCache = collectionName;
+        this.database.Save();
+        if (this.realNpcSpawn.GetActorCountForNpc(npc.Id) > 0)
+            this.realNpcSpawn.ApplyNpcAppearanceForNpc(npc.Id);
     }
 
     private void DrawGlamourerDesignPicker(CustomNpc npc)
@@ -673,6 +776,12 @@ public sealed class MainWindow : Window
         var animationId = (int)Math.Min(actor.CurrentAnimationId == 0 ? actor.DefaultAnimationId : actor.CurrentAnimationId, int.MaxValue);
         if (ImGui.InputInt("此 Actor 动画 ID", ref animationId))
             actor.CurrentAnimationId = (uint)Math.Max(0, animationId);
+        ImGui.SameLine();
+        this.DrawAnimationPickerButton("##ActorCurrentAnimationPicker", ActorAnimationPickerMode.EmoteActionsOnly, id => actor.CurrentAnimationId = id);
+
+        DrawActorRigPresetCombo(actor);
+        ImGui.TextWrapped("动画骨架/Rig：影响动画兼容性，切换后可能需要重建 Actor。当前版本只保存选择，不裸写 skeleton/sklb 指针。");
+        ImGui.TextWrapped($"Rig 状态：{actor.AnimationRigStatus}");
 
         ImGui.TextWrapped($"动画状态：enabled={actor.AnimationEnabled}, current={actor.CurrentAnimationId}, error={(string.IsNullOrWhiteSpace(actor.LastAnimationError) ? "无" : actor.LastAnimationError)}");
         ImGui.TextWrapped($"看向状态：enabled={actor.LookAtPlayerEnabled}, registered={actor.LookAtRegistered}, target={actor.LookAtTargetDebug}, looking={actor.IsLookingAtPlayer}, error={(string.IsNullOrWhiteSpace(actor.LastLookAtError) ? "无" : actor.LastLookAtError)}");
@@ -728,13 +837,19 @@ public sealed class MainWindow : Window
         if (ImGui.Button("添加步骤"))
             actor.ActionSequence.Add(new ActorActionSequenceStep { Name = $"Step {actor.ActionSequence.Count + 1}", DurationSeconds = 3f });
         ImGui.SameLine();
+        if (ImGui.Button("添加 Spawn"))
+            actor.ActionSequence.Add(new ActorActionSequenceStep { Name = "Spawn", Kind = ActorActionStepKind.Spawn, DurationSeconds = 0.1f });
+        ImGui.SameLine();
+        if (ImGui.Button("添加 Despawn"))
+            actor.ActionSequence.Add(new ActorActionSequenceStep { Name = "Despawn", Kind = ActorActionStepKind.Despawn, DurationSeconds = 1f, HideBubbleOnDespawn = true });
+        ImGui.SameLine();
         if (ImGui.Button("从当前默认动作创建步骤"))
         {
             actor.ActionSequence.Add(new ActorActionSequenceStep
             {
                 Name = $"Default {actor.DefaultAnimationId}",
-                Kind = ActorActionStepKind.Timeline,
-                TimelineId = (ushort)Math.Clamp(actor.DefaultAnimationId, 0, ushort.MaxValue),
+                Kind = ActorActionStepKind.Action,
+                AnimationId = (ushort)Math.Clamp(actor.DefaultAnimationId, 0, ushort.MaxValue),
                 DurationSeconds = 3f,
             });
         }
@@ -751,38 +866,34 @@ public sealed class MainWindow : Window
                 EditString("步骤名称", step.Name, 96, value => step.Name = value);
                 DrawActorActionStepKindCombo(step);
 
-                if (step.Kind == ActorActionStepKind.Emote)
+                if (step.Kind == ActorActionStepKind.Action)
                 {
-                    var emoteId = (int)step.EmoteId;
-                    if (ImGui.InputInt("EmoteId", ref emoteId))
-                        step.EmoteId = (ushort)Math.Clamp(emoteId, 0, ushort.MaxValue);
+                    var animationStepId = (int)step.AnimationId;
+                    if (ImGui.InputInt("动画ID / ActionTimelineId", ref animationStepId))
+                        step.AnimationId = (ushort)Math.Clamp(animationStepId, 0, ushort.MaxValue);
+                    ImGui.SameLine();
+                    this.DrawAnimationPickerButton("##StepAnimationPicker", ActorAnimationPickerMode.EmoteActionsOnly, id => step.AnimationId = id);
                 }
-                else if (step.Kind == ActorActionStepKind.Timeline)
+                else if (step.Kind == ActorActionStepKind.Despawn)
                 {
-                    var timelineId = (int)step.TimelineId;
-                    if (ImGui.InputInt("TimelineId", ref timelineId))
-                        step.TimelineId = (ushort)Math.Clamp(timelineId, 0, ushort.MaxValue);
+                    ImGui.TextDisabled("Despawn 只隐藏模型，不删除 Actor。循环播放时后续 Spawn 会重新显示。");
+                    var hideBubble = step.HideBubbleOnDespawn;
+                    if (ImGui.Checkbox("Despawn 时隐藏气泡", ref hideBubble))
+                        step.HideBubbleOnDespawn = hideBubble;
+                }
+                else if (step.Kind == ActorActionStepKind.Spawn)
+                {
+                    ImGui.TextDisabled("Spawn 只恢复已有 Actor 的显示，不创建新 Actor。");
                 }
 
                 var duration = step.DurationSeconds;
                 if (ImGui.InputFloat("DurationSeconds", ref duration))
                     step.DurationSeconds = Math.Max(0f, duration);
 
-                var loopEmote = step.LoopEmote;
-                if (ImGui.Checkbox("LoopEmote", ref loopEmote))
-                    step.LoopEmote = loopEmote;
-                ImGui.SameLine();
-                var stayInPose = step.StayInPose;
-                if (ImGui.Checkbox("StayInPose", ref stayInPose))
-                    step.StayInPose = stayInPose;
+                if (step.Kind == ActorActionStepKind.Action)
+                    this.DrawActorActionStepAnimationOptions(step);
 
-                var showBubble = step.ShowBubbleOnEnter;
-                if (ImGui.Checkbox("进入步骤时显示气泡", ref showBubble))
-                    step.ShowBubbleOnEnter = showBubble;
-                EditString("BubbleText", step.BubbleText, 240, value => step.BubbleText = value);
-                var bubbleDuration = step.BubbleDurationSeconds;
-                if (ImGui.InputFloat("BubbleDurationSeconds", ref bubbleDuration))
-                    step.BubbleDurationSeconds = Math.Max(0f, bubbleDuration);
+                DrawActorActionStepBubbleOptions(step);
 
                 ImGui.BeginDisabled(i == 0);
                 if (ImGui.Button("上移"))
@@ -837,6 +948,10 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"模板 displayName：{npc.Appearance.DisplayName}");
         ImGui.TextWrapped($"Glamourer Design：{npc.Appearance.GlamourerDesignId}");
         ImGui.TextWrapped($"GameNpc：{npc.Appearance.GameNpcName} / baseId={npc.Appearance.GameNpcBaseId} / modelId={npc.Appearance.GameNpcModelId}");
+        ImGui.TextWrapped($"Penumbra：mode={actor.PenumbraMode}, collection={this.GetCollectionDisplayName(actor.PenumbraCollectionId, actor.PenumbraCollectionNameCache)}");
+        ImGui.TextWrapped($"Penumbra result：{(string.IsNullOrWhiteSpace(actor.LastPenumbraCollectionResult) ? "未应用" : actor.LastPenumbraCollectionResult)}");
+        if (!string.IsNullOrWhiteSpace(actor.LastPenumbraCollectionError))
+            ImGui.TextWrapped($"Penumbra error：{actor.LastPenumbraCollectionError}");
         ImGui.TextWrapped($"最后结果：{(string.IsNullOrWhiteSpace(actor.LastAppearanceApplyResult) ? "未应用" : actor.LastAppearanceApplyResult)}");
         ImGui.TextWrapped($"最后错误：{(string.IsNullOrWhiteSpace(actor.LastAppearanceError) ? "无" : actor.LastAppearanceError)}");
 
@@ -871,6 +986,167 @@ public sealed class MainWindow : Window
         }
 
         ImGui.EndCombo();
+    }
+
+    private static void DrawActorRigPresetCombo(RuntimeActorInstance actor)
+    {
+        var preset = actor.AnimationRigPreset;
+        if (!ImGui.BeginCombo("动画骨架 / Rig", preset.ToString()))
+            return;
+
+        foreach (var value in Enum.GetValues<ActorAnimationRigPreset>())
+        {
+            var selected = preset == value;
+            if (ImGui.Selectable(value.ToString(), selected))
+            {
+                actor.AnimationRigPreset = value;
+                actor.AnimationRigStatus = value == ActorAnimationRigPreset.Current
+                    ? "Current"
+                    : "已保存 Rig 预设；需要通过安全 Actor recreate/appearance apply 路径后生效。";
+            }
+
+            if (selected)
+                ImGui.SetItemDefaultFocus();
+        }
+
+        ImGui.EndCombo();
+    }
+
+    private void DrawActorActionStepAnimationOptions(ActorActionSequenceStep step)
+    {
+        var loopAnimation = step.LoopAnimation;
+        if (ImGui.Checkbox("LoopAnimation", ref loopAnimation))
+            step.LoopAnimation = loopAnimation;
+        ImGui.SameLine();
+        var stayInPose = step.StayInPose;
+        if (ImGui.Checkbox("StayInPose", ref stayInPose))
+            step.StayInPose = stayInPose;
+
+        var repeatAfter = step.RepeatAfterSeconds;
+        if (ImGui.InputFloat("RepeatAfterSeconds", ref repeatAfter))
+            step.RepeatAfterSeconds = Math.Max(0f, repeatAfter);
+
+        var expressionId = (int)step.ExpressionId;
+        if (ImGui.InputInt("表情ID / ExpressionTimelineId", ref expressionId))
+            step.ExpressionId = (ushort)Math.Clamp(expressionId, 0, ushort.MaxValue);
+        ImGui.SameLine();
+        this.DrawAnimationPickerButton("##StepExpressionPicker", ActorAnimationPickerMode.ExpressionCandidates, id => step.ExpressionId = id);
+
+        var playExpression = step.PlayExpressionWithAction;
+        if (ImGui.Checkbox("随动作播放表情", ref playExpression))
+            step.PlayExpressionWithAction = playExpression;
+        ImGui.SameLine();
+        var loopExpression = step.LoopExpression;
+        if (ImGui.Checkbox("LoopExpression", ref loopExpression))
+            step.LoopExpression = loopExpression;
+
+        DrawExpressionLayerCombo(step);
+
+        var expressionDelay = step.ExpressionDelaySeconds;
+        if (ImGui.InputFloat("ExpressionDelaySeconds", ref expressionDelay))
+            step.ExpressionDelaySeconds = Math.Max(0f, expressionDelay);
+        var expressionDuration = step.ExpressionDurationSeconds;
+        if (ImGui.InputFloat("ExpressionDurationSeconds", ref expressionDuration))
+            step.ExpressionDurationSeconds = Math.Max(0f, expressionDuration);
+        var expressionWeight = step.ExpressionWeight;
+        if (ImGui.SliderFloat("ExpressionWeight", ref expressionWeight, 0f, 1f))
+            step.ExpressionWeight = Math.Clamp(expressionWeight, 0f, 1f);
+
+        ImGui.TextDisabled("提示：表情会交给游戏 ActionTimeline slot 自动归位；不是所有 ID 都能与基础动作叠加。");
+    }
+
+    private static void DrawExpressionLayerCombo(ActorActionSequenceStep step)
+    {
+        if (!ImGui.BeginCombo("ExpressionLayer", step.ExpressionLayer.ToString()))
+            return;
+
+        foreach (var layer in Enum.GetValues<ActorExpressionLayer>())
+        {
+            var selected = step.ExpressionLayer == layer;
+            if (ImGui.Selectable(layer.ToString(), selected))
+                step.ExpressionLayer = layer;
+            if (selected)
+                ImGui.SetItemDefaultFocus();
+        }
+
+        ImGui.EndCombo();
+    }
+
+    private static void DrawActorActionStepBubbleOptions(ActorActionSequenceStep step)
+    {
+        var allowLookAt = step.AllowLookAtDuringStep;
+        if (ImGui.Checkbox("此步骤允许 NativeLookAt", ref allowLookAt))
+            step.AllowLookAtDuringStep = allowLookAt;
+
+        var showBubble = step.ShowBubbleOnEnter;
+        if (ImGui.Checkbox("进入步骤时显示原生气泡", ref showBubble))
+            step.ShowBubbleOnEnter = showBubble;
+        EditString("BubbleText", step.BubbleText, 240, value => step.BubbleText = value);
+        var autoDuration = step.BubbleUseAutoDuration;
+        if (ImGui.Checkbox("气泡自动时长", ref autoDuration))
+            step.BubbleUseAutoDuration = autoDuration;
+        ImGui.SameLine();
+        var bubbleDuration = step.BubbleDurationSeconds;
+        if (ImGui.InputFloat("BubbleDurationSeconds", ref bubbleDuration))
+            step.BubbleDurationSeconds = Math.Max(0f, bubbleDuration);
+    }
+
+    private void DrawAnimationPickerButton(string id, ActorAnimationPickerMode mode, Action<ushort> apply)
+    {
+        if (ImGui.SmallButton($"🔎{id}"))
+        {
+            this.animationPickerMode = mode;
+            this.animationPickerTitle = mode switch
+            {
+                ActorAnimationPickerMode.ExpressionCandidates => "选择表情 / ExpressionTimelineId",
+                ActorAnimationPickerMode.AllActionTimelines => "选择 ActionTimeline",
+                _ => "选择游戏情感动作",
+            };
+            this.animationPickerApply = apply;
+            this.animationPickerSearchText = string.Empty;
+            ImGui.OpenPopup("AnimationPickerPopup##LocalQuestReborn");
+        }
+    }
+
+    private void DrawAnimationPickerPopup()
+    {
+        if (!ImGui.BeginPopupModal("AnimationPickerPopup##LocalQuestReborn", ImGuiWindowFlags.AlwaysAutoResize))
+            return;
+
+        ImGui.TextUnformatted(this.animationPickerTitle);
+        ImGui.InputText("搜索", ref this.animationPickerSearchText, 128);
+        ImGui.SameLine();
+        if (ImGui.Button("刷新列表"))
+            this.actorAnimationCatalog.Refresh();
+
+        ImGui.Separator();
+        var entries = this.actorAnimationCatalog.Search(this.animationPickerMode, this.animationPickerSearchText, 400).ToList();
+        ImGui.TextDisabled($"显示 {entries.Count} 条。仍可关闭窗口后手动输入任意 ID。");
+        if (ImGui.BeginChild("AnimationPickerList", new Vector2(680f, 360f), true))
+        {
+            foreach (var entry in entries)
+            {
+                var label = $"{entry.ActionTimelineId} | {entry.Name} | {entry.Command} | {entry.SourceType}/{entry.Purpose}##{entry.SourceType}{entry.SourceRowId}{entry.ActionTimelineId}{entry.Purpose}";
+                if (ImGui.Selectable(label))
+                {
+                    this.animationPickerApply?.Invoke(entry.ActionTimelineId);
+                    this.animationPickerApply = null;
+                    ImGui.CloseCurrentPopup();
+                }
+
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip($"ActionTimelineId={entry.ActionTimelineId}\nSourceRow={entry.SourceRowId}\nKey={entry.Key}\nSlot={entry.Slot}\nLoopCandidate={entry.IsLoopCandidate}");
+            }
+        }
+
+        ImGui.EndChild();
+        if (ImGui.Button("关闭"))
+        {
+            this.animationPickerApply = null;
+            ImGui.CloseCurrentPopup();
+        }
+
+        ImGui.EndPopup();
     }
 
     private void DrawActorBatchSpawnControls(CustomNpc npc)

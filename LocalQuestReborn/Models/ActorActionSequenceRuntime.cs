@@ -12,6 +12,12 @@ public sealed class ActorActionSequenceRuntime
 
     public bool BubbleShown { get; set; }
 
+    public bool ExpressionPlayed { get; set; }
+
+    public float LastAnimationRepeatAt { get; set; }
+
+    public float LastExpressionRepeatAt { get; set; }
+
     public float LoopDelayElapsed { get; set; }
 
     public uint Generation { get; set; }

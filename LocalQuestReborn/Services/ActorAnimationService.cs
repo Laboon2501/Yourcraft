@@ -23,6 +23,99 @@ public sealed class ActorAnimationService
     public bool PlayTransientTimeline(RuntimeActorInstance actor, uint animationId, out string reason)
         => this.PlayTimeline(actor, animationId, updateDefaultAnimation: false, out reason);
 
+    public bool PlayExpressionTimeline(RuntimeActorInstance actor, uint expressionId, ActorExpressionLayer layer, out string reason)
+    {
+        if (expressionId == 0 || layer == ActorExpressionLayer.None)
+        {
+            reason = "ExpressionId is 0 or expression layer is None.";
+            return false;
+        }
+
+        if (!this.brioAssemblyBridge.EnableUnsafeNativeWrites)
+        {
+            reason = "UnsafeMode=false, native expression write skipped.";
+            actor.LastAnimationError = reason;
+            return false;
+        }
+
+        if (!TryReadAddress(actor, out var address) || address == 0)
+        {
+            reason = $"Actor address unavailable: {actor.Address}";
+            actor.LastAnimationError = reason;
+            return false;
+        }
+
+        try
+        {
+            unsafe
+            {
+                var character = (FFXIVClientStructs.FFXIV.Client.Game.Character.Character*)address;
+                character->Timeline.TimelineSequencer.PlayTimeline((ushort)expressionId);
+            }
+
+            actor.LastAnimationError = string.Empty;
+            actor.LastAnimationResult = $"Expression timeline played: {expressionId} ({layer})";
+            reason = actor.LastAnimationResult;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            reason = $"Expression timeline failed: {ex.Message}";
+            actor.LastAnimationError = reason;
+            actor.LastAnimationResult = "Expression failed";
+            this.log.Warning(ex, "Failed to play actor expression timeline. RuntimeId={RuntimeId}, ExpressionId={ExpressionId}", actor.RuntimeId, expressionId);
+            return false;
+        }
+    }
+
+    public bool SetSequenceVisibility(RuntimeActorInstance actor, bool visible, out string reason)
+    {
+        if (!this.brioAssemblyBridge.EnableUnsafeNativeWrites)
+        {
+            reason = "UnsafeMode=false, native draw visibility write skipped.";
+            actor.LastAnimationError = reason;
+            return false;
+        }
+
+        if (!TryReadAddress(actor, out var address) || address == 0)
+        {
+            reason = $"Actor address unavailable: {actor.Address}";
+            actor.LastAnimationError = reason;
+            return false;
+        }
+
+        try
+        {
+            unsafe
+            {
+                var character = (FFXIVClientStructs.FFXIV.Client.Game.Character.Character*)address;
+                if (visible)
+                {
+                    character->Alpha = 1f;
+                    character->GameObject.EnableDraw();
+                }
+                else
+                {
+                    character->Alpha = 0f;
+                    character->GameObject.DisableDraw();
+                }
+            }
+
+            actor.VisibilityRuntimeState = visible ? ActorVisibilityRuntimeState.Visible : ActorVisibilityRuntimeState.SequenceHidden;
+            actor.LastAnimationError = string.Empty;
+            actor.LastAnimationResult = visible ? "Actor sequence visibility restored." : "Actor hidden by action sequence.";
+            reason = actor.LastAnimationResult;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            reason = $"Actor sequence visibility write failed: {ex.Message}";
+            actor.LastAnimationError = reason;
+            this.log.Warning(ex, "Failed to update actor sequence visibility. RuntimeId={RuntimeId}, Visible={Visible}", actor.RuntimeId, visible);
+            return false;
+        }
+    }
+
     private bool PlayTimeline(RuntimeActorInstance actor, uint animationId, bool updateDefaultAnimation, out string reason)
     {
         if (updateDefaultAnimation)

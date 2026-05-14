@@ -38,6 +38,12 @@ public sealed class CustomNpc
 
     public bool RespawnAfterGpose { get; set; } = true;
 
+    public PenumbraCollectionMode PenumbraMode { get; set; } = PenumbraCollectionMode.DoNotTouch;
+
+    public Guid? PenumbraCollectionId { get; set; }
+
+    public string PenumbraCollectionNameCache { get; set; } = string.Empty;
+
     public string Notes { get; set; } = string.Empty;
 
     public CustomNpcHostMode HostMode { get; set; } = CustomNpcHostMode.VirtualActor;

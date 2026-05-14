@@ -30,7 +30,10 @@ public sealed class ActorLookAtService
         foreach (var actor in actors)
         {
             var lookAtRadius = actor.LookAtRadius > 0.1f ? actor.LookAtRadius : 8f;
-            if (!actor.LookAtPlayerEnabled || !actor.IsValid)
+            if (!actor.LookAtPlayerEnabled ||
+                !actor.IsValid ||
+                actor.VisibilityRuntimeState == ActorVisibilityRuntimeState.SequenceHidden ||
+                actor.LookAtPausedByActionSequence)
             {
                 MarkUnregistered(actor);
                 continue;

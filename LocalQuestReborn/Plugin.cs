@@ -31,12 +31,14 @@ public sealed class Plugin : IDalamudPlugin
     private readonly BrioCapabilityBridgeService brioCapabilityBridge;
     private readonly GlamourerIpcProbeService glamourerIpcProbe;
     private readonly GlamourerIpcBridgeService glamourerIpcBridge;
+    private readonly PenumbraIpcService penumbraIpc;
     private readonly GlamourerStateApplyService glamourerStateApply;
     private readonly BrioHumanoidAppearanceApplyService brioHumanoidAppearanceApply;
     private readonly AppearanceApplyService appearanceApply;
     private readonly AppearanceApplyQueue appearanceApplyQueue;
     private readonly ActorAnimationService actorAnimation;
-    private readonly ActorBubbleService actorBubble;
+    private readonly ActorAnimationCatalogService actorAnimationCatalog;
+    private readonly ActorNativeBubbleService actorBubble;
     private readonly ActorActionSequenceService actorActionSequence;
     private readonly ActorLookAtService actorLookAt;
     private readonly PlayerLookAtActorService playerLookAtActor;
@@ -110,15 +112,17 @@ public sealed class Plugin : IDalamudPlugin
         this.brioCapabilityBridge = new BrioCapabilityBridgeService(log);
         this.glamourerIpcProbe = new GlamourerIpcProbeService(pluginInterface, log);
         this.glamourerIpcBridge = new GlamourerIpcBridgeService(pluginInterface, log);
+        this.penumbraIpc = new PenumbraIpcService(pluginInterface, log);
         this.glamourerStateApply = new GlamourerStateApplyService(pluginInterface, log);
         this.brioHumanoidAppearanceApply = new BrioHumanoidAppearanceApplyService(dataManager, log);
         this.gameNpcCatalog = new GameNpcCatalogService(targetManager, clientState, dataManager, log);
         this.gameNpcAppearanceResolver = new GameNpcAppearanceResolver(dataManager, log);
         this.gameNpcAppearanceApply = new GameNpcAppearanceApplyService(this.brioHumanoidAppearanceApply, this.glamourerStateApply, log);
-        this.appearanceApply = new AppearanceApplyService(pluginInterface, this.glamourerIpcProbe, this.glamourerIpcBridge, this.gameNpcAppearanceResolver, this.gameNpcAppearanceApply, log);
+        this.appearanceApply = new AppearanceApplyService(pluginInterface, this.glamourerIpcProbe, this.glamourerIpcBridge, this.penumbraIpc, this.gameNpcAppearanceResolver, this.gameNpcAppearanceApply, log);
         this.appearanceApplyQueue = new AppearanceApplyQueue(this.database, this.runtimeActorRegistry, this.appearanceApply, log);
         this.actorAnimation = new ActorAnimationService(this.brioAssemblyBridge, log);
-        this.actorBubble = new ActorBubbleService();
+        this.actorAnimationCatalog = new ActorAnimationCatalogService(dataManager, log);
+        this.actorBubble = new ActorNativeBubbleService(this.brioAssemblyBridge, log);
         this.actorActionSequence = new ActorActionSequenceService(this.actorAnimation, this.actorBubble);
         this.actorLookAt = new ActorLookAtService(objectTable, this.brioAssemblyBridge, log);
         this.playerLookAtActor = new PlayerLookAtActorService(objectTable, this.brioAssemblyBridge, log);
@@ -131,7 +135,7 @@ public sealed class Plugin : IDalamudPlugin
         this.experimentalEventNpcService = new ExperimentalEventNpcService(this.brioAssemblyBridge, this.nativeGameObjectDump, log);
         this.nativeTalkProbe = new NativeTalkProbeService(targetManager);
         this.eventNpcHost = new EventNpcHostService(targetManager, clientState, this.database);
-        this.realNpcSpawn = new RealNpcSpawnService(clientState, targetManager, this.database, this.runtimeActorRegistry, this.brioNpcBridge, this.brioAssemblyBridge, this.brioCapabilityBridge, this.appearanceApply, this.appearanceApplyQueue, this.actorAnimation, this.actorActionSequence, this.actorLookAt, this.playerLookAtActor, this.actorValidityMonitor, this.actorNameplate, this.actorTargetability, this.targetProbe, this.nativeNpcProbe, this.nativeGameObjectDump, this.experimentalEventNpcService, this.nativeTalkProbe, this.glamourerIpcProbe, this.glamourerIpcBridge, log);
+        this.realNpcSpawn = new RealNpcSpawnService(clientState, targetManager, this.database, this.runtimeActorRegistry, this.brioNpcBridge, this.brioAssemblyBridge, this.brioCapabilityBridge, this.appearanceApply, this.appearanceApplyQueue, this.actorAnimation, this.actorActionSequence, this.actorLookAt, this.playerLookAtActor, this.actorValidityMonitor, this.actorNameplate, this.actorTargetability, this.targetProbe, this.nativeNpcProbe, this.nativeGameObjectDump, this.experimentalEventNpcService, this.nativeTalkProbe, this.glamourerIpcProbe, this.glamourerIpcBridge, this.penumbraIpc, log);
         this.realNpcSpawn.SetEventNpcHostService(this.eventNpcHost);
         this.brioPropBridge = new BrioPropBridgeService(this.brioAssemblyBridge, log);
         this.propModel = new PropModelService(this.brioAssemblyBridge, log);
@@ -160,10 +164,9 @@ public sealed class Plugin : IDalamudPlugin
         this.lastLocalLightGposeState = clientState.IsGPosing;
         this.lastLocalLightPlayerAvailable = this.runtime.PlayerPosition.HasValue;
 
-        this.mainWindow = new MainWindow(this.configuration, this.database, this.runtime, this.experimentalNpc, this.realNpcSpawn, this.propRuntime, this.layoutProbe, this.layoutTransform, this.layoutClone, this.layerDump, this.localLayoutObjects, this.localLights, this.bgPartVisualProbe, this.rotationMatrixExperiment, this.bgPartVisualRescue, this.visualOnlyRotationDeepProbe, this.drawObjectUpdateDirtyProbe, this.graphicsSceneObjectTransform, this.bgPartCollisionSourceProbe, this.animatedBgPartControllerProbe, this.standaloneBgObjectProbe, this.standaloneRenderListProbe, this.meddleSceneProbe, this.gameNpcCatalog, this.gameNpcAppearanceResolver, this.glamourerDesignCatalog, this.Reload);
+        this.mainWindow = new MainWindow(this.configuration, this.database, this.runtime, this.experimentalNpc, this.realNpcSpawn, this.propRuntime, this.layoutProbe, this.layoutTransform, this.layoutClone, this.layerDump, this.localLayoutObjects, this.localLights, this.bgPartVisualProbe, this.rotationMatrixExperiment, this.bgPartVisualRescue, this.visualOnlyRotationDeepProbe, this.drawObjectUpdateDirtyProbe, this.graphicsSceneObjectTransform, this.bgPartCollisionSourceProbe, this.animatedBgPartControllerProbe, this.standaloneBgObjectProbe, this.standaloneRenderListProbe, this.meddleSceneProbe, this.gameNpcCatalog, this.gameNpcAppearanceResolver, this.glamourerDesignCatalog, this.actorAnimationCatalog, this.penumbraIpc, this.Reload);
 
         this.windowSystem.AddWindow(this.mainWindow);
-        this.windowSystem.AddWindow(new ActorBubbleOverlayWindow(this.actorBubble, this.realNpcSpawn, gameGui));
 
         this.commandManager.AddHandler(CommandName, new CommandInfo(this.OnCommand)
         {
@@ -221,6 +224,7 @@ public sealed class Plugin : IDalamudPlugin
         this.standaloneBgObjectProbe.MarkAllInvalid("插件卸载：Standalone 对象没有安全销毁入口，已停止写入并标记失效。");
         this.localLayoutObjects.RestoreAllAndClear();
         this.realNpcSpawn.DespawnAll();
+        this.penumbraIpc.Dispose();
         this.propRuntime.DespawnAll();
         this.brioAssemblyBridge.DespawnAll(out _);
         this.windowSystem.RemoveAllWindows();
@@ -249,6 +253,9 @@ public sealed class Plugin : IDalamudPlugin
     private void OnFrameworkUpdate(IFramework framework)
     {
         this.runtime.Update();
+        this.penumbraIpc.Update();
+        if (this.penumbraIpc.ConsumeReapplyRequested())
+            this.realNpcSpawn.ApplyAllNpcAppearances();
         this.realNpcSpawn.Update();
         this.localLayoutObjects.Update();
         this.localLights.Update();

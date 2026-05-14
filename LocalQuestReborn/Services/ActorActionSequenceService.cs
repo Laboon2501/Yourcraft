@@ -8,11 +8,11 @@ public sealed class ActorActionSequenceService
     private const float MaxDeltaSeconds = 0.25f;
 
     private readonly ActorAnimationService animationService;
-    private readonly ActorBubbleService bubbleService;
+    private readonly ActorNativeBubbleService bubbleService;
     private readonly Dictionary<string, ActorActionSequenceRuntime> runtimes = new(StringComparer.OrdinalIgnoreCase);
     private DateTime lastUpdateAt = DateTime.UtcNow;
 
-    public ActorActionSequenceService(ActorAnimationService animationService, ActorBubbleService bubbleService)
+    public ActorActionSequenceService(ActorAnimationService animationService, ActorNativeBubbleService bubbleService)
     {
         this.animationService = animationService;
         this.bubbleService = bubbleService;
@@ -29,13 +29,13 @@ public sealed class ActorActionSequenceService
         {
             if (!actor.EnableActionSequence || actor.ActionSequence.Count == 0)
             {
-                this.StopRuntime(actor.RuntimeId, clearBubble: false);
+                this.StopActorIfNeeded(actor, clearBubble: false, restoreVisibility: true);
                 continue;
             }
 
             if (!actor.IsValid || actor.CharacterObject == null)
             {
-                this.StopRuntime(actor.RuntimeId, clearBubble: true);
+                this.StopActorIfNeeded(actor, clearBubble: true, restoreVisibility: false);
                 actor.ActionSequenceStatus = "Actor invalid; sequence paused.";
                 continue;
             }
@@ -52,14 +52,13 @@ public sealed class ActorActionSequenceService
 
     public void Reset(RuntimeActorInstance actor)
     {
-        this.runtimes.Remove(actor.RuntimeId);
-        this.bubbleService.Clear(actor.RuntimeId);
+        this.StopActorIfNeeded(actor, clearBubble: true, restoreVisibility: true);
         actor.ActionSequenceStatus = "Sequence reset.";
         actor.LastActionSequenceError = string.Empty;
     }
 
     public void Stop(RuntimeActorInstance actor)
-        => this.StopRuntime(actor.RuntimeId, clearBubble: true);
+        => this.StopActorIfNeeded(actor, clearBubble: true, restoreVisibility: true);
 
     public void StopAll()
     {
@@ -76,7 +75,12 @@ public sealed class ActorActionSequenceService
             return false;
         }
 
-        var success = this.EnterStep(actor, step, testOnly: true, out reason);
+        var runtime = this.GetRuntime(actor);
+        runtime.ExpressionPlayed = false;
+        runtime.BubbleShown = false;
+        runtime.LastAnimationRepeatAt = 0f;
+        runtime.LastExpressionRepeatAt = 0f;
+        var success = this.EnterStep(actor, step, runtime, testOnly: true, out reason);
         actor.ActionSequenceStatus = success ? $"Tested step: {step.Name}" : "Step test failed.";
         return success;
     }
@@ -107,6 +111,9 @@ public sealed class ActorActionSequenceService
             runtime.CurrentStepElapsed = 0f;
             runtime.StepEntered = false;
             runtime.BubbleShown = false;
+            runtime.ExpressionPlayed = false;
+            runtime.LastAnimationRepeatAt = 0f;
+            runtime.LastExpressionRepeatAt = 0f;
             runtime.LoopDelayElapsed = 0f;
             runtime.Generation++;
         }
@@ -114,59 +121,67 @@ public sealed class ActorActionSequenceService
         var step = actor.ActionSequence[runtime.CurrentStepIndex];
         if (!runtime.StepEntered)
         {
-            if (!this.EnterStep(actor, step, testOnly: false, out var reason))
+            if (!this.EnterStep(actor, step, runtime, testOnly: false, out var reason))
             {
                 actor.LastActionSequenceError = reason;
                 actor.ActionSequenceStatus = $"Step {runtime.CurrentStepIndex + 1} failed: {reason}";
-                runtime.CurrentStepIndex++;
-                runtime.CurrentStepElapsed = 0f;
-                runtime.StepEntered = false;
-                runtime.BubbleShown = false;
+                MoveNext(runtime);
                 return;
             }
 
             runtime.StepEntered = true;
-            runtime.BubbleShown = step.ShowBubbleOnEnter && !string.IsNullOrWhiteSpace(step.BubbleText);
         }
 
         runtime.CurrentStepElapsed += delta;
+        this.UpdateStep(actor, step, runtime);
         actor.ActionSequenceStatus = $"Step {runtime.CurrentStepIndex + 1}/{actor.ActionSequence.Count}: {step.Name} ({runtime.CurrentStepElapsed:F1}/{StepDuration(step):F1}s)";
         if (runtime.CurrentStepElapsed < StepDuration(step))
             return;
 
         this.ExitStep(actor, step);
-        runtime.CurrentStepIndex++;
-        runtime.CurrentStepElapsed = 0f;
-        runtime.StepEntered = false;
-        runtime.BubbleShown = false;
+        MoveNext(runtime);
     }
 
-    private bool EnterStep(RuntimeActorInstance actor, ActorActionSequenceStep step, bool testOnly, out string reason)
+    private bool EnterStep(RuntimeActorInstance actor, ActorActionSequenceStep step, ActorActionSequenceRuntime runtime, bool testOnly, out string reason)
     {
         reason = string.Empty;
+        runtime.BubbleShown = false;
+        runtime.ExpressionPlayed = false;
+        runtime.LastAnimationRepeatAt = 0f;
+        runtime.LastExpressionRepeatAt = 0f;
+        actor.LookAtPausedByActionSequence = !step.AllowLookAtDuringStep || actor.VisibilityRuntimeState == ActorVisibilityRuntimeState.SequenceHidden;
+
         switch (step.Kind)
         {
-            case ActorActionStepKind.Emote:
-                if (step.EmoteId == 0)
+            case ActorActionStepKind.Spawn:
+                if (!this.animationService.SetSequenceVisibility(actor, true, out reason))
+                    return false;
+                actor.LookAtPausedByActionSequence = !step.AllowLookAtDuringStep;
+                if (actor.DefaultAnimationId > 0)
+                    this.animationService.PlayTransientTimeline(actor, actor.DefaultAnimationId, out _);
+                break;
+            case ActorActionStepKind.Despawn:
+                if (step.HideBubbleOnDespawn)
+                    this.bubbleService.Clear(actor);
+                if (!this.animationService.SetSequenceVisibility(actor, false, out reason))
+                    return false;
+                actor.LookAtPausedByActionSequence = true;
+                break;
+            case ActorActionStepKind.Action:
+                if (actor.VisibilityRuntimeState == ActorVisibilityRuntimeState.SequenceHidden)
+                    break;
+                if (step.AnimationId == 0)
                 {
-                    reason = "EmoteId is 0.";
+                    reason = "AnimationId is 0.";
                     return false;
                 }
 
-                if (!this.animationService.PlayTransientTimeline(actor, step.EmoteId, out reason))
+                if (!this.animationService.PlayTransientTimeline(actor, step.AnimationId, out reason))
                     return false;
                 break;
-            case ActorActionStepKind.Timeline:
-                if (step.TimelineId == 0)
-                {
-                    reason = "TimelineId is 0.";
-                    return false;
-                }
-
-                if (!this.animationService.PlayTransientTimeline(actor, step.TimelineId, out reason))
-                    return false;
-                break;
-            case ActorActionStepKind.ResetToDefault:
+            case ActorActionStepKind.ResetToDefaultAction:
+                if (actor.VisibilityRuntimeState == ActorVisibilityRuntimeState.SequenceHidden)
+                    break;
                 if (actor.DefaultAnimationId > 0)
                 {
                     if (!this.animationService.Play(actor, actor.DefaultAnimationId, out reason))
@@ -178,7 +193,7 @@ public sealed class ActorActionSequenceService
                 }
                 break;
             case ActorActionStepKind.Idle:
-                if (!this.animationService.Stop(actor, out reason))
+                if (actor.VisibilityRuntimeState != ActorVisibilityRuntimeState.SequenceHidden && !this.animationService.Stop(actor, out reason))
                     return false;
                 break;
             case ActorActionStepKind.Wait:
@@ -188,8 +203,23 @@ public sealed class ActorActionSequenceService
                 return false;
         }
 
-        if (step.ShowBubbleOnEnter && !string.IsNullOrWhiteSpace(step.BubbleText))
-            this.bubbleService.Show(actor, step.BubbleText, step.BubbleDurationSeconds);
+        if (step.ShowBubbleOnEnter &&
+            !string.IsNullOrWhiteSpace(step.BubbleText) &&
+            actor.VisibilityRuntimeState != ActorVisibilityRuntimeState.SequenceHidden)
+        {
+            this.bubbleService.Show(actor, step.BubbleText, step.BubbleDurationSeconds, step.BubbleUseAutoDuration);
+            runtime.BubbleShown = true;
+        }
+
+        if (step.Kind == ActorActionStepKind.Action &&
+            step.PlayExpressionWithAction &&
+            step.ExpressionId != 0 &&
+            step.ExpressionDelaySeconds <= 0f &&
+            actor.VisibilityRuntimeState != ActorVisibilityRuntimeState.SequenceHidden)
+        {
+            runtime.ExpressionPlayed = this.animationService.PlayExpressionTimeline(actor, step.ExpressionId, step.ExpressionLayer, out _);
+            runtime.LastExpressionRepeatAt = 0f;
+        }
 
         actor.LastActionSequenceError = string.Empty;
         if (testOnly)
@@ -197,18 +227,48 @@ public sealed class ActorActionSequenceService
         return true;
     }
 
-    private void ExitStep(RuntimeActorInstance actor, ActorActionSequenceStep step)
+    private void UpdateStep(RuntimeActorInstance actor, ActorActionSequenceStep step, ActorActionSequenceRuntime runtime)
     {
-        if (step.StayInPose)
+        if (step.Kind != ActorActionStepKind.Action || actor.VisibilityRuntimeState == ActorVisibilityRuntimeState.SequenceHidden)
             return;
 
-        if (step.Kind is ActorActionStepKind.Emote or ActorActionStepKind.Timeline)
+        var animationRepeat = step.RepeatAfterSeconds > 0f ? step.RepeatAfterSeconds : StepDuration(step);
+        if (step.LoopAnimation && step.AnimationId != 0 && animationRepeat > 0.05f && runtime.CurrentStepElapsed - runtime.LastAnimationRepeatAt >= animationRepeat)
         {
-            if (actor.DefaultAnimationId > 0)
-                this.animationService.Play(actor, actor.DefaultAnimationId, out _);
-            else
-                this.animationService.Stop(actor, out _);
+            this.animationService.PlayTransientTimeline(actor, step.AnimationId, out _);
+            runtime.LastAnimationRepeatAt = runtime.CurrentStepElapsed;
         }
+
+        if (!step.PlayExpressionWithAction || step.ExpressionId == 0)
+            return;
+
+        if (!runtime.ExpressionPlayed && runtime.CurrentStepElapsed >= Math.Max(0f, step.ExpressionDelaySeconds))
+        {
+            runtime.ExpressionPlayed = this.animationService.PlayExpressionTimeline(actor, step.ExpressionId, step.ExpressionLayer, out _);
+            runtime.LastExpressionRepeatAt = runtime.CurrentStepElapsed;
+            return;
+        }
+
+        var expressionRepeat = step.ExpressionDurationSeconds > 0f ? step.ExpressionDurationSeconds : StepDuration(step);
+        if (step.LoopExpression && runtime.ExpressionPlayed && expressionRepeat > 0.05f && runtime.CurrentStepElapsed - runtime.LastExpressionRepeatAt >= expressionRepeat)
+        {
+            this.animationService.PlayExpressionTimeline(actor, step.ExpressionId, step.ExpressionLayer, out _);
+            runtime.LastExpressionRepeatAt = runtime.CurrentStepElapsed;
+        }
+    }
+
+    private void ExitStep(RuntimeActorInstance actor, ActorActionSequenceStep step)
+    {
+        if (!step.AllowLookAtDuringStep && actor.VisibilityRuntimeState != ActorVisibilityRuntimeState.SequenceHidden)
+            actor.LookAtPausedByActionSequence = false;
+
+        if (step.StayInPose || step.Kind != ActorActionStepKind.Action || actor.VisibilityRuntimeState == ActorVisibilityRuntimeState.SequenceHidden)
+            return;
+
+        if (actor.DefaultAnimationId > 0)
+            this.animationService.Play(actor, actor.DefaultAnimationId, out _);
+        else
+            this.animationService.Stop(actor, out _);
     }
 
     private ActorActionSequenceRuntime GetRuntime(RuntimeActorInstance actor)
@@ -225,11 +285,36 @@ public sealed class ActorActionSequenceService
         return runtime;
     }
 
+    private void StopActorIfNeeded(RuntimeActorInstance actor, bool clearBubble, bool restoreVisibility)
+    {
+        var hadRuntime = this.runtimes.Remove(actor.RuntimeId);
+        if (clearBubble)
+            this.bubbleService.Clear(actor);
+
+        actor.LookAtPausedByActionSequence = false;
+        if (restoreVisibility && actor.VisibilityRuntimeState == ActorVisibilityRuntimeState.SequenceHidden && actor.IsValid && actor.CharacterObject != null)
+            this.animationService.SetSequenceVisibility(actor, true, out _);
+
+        if (hadRuntime)
+            actor.ActionSequenceStatus = "Sequence stopped.";
+    }
+
     private void StopRuntime(string runtimeId, bool clearBubble)
     {
         this.runtimes.Remove(runtimeId);
         if (clearBubble)
             this.bubbleService.Clear(runtimeId);
+    }
+
+    private static void MoveNext(ActorActionSequenceRuntime runtime)
+    {
+        runtime.CurrentStepIndex++;
+        runtime.CurrentStepElapsed = 0f;
+        runtime.StepEntered = false;
+        runtime.BubbleShown = false;
+        runtime.ExpressionPlayed = false;
+        runtime.LastAnimationRepeatAt = 0f;
+        runtime.LastExpressionRepeatAt = 0f;
     }
 
     private static float StepDuration(ActorActionSequenceStep step)

@@ -6,21 +6,62 @@ public sealed class ActorActionSequenceStep
 
     public string Name { get; set; } = "Action Step";
 
-    public ActorActionStepKind Kind { get; set; } = ActorActionStepKind.Emote;
+    public ActorActionStepKind Kind { get; set; } = ActorActionStepKind.Action;
 
-    public ushort EmoteId { get; set; }
+    public ushort AnimationId { get; set; }
 
-    public ushort TimelineId { get; set; }
-
-    public float DurationSeconds { get; set; } = 3f;
-
-    public bool LoopEmote { get; set; }
+    public bool LoopAnimation { get; set; }
 
     public bool StayInPose { get; set; }
+
+    public float RepeatAfterSeconds { get; set; }
+
+    public ushort ExpressionId { get; set; }
+
+    public bool PlayExpressionWithAction { get; set; }
+
+    public float ExpressionDelaySeconds { get; set; }
+
+    public float ExpressionDurationSeconds { get; set; }
+
+    public bool LoopExpression { get; set; }
+
+    public float ExpressionWeight { get; set; } = 1f;
+
+    public ActorExpressionLayer ExpressionLayer { get; set; } = ActorExpressionLayer.Facial;
+
+    public float DurationSeconds { get; set; } = 3f;
 
     public string BubbleText { get; set; } = string.Empty;
 
     public float BubbleDurationSeconds { get; set; } = 3f;
 
+    public bool BubbleUseAutoDuration { get; set; } = true;
+
     public bool ShowBubbleOnEnter { get; set; } = true;
+
+    public bool HideBubbleOnDespawn { get; set; } = true;
+
+    public bool AllowLookAtDuringStep { get; set; } = true;
+
+    [Obsolete("Use AnimationId.")]
+    public ushort EmoteId
+    {
+        get => this.AnimationId;
+        set => this.AnimationId = value;
+    }
+
+    [Obsolete("Use AnimationId.")]
+    public ushort TimelineId
+    {
+        get => this.AnimationId;
+        set => this.AnimationId = value;
+    }
+
+    [Obsolete("Use LoopAnimation.")]
+    public bool LoopEmote
+    {
+        get => this.LoopAnimation;
+        set => this.LoopAnimation = value;
+    }
 }

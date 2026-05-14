@@ -32,6 +32,7 @@ public sealed class RealNpcSpawnService
     private EventNpcHostService? eventNpcHostService;
     private readonly GlamourerIpcProbeService glamourerIpcProbe;
     private readonly GlamourerIpcBridgeService glamourerIpcBridge;
+    private readonly PenumbraIpcService penumbraIpc;
     private readonly IPluginLog log;
     private uint lastTerritoryType;
     private int gposeRebuildQueueCount;
@@ -61,6 +62,7 @@ public sealed class RealNpcSpawnService
         NativeTalkProbeService nativeTalkProbeService,
         GlamourerIpcProbeService glamourerIpcProbe,
         GlamourerIpcBridgeService glamourerIpcBridge,
+        PenumbraIpcService penumbraIpc,
         IPluginLog log)
     {
         this.clientState = clientState;
@@ -86,6 +88,7 @@ public sealed class RealNpcSpawnService
         this.nativeTalkProbeService = nativeTalkProbeService;
         this.glamourerIpcProbe = glamourerIpcProbe;
         this.glamourerIpcBridge = glamourerIpcBridge;
+        this.penumbraIpc = penumbraIpc;
         this.log = log;
         this.lastTerritoryType = clientState.TerritoryType;
     }
@@ -155,6 +158,12 @@ public sealed class RealNpcSpawnService
     public bool IsGlamourerApplyDesignRegistered => this.glamourerIpcBridge.IsApplyDesignRegistered;
     public bool IsGlamourerApplyDesignTwoParameterBindable => this.glamourerIpcBridge.IsTwoParameterApplyDesignBindable;
     public bool IsGlamourerApplyDesignFourParameterBindable => this.glamourerIpcBridge.IsFourParameterApplyDesignBindable;
+    public bool IsPenumbraIpcAvailable => this.penumbraIpc.IsAvailable;
+    public bool IsPenumbraEnabled => this.penumbraIpc.IsEnabled;
+    public string PenumbraIpcStatus => this.penumbraIpc.LastStatus;
+    public string PenumbraIpcLastError => this.penumbraIpc.LastError;
+    public string PenumbraIpcApiVersion => this.penumbraIpc.ApiVersionText;
+    public IReadOnlyList<PenumbraCollectionInfo> PenumbraCollections => this.penumbraIpc.Collections;
     public int AppearanceQueueLength => this.appearanceApplyQueue.Count;
     public string AppearanceQueueCurrentActor => this.appearanceApplyQueue.CurrentActorRuntimeId;
     public long AppearanceQueueLastElapsedMilliseconds => this.appearanceApplyQueue.LastElapsedMilliseconds;
@@ -257,8 +266,9 @@ public sealed class RealNpcSpawnService
         {
             this.glamourerIpcProbe.Probe();
             this.glamourerIpcBridge.Probe();
+            this.penumbraIpc.TryConnectOrRefresh("manual probe");
             this.appearanceApplyService.RefreshHumanoidAppearancePaths();
-            this.LastMessage = this.glamourerIpcProbe.LastProbeMessage;
+            this.LastMessage = $"{this.glamourerIpcProbe.LastProbeMessage} | {this.penumbraIpc.LastStatus}";
         });
 
     public RuntimeActorInstance? SpawnNew(CustomNpc npc)
@@ -299,6 +309,9 @@ public sealed class RealNpcSpawnService
             instance.LookAtPlayerEnabled = npc.LookAtPlayerEnabled;
             instance.LookAtRadius = Math.Max(0.1f, npc.LookAtRadius);
             instance.LookAtMode = NpcLookAtMode.NativeLookAt;
+            instance.PenumbraMode = npc.PenumbraMode;
+            instance.PenumbraCollectionId = npc.PenumbraCollectionId;
+            instance.PenumbraCollectionNameCache = npc.PenumbraCollectionNameCache;
             this.actionSequenceService.Reset(instance);
             this.nameplateService.TryReadActorName(instance);
             this.targetabilityService.TryReadTargetability(instance);
@@ -352,6 +365,7 @@ public sealed class RealNpcSpawnService
         this.lookAtService.Stop(instance, out _);
         this.actionSequenceService.Stop(instance);
         this.appearanceApplyQueue.RemoveJobsForActor(instance.RuntimeId);
+        this.penumbraIpc.CleanupActorAssignment(instance);
 
         if (instance.AnimationEnabled && instance.IsValid && instance.CharacterObject != null)
         {

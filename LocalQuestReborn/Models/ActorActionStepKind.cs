@@ -2,9 +2,10 @@ namespace LocalQuestReborn.Models;
 
 public enum ActorActionStepKind
 {
-    Emote,
-    Timeline,
+    Action,
+    Spawn,
+    Despawn,
     Wait,
-    ResetToDefault,
+    ResetToDefaultAction,
     Idle,
 }
