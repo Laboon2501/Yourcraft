@@ -172,6 +172,8 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
                 instance.PendingVisualTransform = true;
                 instance.PendingVisualTransformFrameWait = PendingVisualTransformFrames;
                 instance.PendingRecreateStabilizeAttempts = 0;
+                instance.PendingStableFrameCount = 0;
+                instance.PendingStableGraphicsObjectAddress = string.Empty;
                 instance.ModelApplyStatus = "PendingRecreateStabilize";
                 instance.ApplyMdlStatus = "PendingRecreateStabilize";
                 instance.InstanceState = "PendingRecreateStabilize";
@@ -247,6 +249,8 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
             {
                 instance.PendingVisualTransform = true;
                 instance.PendingVisualTransformFrameWait = 1;
+                instance.PendingStableFrameCount = 0;
+                instance.PendingStableGraphicsObjectAddress = string.Empty;
                 instance.ModelApplyStatus = "PendingRecreateStabilize";
                 instance.ApplyMdlStatus = "PendingRecreateStabilize";
                 instance.InstanceState = "PendingRecreateStabilize";
@@ -261,6 +265,33 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
 
         if (!TryParseAddress(graphicsInfo.GraphicsObjectAddress, out var graphicsAddress) || graphicsAddress == 0)
             return this.MarkUnsafeAfterRecreate(instance, "延迟检查失败：GraphicsObject 地址无效。");
+
+        if (!string.Equals(instance.PendingStableGraphicsObjectAddress, graphicsInfo.GraphicsObjectAddress, StringComparison.OrdinalIgnoreCase))
+        {
+            instance.PendingStableGraphicsObjectAddress = graphicsInfo.GraphicsObjectAddress;
+            instance.PendingStableFrameCount = 1;
+        }
+        else
+        {
+            instance.PendingStableFrameCount++;
+        }
+
+        if (instance.PendingStableFrameCount < Math.Max(1, instance.PendingStableRequiredFrames))
+        {
+            instance.PendingRecreateStabilizeAttempts++;
+            if (instance.PendingRecreateStabilizeAttempts >= instance.PendingRecreateStabilizeMaxAttempts)
+                return this.MarkUnsafeAfterRecreate(instance, $"RecreateStabilizeTimeout: GraphicsObject stable={instance.PendingStableFrameCount}/{instance.PendingStableRequiredFrames}; {graphicsInfo.SafetyDump}");
+
+            instance.PendingVisualTransform = true;
+            instance.PendingVisualTransformFrameWait = 1;
+            instance.ModelApplyStatus = "PendingRecreateStabilize";
+            instance.ApplyMdlStatus = "PendingRecreateStabilize";
+            instance.InstanceState = "PendingRecreateStabilize";
+            instance.PendingVisualTransformResult =
+                $"GraphicsObject 连续稳定等待中：stable={instance.PendingStableFrameCount}/{instance.PendingStableRequiredFrames}; attempt={instance.PendingRecreateStabilizeAttempts}/{instance.PendingRecreateStabilizeMaxAttempts}; address={graphicsInfo.GraphicsObjectAddress}";
+            this.LastResult = instance.PendingVisualTransformResult;
+            return false;
+        }
 
         var targetRotation = NormalizeRotation(instance.CurrentRotation);
         var targetScale = NormalizeScale(instance.CurrentScale);
@@ -279,6 +310,8 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
         instance.PendingVisualTransform = false;
         instance.PendingVisualTransformFrameWait = 0;
         instance.PendingRecreateStabilizeAttempts = 0;
+        instance.PendingStableFrameCount = 0;
+        instance.PendingStableGraphicsObjectAddress = string.Empty;
         instance.PendingVisualTransformResult = $"已延迟应用 VisualOnly transform；readback={visualReadback}";
         instance.RecreateVisualReapplyResult = instance.PendingVisualTransformResult;
         instance.LastReadback = afterWrite.Transform;
@@ -373,6 +406,8 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
             instance.PendingVisualTransform = true;
             instance.PendingVisualTransformFrameWait = PendingVisualTransformFrames;
             instance.PendingRecreateStabilizeAttempts = 0;
+            instance.PendingStableFrameCount = 0;
+            instance.PendingStableGraphicsObjectAddress = string.Empty;
             instance.PendingVisualTransformResult = "recreate 后 GraphicsObject 状态不安全，已停止 transform 写入。";
             instance.ModelApplyStatus = "PendingRecreateStabilize";
             instance.ApplyMdlStatus = "PendingRecreateStabilize";
@@ -404,6 +439,8 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
         instance.PendingVisualTransform = true;
         instance.PendingVisualTransformFrameWait = PendingVisualTransformFrames;
         instance.PendingRecreateStabilizeAttempts = 0;
+        instance.PendingStableFrameCount = 0;
+        instance.PendingStableGraphicsObjectAddress = string.Empty;
         instance.PendingVisualTransformResult = $"等待 {PendingVisualTransformFrames} 帧后重新读取 GraphicsObject，再应用 VisualOnly transform。";
         instance.ModelApplyStatus = risk.Level == ModelRiskLevel.AnimatedStaticOnly ? "AnimatedStaticOnly" : "PendingVisualTransform";
         instance.ApplyMdlStatus = instance.ModelApplyStatus;

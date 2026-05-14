@@ -13,7 +13,6 @@ public sealed unsafe class LocalLayoutObjectService
 {
     private const int VisualMatrixOffset = 0x20;
     private const string DynamicObjectBlockedMessage = "该物体疑似由地图 controller / SharedGroup / 动态材质驱动，当前版本不支持本地移动。为避免闪退已阻止创建。";
-    private const string ForbiddenDefaultRestorePath = "bgcommon/hou/common/general/0001/bgparts/com_b0_m0001.mdl";
 
     private readonly LayoutObjectTransformService transformService = new();
     private readonly BgObjectModelOverrideService modelOverrideService = new();
@@ -23,8 +22,34 @@ public sealed unsafe class LocalLayoutObjectService
     private readonly AnimatedPlaybackSystem animatedPlaybackSystem = new();
     private readonly List<LocalLayoutObjectInstance> instances = [];
     private readonly Dictionary<ulong, LocalLayoutObjectInstance> occupiedSlots = [];
+    private readonly HashSet<ulong> reservedSlots = [];
+    private CreateManyJob? activeCreateManyJob;
 
     public bool IsBusy { get; private set; }
+
+    public bool IsCreateQueueActive => this.activeCreateManyJob != null;
+
+    public int PendingCreateQueueLength => this.activeCreateManyJob?.PendingCount ?? 0;
+
+    public int CreateQueueTotalCount => this.activeCreateManyJob?.TotalCount ?? 0;
+
+    public int CreateQueueCurrentIndex => this.activeCreateManyJob?.CurrentIndex ?? 0;
+
+    public int CreateQueueSuccessCount => this.activeCreateManyJob?.SuccessCount ?? 0;
+
+    public int CreateQueueFailedCount => this.activeCreateManyJob?.FailedCount ?? 0;
+
+    public int CreateQueueWaitingStabilizeCount => this.activeCreateManyJob?.WaitingStabilizeCount ?? 0;
+
+    public string CreateQueueCurrentState => this.activeCreateManyJob?.CurrentStateText ?? string.Empty;
+
+    public string CreateQueueCurrentSlot => this.activeCreateManyJob?.CurrentSlotAddress ?? string.Empty;
+
+    public string CreateQueueLastError => this.activeCreateManyJob?.LastError ?? string.Empty;
+
+    public string CreateQueueLastCreatedId => this.activeCreateManyJob?.LastCreatedId ?? string.Empty;
+
+    public int ReservedSlotCount => this.reservedSlots.Count;
 
     public bool AutoPinDynamicTransforms { get; set; }
 
@@ -40,6 +65,10 @@ public sealed unsafe class LocalLayoutObjectService
         .Sum(group => Math.Max(0, group.Count() - 1));
 
     public string LastStatus { get; private set; } = "尚未创建本地场景物体。";
+
+    public string LastCreateManyDryRunPreview { get; private set; } = string.Empty;
+
+    public string LastRestorePlanPreview { get; private set; } = string.Empty;
 
     public string LastModelOverrideStatus => this.modelOverrideService.LastResult;
 
@@ -69,6 +98,8 @@ public sealed unsafe class LocalLayoutObjectService
         foreach (var instance in this.instances.Where(item => item.TransformMonitorActive).ToList())
             this.UpdateTransformMonitor(instance);
 
+        this.ProcessCreateManyQueue();
+
         // v9.8: 动画回放暂停。Update 只做残留 registry 清理，不写动态 transform / visible。
         this.animatedPlaybackSystem.Update(this.instances);
     }
@@ -77,16 +108,16 @@ public sealed unsafe class LocalLayoutObjectService
     {
         this.RebuildOccupiedSlotRegistry();
         return TryNormalizeSlotAddress(slotAddress, out var normalizedAddress)
-            && this.occupiedSlots.ContainsKey(normalizedAddress);
+            && (this.occupiedSlots.ContainsKey(normalizedAddress) || this.reservedSlots.Contains(normalizedAddress));
     }
 
     public LocalLayoutObjectInstance? CreateFromCandidate(LayoutProbeInstance? candidate, Vector3 playerPosition, LocalLayoutTransformMode mode)
-        => this.CreateFromCandidate(candidate, playerPosition, mode, template: null, applyTemplateModel: false);
+        => this.CreateFromCandidate(candidate, playerPosition, mode, template: null, applyTemplateModel: false, allowReservedSlot: false);
 
     public LocalLayoutObjectInstance? CreateFromTemplate(LayoutProbeInstance? template, LayoutProbeInstance? targetSlot, Vector3 position, LocalLayoutTransformMode mode, bool applyTemplateModel = false)
-        => this.CreateFromCandidate(targetSlot, position, mode, template, applyTemplateModel);
+        => this.CreateFromCandidate(targetSlot, position, mode, template, applyTemplateModel, allowReservedSlot: false);
 
-    private LocalLayoutObjectInstance? CreateFromCandidate(LayoutProbeInstance? candidate, Vector3 playerPosition, LocalLayoutTransformMode mode, LayoutProbeInstance? template, bool applyTemplateModel)
+    private LocalLayoutObjectInstance? CreateFromCandidate(LayoutProbeInstance? candidate, Vector3 playerPosition, LocalLayoutTransformMode mode, LayoutProbeInstance? template, bool applyTemplateModel, bool allowReservedSlot)
     {
         if (this.IsBusy)
         {
@@ -122,6 +153,12 @@ public sealed unsafe class LocalLayoutObjectService
             return owner;
         }
 
+        if (candidateSlotAddress != 0 && this.reservedSlots.Contains(candidateSlotAddress) && !allowReservedSlot)
+        {
+            this.LastStatus = $"该 BgPart slot 已被批量创建队列预留：0x{candidateSlotAddress:X}。";
+            return null;
+        }
+
         if (!TryGetPointer(candidate.Address, out var pointer))
         {
             this.LastStatus = $"候选地址解析失败：{candidate.Address}";
@@ -135,7 +172,7 @@ public sealed unsafe class LocalLayoutObjectService
             return null;
         }
 
-        var originalPrimaryPath = FirstNonEmpty(ReadPrimaryPath(pointer), candidate.ResourcePath);
+        var originalPrimaryPath = FirstNonEmpty(candidate.ResourcePath, ReadPrimaryPath(pointer));
 
         if (!TryGetGraphicsObjectAddress(pointer, out var graphicsAddress) || graphicsAddress == 0)
         {
@@ -246,6 +283,11 @@ public sealed unsafe class LocalLayoutObjectService
             this.LastStatus = "当前正在恢复/清理本地场景物体，请等待完成后再创建复制体。";
             return created;
         }
+        if (this.activeCreateManyJob != null)
+        {
+            this.LastStatus = "已有批量创建队列正在执行，请等待完成或先恢复全部。";
+            return created;
+        }
 
         if (template == null)
         {
@@ -321,51 +363,363 @@ public sealed unsafe class LocalLayoutObjectService
 
         if (slots.Count < count)
         {
-            this.LastStatus = hasCustomMdlPath || allowDifferentResourcePathSlots
+            if (slots.Count == 0)
+            {
+                this.LastStatus = hasCustomMdlPath || allowDifferentResourcePathSlots
                 ? $"可用 slot 不足：请求 {count}，可用 {slots.Count}。模板本体 slot 已排除。"
                 : $"同 resourcePath 可用 slot 不足：请求 {count}，可用 {slots.Count}。模板本体 slot 已排除；未填写 custom mdl path 时不会使用不同外观 slot。";
-            return created;
+                return created;
+            }
+
+            this.LastStatus = hasCustomMdlPath || allowDifferentResourcePathSlots
+                ? $"可用 slot 不足：请求 {count}，可用 {slots.Count}。将按“尽可能创建”继续创建 {slots.Count} 个。"
+                : $"同 resourcePath 可用 slot 不足：请求 {count}，可用 {slots.Count}。将按“尽可能创建”继续创建 {slots.Count} 个。";
         }
 
-        var mdlAppliedCount = 0;
-        var failures = new List<string>();
-        for (var index = 0; index < slots.Count; index++)
+        var pending = slots
+            .Select((slot, index) => new PendingCreateItem(
+                slot,
+                basePosition + spacing * index,
+                defaultRotationEuler,
+                defaultScale ?? Vector3.One,
+                customMdlPath))
+            .ToList();
+
+        foreach (var pendingSlot in pending)
         {
-            var position = basePosition + spacing * index;
-            var targetScale = defaultScale ?? Vector3.One;
-            var instance = this.CreateFromTemplate(template, slots[index], position, mode, applyTemplateModel: false);
-            if (instance == null)
-                continue;
+            if (TryNormalizeSlotAddress(pendingSlot.Slot.Address, out var reserved))
+                this.reservedSlots.Add(reserved);
+        }
 
-            created.Add(instance);
-            this.WriteInstanceTransform(instance, position, defaultRotationEuler, targetScale, "复制体初始 transform");
-            if (!hasCustomMdlPath)
-                continue;
+        this.activeCreateManyJob = new CreateManyJob(
+            template,
+            pending.Select(item => new CreateManyJobItem(item)).ToList(),
+            bgParts?.ToList() ?? candidateSlots.ToList(),
+            mode,
+            unsafeEnabled,
+            fullLayoutConfirmed,
+            templateWarning,
+            count);
+        this.LastStatus = $"已创建批量复制队列：requested={count}; queued={pending.Count}; 每帧处理 1 个实例。{templateWarning}";
+        return created;
+    }
 
-            instance.CustomModelPath = customMdlPath;
-            var applied = this.ApplyMdlPath(
-                instance.Id,
-                customMdlPath,
-                bgParts ?? candidateSlots,
-                unsafeEnabled,
-                fullLayoutConfirmed || mode == LocalLayoutTransformMode.VisualOnly);
-            if (!applied)
+    public string BuildCreateManyDryRunPreview(
+        LayoutProbeInstance? template,
+        IEnumerable<LayoutProbeInstance> candidateSlots,
+        int requestedCount,
+        bool allowDifferentResourcePathSlots,
+        string defaultCustomMdlPath)
+    {
+        this.RebuildOccupiedSlotRegistry();
+        var slots = candidateSlots.ToList();
+        var bgParts = slots.Where(slot => string.Equals(slot.Type, "BgPart", StringComparison.Ordinal)).ToList();
+        var customMdlPath = (defaultCustomMdlPath ?? string.Empty).Trim();
+        var hasCustomMdlPath = !string.IsNullOrWhiteSpace(customMdlPath);
+        var excluded = template == null
+            ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            : new HashSet<string>(StringComparer.OrdinalIgnoreCase) { template.Address };
+
+        var rejected = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var stable = new List<LayoutProbeInstance>();
+        foreach (var slot in bgParts)
+        {
+            var reason = this.GetCarrierRejectReason(slot, excluded);
+            if (string.IsNullOrWhiteSpace(reason))
             {
-                instance.ApplyMdlStatus = "Failed";
-                instance.ApplyMdlError = FirstNonEmpty(instance.ApplyMdlError, instance.LastModelOverrideError, this.LastStatus);
-                failures.Add($"{instance.Id}: {instance.ApplyMdlError}");
+                stable.Add(slot);
                 continue;
             }
 
-            mdlAppliedCount++;
+            var key = NormalizeRejectReason(reason);
+            rejected[key] = rejected.TryGetValue(key, out var count) ? count + 1 : 1;
         }
 
-        this.LastStatus = hasCustomMdlPath
-            ? $"批量完成：createdCount={created.Count}; mdlAppliedCount={mdlAppliedCount}; mdlFailedCount={failures.Count}; failed={string.Join(" | ", failures)} {templateWarning}"
-            : allowDifferentResourcePathSlots
-                ? $"已从 {created.Count} 个 bg/bgcommon 可用 slot 创建实例。未应用 custom mdl path 时，不建议把它当作模板外观复制。模板 slot 已排除。{templateWarning}"
-                : $"已从模板创建 {created.Count} 个同 resourcePath 本地实例。模板 slot 已排除。{templateWarning}";
-        return created;
+        var selected = stable
+            .Where(slot => template == null
+                || hasCustomMdlPath
+                || allowDifferentResourcePathSlots
+                || string.Equals(slot.ResourcePath, template.ResourcePath, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(slot => template != null && string.Equals(slot.ResourcePath, template.ResourcePath, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+            .ThenBy(slot => slot.DistanceToPlayer)
+            .Take(Math.Max(0, requestedCount))
+            .ToList();
+
+        var occupiedCount = bgParts.Count(slot => TryNormalizeSlotAddress(slot.Address, out var address) && this.occupiedSlots.ContainsKey(address));
+        var reservedCount = bgParts.Count(slot => TryNormalizeSlotAddress(slot.Address, out var address) && this.reservedSlots.Contains(address));
+        var lines = new List<string>
+        {
+            $"requestedCount={requestedCount}",
+            $"templateSlotAddress={template?.Address ?? "未选择"}",
+            $"templateResourcePath={template?.ResourcePath ?? "未选择"}",
+            $"excludeTemplateSlot={(template != null ? "是" : "否")}",
+            $"total bgpart slots={bgParts.Count}",
+            $"occupied slots={occupiedCount}",
+            $"reserved slots={reservedCount}",
+            $"free slots={Math.Max(0, bgParts.Count - occupiedCount - reservedCount)}",
+            $"stable carrier slots={stable.Count}",
+            $"实际将分配 carrier 数={selected.Count}",
+            "rejected slots：",
+        };
+
+        if (rejected.Count == 0)
+            lines.Add("  无");
+        else
+            lines.AddRange(rejected.OrderBy(pair => pair.Key).Select(pair => $"  {pair.Key}: {pair.Value}"));
+
+        lines.Add("carrier slot 列表：");
+        if (selected.Count == 0)
+        {
+            lines.Add("  无可用 carrier。");
+        }
+        else
+        {
+            for (var index = 0; index < selected.Count; index++)
+            {
+                var slot = selected[index];
+                var reason = template != null && string.Equals(slot.ResourcePath, template.ResourcePath, StringComparison.OrdinalIgnoreCase)
+                    ? "SameResource"
+                    : hasCustomMdlPath ? "CustomMdlCarrier" : allowDifferentResourcePathSlots ? "DifferentResourceAllowed" : "Unknown";
+                lines.Add($"  [{index}] slot={slot.Address}; path={slot.ResourcePath}; distance={slot.DistanceToPlayer:F1}; selectedReason={reason}");
+            }
+        }
+
+        this.LastCreateManyDryRunPreview = string.Join(Environment.NewLine, lines);
+        return this.LastCreateManyDryRunPreview;
+    }
+
+    private void ProcessCreateManyQueue()
+    {
+        var job = this.activeCreateManyJob;
+        if (job == null)
+            return;
+
+        if (this.IsBusy)
+            return;
+
+        var item = job.Items.FirstOrDefault(candidate => candidate.State is not CreateJobState.Ready and not CreateJobState.Failed);
+        if (item == null)
+        {
+            this.LastStatus = this.FormatCreateQueueStatus(job) + "；队列已完成。";
+            this.activeCreateManyJob = null;
+            this.reservedSlots.Clear();
+            this.RebuildOccupiedSlotRegistry();
+            return;
+        }
+
+        job.CurrentIndex = job.Items.IndexOf(item) + 1;
+        item.FrameInState++;
+        try
+        {
+            switch (item.State)
+            {
+                case CreateJobState.Pending:
+                    this.TransitionCreateJob(item, CreateJobState.AllocatingSlot, "等待分配 slot。");
+                    this.LastStatus = this.FormatCreateQueueStatus(job);
+                    return;
+
+                case CreateJobState.AllocatingSlot:
+                    if (!TryNormalizeSlotAddress(item.Slot.Address, out var slotAddress) || slotAddress == 0)
+                    {
+                        this.FailCreateJob(job, item, $"slot 地址无效：{item.Slot.Address}");
+                        return;
+                    }
+
+                    this.RebuildOccupiedSlotRegistry();
+                    if (this.occupiedSlots.TryGetValue(slotAddress, out var owner))
+                    {
+                        this.FailCreateJob(job, item, $"slot 已被实例 {owner.Id} 占用：0x{slotAddress:X}");
+                        return;
+                    }
+
+                    item.SlotAddress = slotAddress;
+                    this.TransitionCreateJob(item, CreateJobState.Recreating, $"slot 已预留：0x{slotAddress:X}");
+                    this.LastStatus = this.FormatCreateQueueStatus(job);
+                    return;
+
+                case CreateJobState.Recreating:
+                    this.CreateOneQueuedInstance(job, item);
+                    return;
+
+                case CreateJobState.WaitingStabilize:
+                    this.AdvanceQueuedInstanceStabilize(job, item);
+                    return;
+
+                case CreateJobState.ApplyingTransform:
+                    this.ApplyQueuedInstanceTransform(job, item);
+                    return;
+            }
+        }
+        catch (Exception ex)
+        {
+            this.FailCreateJob(job, item, $"slot={item.Slot.Address}: {ex.Message}");
+        }
+    }
+
+    private string FormatCreateQueueStatus(CreateManyJob job)
+        => $"批量创建队列：current={job.CurrentIndex}/{job.TotalCount}; pending={job.PendingCount}; waiting={job.WaitingStabilizeCount}; success={job.SuccessCount}; failed={job.FailedCount}; state={job.CurrentStateText}; slot={job.CurrentSlotAddress}; lastCreated={job.LastCreatedId}; lastError={job.LastError}";
+
+    private static string NormalizeRejectReason(string reason)
+    {
+        if (string.IsNullOrWhiteSpace(reason))
+            return "Other";
+        if (reason.Contains("AlreadyOccupied", StringComparison.OrdinalIgnoreCase) || reason.Contains("占用", StringComparison.OrdinalIgnoreCase))
+            return "AlreadyOccupied";
+        if (reason.Contains("Reserved", StringComparison.OrdinalIgnoreCase) || reason.Contains("预留", StringComparison.OrdinalIgnoreCase))
+            return "Reserved";
+        if (reason.Contains("template", StringComparison.OrdinalIgnoreCase) || reason.Contains("source", StringComparison.OrdinalIgnoreCase) || reason.Contains("排除", StringComparison.OrdinalIgnoreCase))
+            return "TemplateSlot";
+        if (reason.Contains("SharedGroupChild", StringComparison.OrdinalIgnoreCase))
+            return "SharedGroupChild";
+        if (reason.Contains("动态", StringComparison.OrdinalIgnoreCase) || reason.Contains("controller", StringComparison.OrdinalIgnoreCase))
+            return "Dynamic";
+        if (reason.Contains("高风险", StringComparison.OrdinalIgnoreCase) || reason.Contains("Unsafe", StringComparison.OrdinalIgnoreCase))
+            return "UnsafeComplex";
+        if (reason.Contains("GraphicsObject", StringComparison.OrdinalIgnoreCase))
+            return "InvalidGraphicsObject";
+        if (reason.Contains("Snapshot", StringComparison.OrdinalIgnoreCase))
+            return "NoSnapshot";
+        return reason;
+    }
+
+    private void CreateOneQueuedInstance(CreateManyJob job, CreateManyJobItem item)
+    {
+        if (TryNormalizeSlotAddress(item.Slot.Address, out var reservedSlot))
+            this.reservedSlots.Remove(reservedSlot);
+
+        var instance = this.CreateFromCandidate(item.Slot, item.Position, job.Mode, job.Template, applyTemplateModel: false, allowReservedSlot: true);
+        if (instance == null)
+        {
+            this.FailCreateJob(job, item, $"slot={item.Slot.Address}: {this.LastStatus}");
+            return;
+        }
+
+        item.InstanceId = instance.Id;
+        item.SlotAddress = TryNormalizeSlotAddress(instance.OccupiedSlotAddress, out var occupiedSlot)
+            ? occupiedSlot
+            : item.SlotAddress;
+        instance.CurrentRotationEuler = item.RotationEuler;
+        instance.CurrentScale = item.Scale;
+
+        if (!string.IsNullOrWhiteSpace(item.CustomMdlPath))
+        {
+            instance.CustomModelPath = item.CustomMdlPath;
+            var applied = this.ApplyMdlPath(instance.Id, item.CustomMdlPath, job.BgParts, job.UnsafeEnabled, job.FullLayoutConfirmed || job.Mode == LocalLayoutTransformMode.VisualOnly);
+            if (!applied && !instance.PendingVisualTransform && !string.Equals(instance.InstanceState, "PendingRecreateStabilize", StringComparison.OrdinalIgnoreCase))
+            {
+                instance.ApplyMdlStatus = "Failed";
+                instance.ApplyMdlError = FirstNonEmpty(instance.ApplyMdlError, instance.LastModelOverrideError, this.LastStatus);
+                this.FailCreateJob(job, item, $"{instance.Id}: {instance.ApplyMdlError}", instance);
+                return;
+            }
+        }
+
+        if (instance.PendingVisualTransform || string.Equals(instance.InstanceState, "PendingRecreateStabilize", StringComparison.OrdinalIgnoreCase))
+        {
+            this.TransitionCreateJob(item, CreateJobState.WaitingStabilize, $"等待实例 recreate 稳定：{instance.Id}");
+            this.LastStatus = this.FormatCreateQueueStatus(job);
+            return;
+        }
+
+        this.TransitionCreateJob(item, CreateJobState.ApplyingTransform, $"实例已创建：{instance.Id}");
+        this.LastStatus = this.FormatCreateQueueStatus(job);
+    }
+
+    private void AdvanceQueuedInstanceStabilize(CreateManyJob job, CreateManyJobItem item)
+    {
+        var instance = this.instances.FirstOrDefault(candidate => string.Equals(candidate.Id, item.InstanceId, StringComparison.Ordinal));
+        if (instance == null)
+        {
+            this.FailCreateJob(job, item, $"等待稳定失败：实例已不存在 {item.InstanceId}");
+            return;
+        }
+
+        if (IsFailedState(instance) || instance.IsRenderInvalid)
+        {
+            this.FailCreateJob(job, item, $"{instance.Id}: {FirstNonEmpty(instance.ApplyMdlError, instance.LastError, instance.TransformWriteDisabledReason, instance.PendingVisualTransformResult)}", instance);
+            return;
+        }
+
+        if (instance.PendingVisualTransform || string.Equals(instance.InstanceState, "PendingRecreateStabilize", StringComparison.OrdinalIgnoreCase))
+        {
+            if (item.FrameInState >= item.TimeoutFrames)
+            {
+                instance.ApplyMdlStatus = "Failed";
+                instance.ApplyMdlError = $"RecreateStabilizeTimeout: {instance.PendingVisualTransformResult}";
+                this.TryRestoreFailedQueuedInstance(instance, job.UnsafeEnabled);
+                this.FailCreateJob(job, item, $"{instance.Id}: {instance.ApplyMdlError}", instance);
+                return;
+            }
+
+            this.LastStatus = $"批量创建等待稳定：{job.CurrentIndex}/{job.TotalCount}; instance={instance.Id}; frame={item.FrameInState}/{item.TimeoutFrames}; {instance.PendingVisualTransformResult}";
+            return;
+        }
+
+        this.TransitionCreateJob(item, CreateJobState.ApplyingTransform, $"实例已稳定：{instance.Id}");
+        this.LastStatus = this.FormatCreateQueueStatus(job);
+    }
+
+    private void ApplyQueuedInstanceTransform(CreateManyJob job, CreateManyJobItem item)
+    {
+        var instance = this.instances.FirstOrDefault(candidate => string.Equals(candidate.Id, item.InstanceId, StringComparison.Ordinal));
+        if (instance == null)
+        {
+            this.FailCreateJob(job, item, $"应用 transform 失败：实例已不存在 {item.InstanceId}");
+            return;
+        }
+
+        var ok = this.WriteInstanceTransform(instance, item.Position, item.RotationEuler, item.Scale, "批量复制最终 transform");
+        if (!ok)
+        {
+            this.FailCreateJob(job, item, $"{instance.Id}: {FirstNonEmpty(instance.LastError, instance.TransformWriteDisabledReason, "transform 写入失败")}", instance);
+            return;
+        }
+
+        item.State = CreateJobState.Ready;
+        item.LastMessage = $"Ready：{instance.Id}";
+        item.FrameInState = 0;
+        job.LastCreatedId = instance.Id;
+        this.LastStatus = this.FormatCreateQueueStatus(job);
+    }
+
+    private void FailCreateJob(CreateManyJob job, CreateManyJobItem item, string reason, LocalLayoutObjectInstance? instance = null)
+    {
+        item.State = CreateJobState.Failed;
+        item.LastError = reason;
+        item.FrameInState = 0;
+        job.LastError = reason;
+        if (TryNormalizeSlotAddress(item.Slot.Address, out var slotAddress))
+            this.reservedSlots.Remove(slotAddress);
+
+        if (instance != null)
+        {
+            instance.InstanceState = "Failed";
+            instance.LastError = reason;
+            instance.ApplyMdlStatus = string.Equals(instance.ApplyMdlStatus, "Ready", StringComparison.OrdinalIgnoreCase)
+                ? "Failed"
+                : instance.ApplyMdlStatus;
+        }
+
+        this.LastStatus = this.FormatCreateQueueStatus(job);
+    }
+
+    private void TransitionCreateJob(CreateManyJobItem item, CreateJobState state, string message)
+    {
+        item.State = state;
+        item.LastMessage = message;
+        item.FrameInState = 0;
+    }
+
+    private void TryRestoreFailedQueuedInstance(LocalLayoutObjectInstance instance, bool unsafeEnabled)
+    {
+        try
+        {
+            this.RestoreOriginalSlotSnapshot(instance, unsafeEnabled, fullLayoutConfirmed: true, removeAfterRestore: true);
+        }
+        catch (Exception ex)
+        {
+            instance.LastError = $"批量创建失败实例自动恢复异常：{ex.Message}";
+        }
     }
 
     public IReadOnlyList<LocalLayoutObjectInstance> CreateAnimatedFromSource(
@@ -482,9 +836,11 @@ public sealed unsafe class LocalLayoutObjectService
         else if (!string.IsNullOrWhiteSpace(GetDynamicPathBlockReason(slot.ResourcePath)))
             reason = GetDynamicPathBlockReason(slot.ResourcePath);
         else if (excludedAddresses.Contains(slot.Address))
-            reason = "source/template slot 已排除";
-        else if (this.IsSlotOccupied(slot.Address))
+            reason = "TemplateSlot";
+        else if (TryNormalizeSlotAddress(slot.Address, out var normalizedAddress) && this.occupiedSlots.ContainsKey(normalizedAddress))
             reason = "AlreadyOccupied";
+        else if (TryNormalizeSlotAddress(slot.Address, out normalizedAddress) && this.reservedSlots.Contains(normalizedAddress))
+            reason = "Reserved";
         else if (IsTerrainLikeCarrier(slot.ResourcePath))
             reason = "TerrainLike";
         else if (IsTooLargeCarrier(slot))
@@ -995,7 +1351,7 @@ public sealed unsafe class LocalLayoutObjectService
         if (instance == null)
             return false;
 
-        return this.RestoreOriginalSlotSnapshot(instance, unsafeEnabled, fullLayoutConfirmed || instance.TransformMode == LocalLayoutTransformMode.VisualOnly, removeAfterRestore: false);
+        return this.RestoreOriginalSlotSnapshot(instance, unsafeEnabled, fullLayoutConfirmed: true, removeAfterRestore: false);
     }
 
     public string GetApplyMdlPathBlockReason(string id, string modelPath, bool unsafeEnabled, bool fullLayoutConfirmed)
@@ -1282,6 +1638,15 @@ public sealed unsafe class LocalLayoutObjectService
         try
         {
             this.animatedPlaybackSystem.StopAllAndDetach(this.instances, "RestoreAll 前全局停止动画回放。");
+            this.activeCreateManyJob = null;
+            this.reservedSlots.Clear();
+            foreach (var instance in this.instances)
+            {
+                instance.PendingVisualTransform = false;
+                instance.TransformMonitorActive = false;
+            }
+
+            this.BuildRestorePlanPreview();
             var preCleanupCount = this.CleanupDuplicateInstances(auto: true);
             this.RebuildOccupiedSlotRegistry();
             var restoreTargets = this.instances
@@ -1612,6 +1977,12 @@ public sealed unsafe class LocalLayoutObjectService
             return false;
         }
 
+        if (!IsSupportedMdlPath(snapshot.OriginalResourcePath))
+        {
+            reason = $"OriginalSlotSnapshot 原始 mdl path 不受支持或异常：{snapshot.OriginalResourcePath}";
+            return false;
+        }
+
         return true;
     }
 
@@ -1646,6 +2017,69 @@ public sealed unsafe class LocalLayoutObjectService
            $"originalResourcePath={snapshot.OriginalResourcePath}; currentModelPath={instance.CurrentModelPath}; customModelPath={instance.CustomModelPath}; " +
            $"restoreTargetPath={restoreTargetPath}; originalHadCollider={snapshot.OriginalHadCollider}; " +
            $"mesh=0x{snapshot.OriginalCollisionMeshPathCrc:X8}; analytic=0x{snapshot.OriginalAnalyticShapeDataCrc:X8}";
+
+    public string BuildRestorePlanPreview()
+    {
+        var lines = new List<string>();
+        var targets = this.instances.Where(instance => IsActiveInstance(instance, out _)).ToList();
+        lines.Add($"RestoreAll plan：active instances={targets.Count}");
+        foreach (var instance in targets)
+        {
+            if (!this.TryGetOriginalSlotSnapshot(instance, out var snapshot, out var snapshotError))
+            {
+                lines.Add($"- instanceId={instance.Id}; snapshotError={snapshotError}; slot={instance.OccupiedSlotAddress}; currentModelPath={instance.CurrentModelPath}; customModelPath={instance.CustomModelPath}");
+                continue;
+            }
+
+            var restoreTargetPath = snapshot.OriginalResourcePath;
+            var mismatch = string.IsNullOrWhiteSpace(restoreTargetPath)
+                || !string.Equals(restoreTargetPath, snapshot.OriginalResourcePath, StringComparison.OrdinalIgnoreCase);
+            var currentPath = string.Empty;
+            var currentLayout = "readback failed";
+            var currentGraphics = "readback failed";
+            var currentCollider = "readback failed";
+            var currentMesh = 0u;
+            var currentAnalytic = 0u;
+            if (TryGetPointer(instance.OccupiedSlotAddress, out var pointer) && pointer != null)
+            {
+                currentPath = ReadPrimaryPath(pointer);
+                var layout = ReadLayoutTransform(pointer);
+                if (layout != null)
+                    currentLayout = FormatSnapshot(layout.Value);
+                if (TryGetGraphicsObjectAddress(pointer, out var graphicsAddress) && graphicsAddress != 0)
+                {
+                    var graphics = ReadSceneObjectTransform(graphicsAddress);
+                    if (graphics != null)
+                        currentGraphics = FormatSceneSnapshot(graphics.Value);
+                }
+
+                try
+                {
+                    var bgPart = (BgPartsLayoutInstance*)pointer;
+                    currentCollider = $"0x{(nint)bgPart->Collider:X}";
+                    currentMesh = bgPart->CollisionMeshPathCrc;
+                    currentAnalytic = bgPart->AnalyticShapeDataCrc;
+                }
+                catch (Exception ex)
+                {
+                    currentCollider = $"readback failed: {ex.Message}";
+                }
+            }
+
+            lines.Add(
+                $"- instanceId={instance.Id}; mode={instance.TransformMode}; slot={instance.OccupiedSlotAddress}; " +
+                $"originalResourcePath={snapshot.OriginalResourcePath}; currentModelPath={instance.CurrentModelPath}; customModelPath={instance.CustomModelPath}; templateResourcePath={instance.TemplateResourcePath}; " +
+                $"restoreTargetPath={restoreTargetPath}; targetCheck={(mismatch ? "RestoreTargetMismatch" : "OK")}; currentPrimaryPath={currentPath}; " +
+                $"originalLayout={FormatSnapshot(new LayoutTransformSnapshot(snapshot.OriginalLayoutPosition, snapshot.OriginalLayoutRotation, snapshot.OriginalLayoutScale))}; currentLayout={currentLayout}; " +
+                $"originalGraphics={FormatSceneSnapshot(new SceneTransformSnapshot(snapshot.OriginalGraphicsPosition, snapshot.OriginalGraphicsRotation, snapshot.OriginalGraphicsScale, false))}; currentGraphics={currentGraphics}; " +
+                $"originalHadCollider={snapshot.OriginalHadCollider}; currentCollider={currentCollider}; " +
+                $"originalMesh=0x{snapshot.OriginalCollisionMeshPathCrc:X8}; currentMesh=0x{currentMesh:X8}; " +
+                $"originalAnalytic=0x{snapshot.OriginalAnalyticShapeDataCrc:X8}; currentAnalytic=0x{currentAnalytic:X8}");
+        }
+
+        this.LastRestorePlanPreview = string.Join(Environment.NewLine, lines);
+        return this.LastRestorePlanPreview;
+    }
 
     private bool RestoreOriginalSlotSnapshot(
         LocalLayoutObjectInstance instance,
@@ -1685,21 +2119,27 @@ public sealed unsafe class LocalLayoutObjectService
             instance.RestoreDebugInfo = this.BuildRestoreDebugInfo(instance, snapshot, originalPath, "Prepare");
             if (string.IsNullOrWhiteSpace(originalPath))
                 return this.FailRestore(instance, "MissingOriginalResourcePath", removeAfterRestore, markInvalid: false);
-            var legacyOriginalPath = FirstNonEmpty(instance.OriginalResourcePath, instance.OriginalModelResourcePath, instance.SourceResourcePath);
-            if (string.Equals(originalPath, ForbiddenDefaultRestorePath, StringComparison.OrdinalIgnoreCase)
-                && !string.IsNullOrWhiteSpace(legacyOriginalPath)
-                && !string.Equals(legacyOriginalPath, ForbiddenDefaultRestorePath, StringComparison.OrdinalIgnoreCase))
+            if (!string.IsNullOrWhiteSpace(instance.SourceResourcePath)
+                && !string.Equals(originalPath, instance.SourceResourcePath, StringComparison.OrdinalIgnoreCase))
             {
-                return this.FailRestore(instance, "RestoreTargetPathMismatch", removeAfterRestore, markInvalid: false);
+                return this.FailRestore(instance, $"RestoreTargetPathMismatch: snapshot={originalPath}; sourceSlot={instance.SourceResourcePath}", removeAfterRestore, markInvalid: false);
             }
 
-            var currentPath = FirstNonEmpty(ReadPrimaryPath(pointer), instance.CurrentResourcePath, instance.AfterModelPath, instance.TargetModelPath);
+            var currentPath = ReadPrimaryPath(pointer);
             if (!string.IsNullOrWhiteSpace(originalPath)
                 && !string.Equals(currentPath, originalPath, StringComparison.OrdinalIgnoreCase))
             {
                 instance.RestoreStep = "Restore original mdl";
                 if (!unsafeEnabled)
                     return this.FailRestore(instance, "恢复原 mdl 需要 UnsafeMode=true。", removeAfterRestore, markInvalid: false);
+
+                if (instance.TransformMode == LocalLayoutTransformMode.FullLayoutWithCollision)
+                {
+                    var preRestoreLayout = this.RestoreOriginalLayoutTransformDirect(instance, snapshot, out var preRestoreLayoutResult);
+                    instance.RestoreDebugInfo = $"{instance.RestoreDebugInfo}; preCreatePrimaryLayoutRestore={preRestoreLayout}; {preRestoreLayoutResult}";
+                    if (!TryGetPointer(instance.OccupiedSlotAddress, out pointer) || pointer == null)
+                        return this.FailRestore(instance, "恢复原 mdl 前 Layout transform 写回后 occupied slot 指针重新读取失败。", removeAfterRestore, markInvalid: true);
+                }
 
                 var recreated = this.recreateExperimentService.ExecuteDestroyCreate(instance, originalPath, unsafeEnabled, experimentEnabled: true, confirmed: true);
                 if (!recreated)
@@ -1733,6 +2173,11 @@ public sealed unsafe class LocalLayoutObjectService
                 graphicsRestored = this.RestoreOriginalGraphicsTransformDirect(instance, snapshot, out graphicsResult);
             else
                 this.RefreshGraphicsObjectAddressForRestore(instance, out graphicsResult);
+            if (!graphicsRestored)
+            {
+                skipGraphicsVerification = true;
+                instance.RestoreDebugInfo = $"{instance.RestoreDebugInfo}; graphicsTransformRestoreSkipped={graphicsResult}";
+            }
 
             instance.RestoreStep = "Restore original visible";
             this.RestoreCarrierVisible(instance, snapshot);
@@ -1747,7 +2192,7 @@ public sealed unsafe class LocalLayoutObjectService
             instance.ApplyMdlStatus = "Restored";
             instance.ApplyMdlError = string.Empty;
             instance.AfterRestorePath = originalPath;
-            var restoredOk = layoutRestored && graphicsRestored && collisionRestored && verifyResult.Success;
+            var restoredOk = layoutRestored && collisionRestored && verifyResult.Success;
             instance.RestoreStatus = restoredOk ? "Restored" : "Failed";
             instance.RestoreError = restoredOk ? string.Empty : $"{layoutResult}; {graphicsResult}; {collisionResult}; {verifyResult.Message}";
             instance.AfterRestorePosition = layoutRestored ? layoutResult : graphicsResult;
@@ -1835,6 +2280,9 @@ public sealed unsafe class LocalLayoutObjectService
     private bool RestoreOriginalGraphicsTransformDirect(LocalLayoutObjectInstance instance, OriginalSlotSnapshot snapshot, out string result)
     {
         result = string.Empty;
+        if (instance.TransformMode == LocalLayoutTransformMode.FullLayoutWithCollision)
+            return this.RefreshGraphicsObjectAddressForRestore(instance, out result);
+
         if (!this.TryGetSafeGraphicsObjectAddressForRestore(instance, out var graphicsAddress, out _, out result))
             return false;
 
@@ -2087,7 +2535,7 @@ public sealed unsafe class LocalLayoutObjectService
         return new RestoreVerification(failures.Count == 0, string.IsNullOrWhiteSpace(message) ? "restore readback ok" : message);
     }
 
-    private void WriteInstanceTransform(LocalLayoutObjectInstance instance, Vector3 position, Vector3 rotationEuler, Vector3 scale, string action)
+    private bool WriteInstanceTransform(LocalLayoutObjectInstance instance, Vector3 position, Vector3 rotationEuler, Vector3 scale, string action)
     {
         instance.CurrentPosition = position;
         instance.CurrentRotationEuler = rotationEuler;
@@ -2108,6 +2556,7 @@ public sealed unsafe class LocalLayoutObjectService
         }
 
         this.LastStatus = $"{action}：{this.transformService.LastResult}";
+        return applied;
     }
 
     private void ScheduleTransformMonitor(LocalLayoutObjectInstance instance, Vector3 expectedPosition, Vector3 expectedRotationEuler, Vector3 expectedScale, string action)
@@ -2678,6 +3127,104 @@ public sealed unsafe class LocalLayoutObjectService
 
         return string.Empty;
     }
+
+    private enum CreateJobState
+    {
+        Pending,
+        AllocatingSlot,
+        Recreating,
+        WaitingStabilize,
+        ApplyingTransform,
+        Ready,
+        Failed,
+    }
+
+    private sealed class CreateManyJob(
+        LayoutProbeInstance template,
+        List<CreateManyJobItem> items,
+        IReadOnlyList<LayoutProbeInstance> bgParts,
+        LocalLayoutTransformMode mode,
+        bool unsafeEnabled,
+        bool fullLayoutConfirmed,
+        string templateWarning,
+        int requestedCount)
+    {
+        public LayoutProbeInstance Template { get; } = template;
+
+        public List<CreateManyJobItem> Items { get; } = items;
+
+        public IReadOnlyList<LayoutProbeInstance> BgParts { get; } = bgParts;
+
+        public LocalLayoutTransformMode Mode { get; } = mode;
+
+        public bool UnsafeEnabled { get; } = unsafeEnabled;
+
+        public bool FullLayoutConfirmed { get; } = fullLayoutConfirmed;
+
+        public string TemplateWarning { get; } = templateWarning;
+
+        public int RequestedCount { get; } = requestedCount;
+
+        public int TotalCount => this.Items.Count;
+
+        public int CurrentIndex { get; set; }
+
+        public int SuccessCount => this.Items.Count(item => item.State == CreateJobState.Ready);
+
+        public int FailedCount => this.Items.Count(item => item.State == CreateJobState.Failed);
+
+        public int WaitingStabilizeCount => this.Items.Count(item => item.State == CreateJobState.WaitingStabilize);
+
+        public int PendingCount => this.Items.Count(item => item.State is not CreateJobState.Ready and not CreateJobState.Failed);
+
+        public string CurrentStateText
+            => this.CurrentIndex > 0 && this.CurrentIndex <= this.Items.Count
+                ? this.Items[this.CurrentIndex - 1].State.ToString()
+                : string.Empty;
+
+        public string CurrentSlotAddress
+            => this.CurrentIndex > 0 && this.CurrentIndex <= this.Items.Count
+                ? this.Items[this.CurrentIndex - 1].Slot.Address
+                : string.Empty;
+
+        public string LastError { get; set; } = string.Empty;
+
+        public string LastCreatedId { get; set; } = string.Empty;
+    }
+
+    private sealed class CreateManyJobItem(PendingCreateItem item)
+    {
+        public LayoutProbeInstance Slot { get; } = item.Slot;
+
+        public Vector3 Position { get; } = item.Position;
+
+        public Vector3 RotationEuler { get; } = item.RotationEuler;
+
+        public Vector3 Scale { get; } = item.Scale;
+
+        public string CustomMdlPath { get; } = item.CustomMdlPath;
+
+        public CreateJobState State { get; set; } = CreateJobState.Pending;
+
+        public int FrameInState { get; set; }
+
+        public int TimeoutFrames { get; } = 120;
+
+        public ulong SlotAddress { get; set; }
+
+        public string InstanceId { get; set; } = string.Empty;
+
+        public string LastMessage { get; set; } = string.Empty;
+
+        public string LastError { get; set; } = string.Empty;
+    }
+
+    private readonly record struct PendingCreateItem(
+        LayoutProbeInstance Slot,
+        Vector3 Position,
+        Vector3 RotationEuler,
+        Vector3 Scale,
+        string CustomMdlPath);
 
     private readonly record struct LayoutTransformSnapshot(Vector3 Position, Quaternion Rotation, Vector3 Scale);
 

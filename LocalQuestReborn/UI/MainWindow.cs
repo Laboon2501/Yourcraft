@@ -746,6 +746,11 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"active occupied slot count：{this.localLayoutObjects.ActiveOccupiedSlotCount}");
         ImGui.TextWrapped($"duplicate slot count：{this.localLayoutObjects.DuplicateSlotCount}");
         ImGui.TextWrapped($"恢复/清理忙碌状态：{this.localLayoutObjects.IsBusy}");
+        ImGui.TextWrapped($"批量创建队列：active={this.localLayoutObjects.IsCreateQueueActive}; pending={this.localLayoutObjects.PendingCreateQueueLength}; current={this.localLayoutObjects.CreateQueueCurrentIndex}/{this.localLayoutObjects.CreateQueueTotalCount}; waiting={this.localLayoutObjects.CreateQueueWaitingStabilizeCount}; success={this.localLayoutObjects.CreateQueueSuccessCount}; failed={this.localLayoutObjects.CreateQueueFailedCount}; reserved={this.localLayoutObjects.ReservedSlotCount}");
+        if (!string.IsNullOrWhiteSpace(this.localLayoutObjects.CreateQueueCurrentState))
+            ImGui.TextWrapped($"当前创建 job：state={this.localLayoutObjects.CreateQueueCurrentState}; slot={this.localLayoutObjects.CreateQueueCurrentSlot}");
+        if (!string.IsNullOrWhiteSpace(this.localLayoutObjects.CreateQueueLastError))
+            ImGui.TextWrapped($"批量创建最后错误：{this.localLayoutObjects.CreateQueueLastError}");
 
         var unsafeEnabled = this.realNpcSpawn.EnableUnsafeNativeWrites;
         if (ImGui.Checkbox("启用 Unsafe/native 写入", ref unsafeEnabled))
@@ -764,7 +769,7 @@ public sealed class MainWindow : Window
         var candidate = this.GetSelectedBgPart();
         var mode = this.localLayoutFullCollisionMode ? LocalLayoutTransformMode.FullLayoutWithCollision : LocalLayoutTransformMode.VisualOnly;
         var fullLayoutBlocked = this.localLayoutFullCollisionMode && !this.confirmFullLayoutCollisionMode;
-        ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || !this.realNpcSpawn.EnableUnsafeNativeWrites || candidate == null || !this.runtime.PlayerPosition.HasValue || fullLayoutBlocked);
+        ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || this.localLayoutObjects.IsCreateQueueActive || !this.realNpcSpawn.EnableUnsafeNativeWrites || candidate == null || !this.runtime.PlayerPosition.HasValue || fullLayoutBlocked);
         if (ImGui.Button(this.localLayoutFullCollisionMode ? "从候选创建本地物件（FullLayoutWithCollision，危险）" : "从候选创建本地物件（VisualOnly，推荐）"))
         {
             var created = this.localLayoutObjects.CreateFromCandidate(candidate, this.runtime.PlayerPosition!.Value, mode);
@@ -777,7 +782,7 @@ public sealed class MainWindow : Window
         if (ImGui.Button("恢复全部"))
         {
             this.localLayoutObjects.RestoreAll(
-                bgParts: this.FilteredBgParts(),
+                bgParts: this.AllBgParts(),
                 unsafeEnabled: this.realNpcSpawn.EnableUnsafeNativeWrites,
                 fullLayoutConfirmed: this.confirmFullLayoutCollisionMode);
             this.selectedLocalLayoutObjectId = string.Empty;
@@ -799,6 +804,9 @@ public sealed class MainWindow : Window
         if (ImGui.Button("重建 occupied registry"))
             this.localLayoutObjects.RebuildOccupiedSlotRegistryForUi();
         ImGui.SameLine();
+        if (ImGui.Button("RestoreAll Dry Run"))
+            this.localLayoutObjects.BuildRestorePlanPreview();
+        ImGui.SameLine();
         if (ImGui.Button("清理已恢复/无效实例"))
         {
             this.localLayoutObjects.ClearRestoredAndInvalidInstances();
@@ -813,6 +821,8 @@ public sealed class MainWindow : Window
                 this.selectedLocalLayoutObjectId = string.Empty;
         }
         ImGui.EndDisabled();
+        if (!string.IsNullOrWhiteSpace(this.localLayoutObjects.LastRestorePlanPreview) && ImGui.CollapsingHeader("RestoreAll 计划预览"))
+            ImGui.TextWrapped(this.localLayoutObjects.LastRestorePlanPreview);
 
         this.DrawLocalLayoutObjectTable();
         this.DrawSelectedLocalLayoutObjectControls();
@@ -900,7 +910,8 @@ public sealed class MainWindow : Window
         var basePosition = this.layoutUseManualBasePosition
             ? this.layoutManualBasePosition
             : this.runtime.PlayerPosition ?? Vector3.Zero;
-        var availableNearest = this.FilteredBgParts().Where(slot => !this.localLayoutObjects.IsSlotOccupied(slot.Address)).OrderBy(slot => slot.DistanceToPlayer).ToList();
+        var allBgParts = this.AllBgParts().ToList();
+        var availableNearest = allBgParts.Where(slot => !this.localLayoutObjects.IsSlotOccupied(slot.Address)).OrderBy(slot => slot.DistanceToPlayer).ToList();
         var availableFarthest = availableNearest.OrderByDescending(slot => slot.DistanceToPlayer).ToList();
         var availableInvisible = availableNearest.Where(slot => !slot.Visible).Concat(availableNearest.Where(slot => slot.Visible)).ToList();
         var hasBatchMdl = !string.IsNullOrWhiteSpace(this.layoutBatchCustomMdlPath);
@@ -917,8 +928,12 @@ public sealed class MainWindow : Window
             ? "同 resourcePath 可用 slot：请先设置模板。"
             : $"模板 resourcePath：{template.ResourcePath}");
         ImGui.TextWrapped($"同 resourcePath 可用 slot 数：{sameResourceAvailable}；bg/bgcommon 可用 slot 数：{anySupportedAvailable}；当前将创建：{Math.Min(this.layoutCopyCount, plannedAvailable)}");
+        if (ImGui.Button("CreateMany Dry Run Preview"))
+            this.localLayoutObjects.BuildCreateManyDryRunPreview(template, allBgParts, this.layoutCopyCount, this.allowDifferentResourcePathSlots, this.layoutBatchCustomMdlPath);
+        if (!string.IsNullOrWhiteSpace(this.localLayoutObjects.LastCreateManyDryRunPreview) && ImGui.CollapsingHeader("CreateMany 分配预览"))
+            ImGui.TextWrapped(this.localLayoutObjects.LastCreateManyDryRunPreview);
 
-        ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || !this.realNpcSpawn.EnableUnsafeNativeWrites || template == null || !hasBasePosition || fullLayoutBlocked);
+        ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || this.localLayoutObjects.IsCreateQueueActive || !this.realNpcSpawn.EnableUnsafeNativeWrites || template == null || !hasBasePosition || fullLayoutBlocked);
         if (ImGui.Button(mode == LocalLayoutTransformMode.VisualOnly ? "创建 N 个 VisualOnly 复制体" : "创建 N 个 FullLayoutWithCollision 复制体"))
             this.CreateMany(template, availableNearest, this.layoutCopyCount, basePosition, mode);
         if (ImGui.Button("从最远可用 slot 分配"))
@@ -940,7 +955,7 @@ public sealed class MainWindow : Window
             new Vector3(this.layoutCopySpacing, this.layoutCopySpacingY, this.layoutCopySpacingZ),
             this.allowDifferentResourcePathSlots,
             this.layoutBatchCustomMdlPath,
-            this.FilteredBgParts(),
+            this.AllBgParts(),
             this.realNpcSpawn.EnableUnsafeNativeWrites,
             this.confirmFullLayoutCollisionMode,
             this.layoutCopyDefaultRotationEuler,

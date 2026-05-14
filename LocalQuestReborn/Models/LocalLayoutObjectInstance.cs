@@ -269,7 +269,13 @@ public sealed class LocalLayoutObjectInstance
 
     public int PendingRecreateStabilizeAttempts { get; set; }
 
-    public int PendingRecreateStabilizeMaxAttempts { get; set; } = 30;
+    public int PendingRecreateStabilizeMaxAttempts { get; set; } = 60;
+
+    public string PendingStableGraphicsObjectAddress { get; set; } = string.Empty;
+
+    public int PendingStableFrameCount { get; set; }
+
+    public int PendingStableRequiredFrames { get; set; } = 3;
 
     public string PendingVisualTransformResult { get; set; } = string.Empty;
 
