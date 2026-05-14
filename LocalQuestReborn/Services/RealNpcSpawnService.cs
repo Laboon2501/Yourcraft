@@ -601,7 +601,45 @@ public sealed class RealNpcSpawnService
         return true;
     }
 
-    private void QueuePostSpawnApply(string runtimeId, string reason)
+    public void LogActorAppearanceDiagnostics(string runtimeId)
+    {
+        var actor = this.registry.GetByRuntimeId(runtimeId);
+        if (actor == null)
+        {
+            this.LastMessage = $"没有找到 Runtime Actor：{runtimeId}";
+            return;
+        }
+
+        var npc = this.database.GetNpcById(actor.NpcId);
+        var localPlayer = this.clientState.GetType().GetProperty("LocalPlayer")?.GetValue(this.clientState);
+        var preset = npc == null ? "npc=<missing>" : this.appearanceApplyService.DescribeNpcPreset(npc);
+        var actorSignature = BuildAppearanceSignature(actor.CharacterObject).Summary;
+        var actorEquipment = BuildAppearanceComponentSignature(actor.CharacterObject, EquipmentSignatureTokens);
+        var localSignature = BuildAppearanceSignature(localPlayer).Summary;
+        var localEquipment = BuildAppearanceComponentSignature(localPlayer, EquipmentSignatureTokens);
+        actor.LastAppearancePresetSummary = preset;
+        actor.LastAppearanceBeforeSummary = $"{actorSignature}; equipment={actorEquipment}";
+        actor.LastLocalPlayerAppearanceSummary = $"{localSignature}; equipment={localEquipment}";
+        this.log.Information("[Appearance] Manual diagnostics actor={Actor} order={Order} ptr={Ptr} index={Index} preset={Preset} actor={ActorSummary} actorEquip={ActorEquip} local={LocalSummary} localEquip={LocalEquip}",
+            actor.RuntimeId,
+            actor.SortOrder,
+            actor.Address,
+            actor.ObjectIndex,
+            preset,
+            actorSignature,
+            actorEquipment,
+            localSignature,
+            localEquipment);
+        this.LastMessage = $"已打印外观摘要：{actor.DisplayName}";
+    }
+
+    public void ForceClearAndReapplyAppearance(string runtimeId)
+        => this.QueuePostSpawnApply(runtimeId, "manual ClearAllEquipment + ReapplyFullPreset");
+
+    public void ForceTargetedRedrawAndReapplyAppearance(string runtimeId)
+        => this.QueuePostSpawnApply(runtimeId, "manual targeted Penumbra redraw + ReapplyFullPreset", PostSpawnApplyState.RequestTargetedRedraw);
+
+    private void QueuePostSpawnApply(string runtimeId, string reason, PostSpawnApplyState initialState = PostSpawnApplyState.WaitingObjectStable)
     {
         var actor = this.registry.GetByRuntimeId(runtimeId);
         if (actor == null)
@@ -609,10 +647,13 @@ public sealed class RealNpcSpawnService
 
         RemoveQueuedPostSpawnApply(runtimeId);
         actor.PostSpawnBehaviorReady = false;
-        actor.PostSpawnPipelineState = "WaitingObjectStable";
+        actor.PostSpawnPipelineState = initialState.ToString();
         actor.PostSpawnPipelineStatus = $"Queued post-spawn pipeline: {reason}";
-        this.postSpawnApplyQueue.Enqueue(new PostSpawnApplyPlan(runtimeId, actor.SpawnSequence, actor.SortOrder, reason));
-        this.log.Information("[RealNpcSpawnService] PostSpawn queued. order={Order}, runtime={RuntimeId}, reason={Reason}", actor.SortOrder, runtimeId, reason);
+        this.postSpawnApplyQueue.Enqueue(new PostSpawnApplyPlan(runtimeId, actor.SpawnSequence, actor.SortOrder, reason)
+        {
+            State = initialState,
+        });
+        this.log.Information("[RealNpcSpawnService] PostSpawn queued. order={Order}, runtime={RuntimeId}, state={State}, reason={Reason}", actor.SortOrder, runtimeId, initialState, reason);
     }
 
     private void RemoveQueuedPostSpawnApply(string runtimeId)
@@ -662,7 +703,21 @@ public sealed class RealNpcSpawnService
             case PostSpawnApplyState.ResetAppearanceToNpcBase:
                 this.ResetAppearanceToNpcBase(actor, plan);
                 break;
+            case PostSpawnApplyState.ClearEquipmentToEmpty:
+                this.ClearActorEquipmentToEmpty(actor, plan);
+                break;
             case PostSpawnApplyState.ApplyingAppearance:
+                this.brioAssemblyBridge.RefreshActor(actor);
+                if (!this.TryValidatePostSpawnActor(actor, out var preApplyValidationReason))
+                {
+                    plan.ElapsedTicks = 0;
+                    plan.StableTicks = 0;
+                    actor.PostSpawnPipelineState = "WaitingObjectStable";
+                    actor.PostSpawnPipelineStatus = $"Target changed before appearance apply: {preApplyValidationReason}";
+                    plan.State = PostSpawnApplyState.WaitingObjectStable;
+                    break;
+                }
+
                 plan.AppearanceEnqueuedAt = DateTime.Now;
                 actor.PostSpawnPipelineState = "ApplyingAppearance";
                 actor.PostSpawnPipelineStatus = "Object stable; appearance apply queued.";
@@ -673,14 +728,24 @@ public sealed class RealNpcSpawnService
                 break;
             case PostSpawnApplyState.WaitingAfterAppearance:
                 plan.AppearanceWaitTicks++;
-                if (plan.AppearanceWaitTicks >= 5 &&
-                    ((actor.LastAppearanceAppliedAt.HasValue && actor.LastAppearanceAppliedAt.Value >= plan.AppearanceEnqueuedAt) || plan.AppearanceWaitTicks >= 30))
+                if (this.appearanceApplyService.IsNpcAppearanceApplyPending(actor) && plan.AppearanceWaitTicks < 90)
+                {
+                    actor.PostSpawnPipelineStatus = $"Waiting Brio/Glamourer appearance task completion tick {plan.AppearanceWaitTicks}/90. {this.appearanceApplyService.HumanoidBrioActorAppearanceLastResult}";
+                }
+                else if (plan.AppearanceWaitTicks >= 5 &&
+                    ((actor.LastAppearanceAppliedAt.HasValue && actor.LastAppearanceAppliedAt.Value >= plan.AppearanceEnqueuedAt) || plan.AppearanceWaitTicks >= 90))
                     plan.State = PostSpawnApplyState.VerifyAppearance;
                 else
-                    actor.PostSpawnPipelineStatus = $"Waiting appearance/redraw settle tick {plan.AppearanceWaitTicks}/30.";
+                    actor.PostSpawnPipelineStatus = $"Waiting appearance/redraw settle tick {plan.AppearanceWaitTicks}/90.";
                 break;
             case PostSpawnApplyState.VerifyAppearance:
                 this.VerifyPostSpawnAppearance(actor, plan);
+                break;
+            case PostSpawnApplyState.RequestTargetedRedraw:
+                this.RequestPostSpawnTargetedRedraw(actor, plan);
+                break;
+            case PostSpawnApplyState.WaitingAfterTargetedRedraw:
+                this.WaitAfterPostSpawnTargetedRedraw(actor, plan);
                 break;
             case PostSpawnApplyState.ApplyingBehavior:
                 this.ApplyPostSpawnBehavior(actor);
@@ -748,7 +813,9 @@ public sealed class RealNpcSpawnService
         var localPlayer = this.clientState.GetType().GetProperty("LocalPlayer")?.GetValue(this.clientState);
         plan.LocalPlayerSignature = BuildAppearanceSignature(localPlayer).Summary;
         plan.LocalPlayerEquipmentSignature = BuildAppearanceComponentSignature(localPlayer, EquipmentSignatureTokens);
+        plan.PresetSignature = this.appearanceApplyService.DescribeNpcPreset(npc);
         actor.LastAppearanceBeforeSummary = plan.BeforeApplySignature;
+        actor.LastAppearancePresetSummary = plan.PresetSignature;
         actor.LastLocalPlayerAppearanceSummary = $"{plan.LocalPlayerSignature}; equipment={plan.LocalPlayerEquipmentSignature}";
         actor.PostSpawnPipelineState = "ApplyingPenumbraCollection";
         if (!this.penumbraIpc.ApplyCollection(npc, actor, out var penumbraReason))
@@ -757,12 +824,14 @@ public sealed class RealNpcSpawnService
             this.log.Warning("[ActorAppearance] Penumbra collection stage failed but preset apply will continue. order={Order}, actor={Actor}, reason={Reason}", actor.SortOrder, actor.RuntimeId, penumbraReason);
         }
 
-        this.log.Information("[ActorAppearance] Validate target actor={Actor} order={Order} ptr={Ptr} index={Index} local={Local} before={Before}",
+        this.log.Information("[ActorAppearance] Validate target actor={Actor} order={Order} ptr={Ptr} index={Index} preset={Preset} local={Local} localEquip={LocalEquip} before={Before}",
             actor.RuntimeId,
             actor.SortOrder,
             actor.Address,
             actor.ObjectIndex,
+            plan.PresetSignature,
             plan.LocalPlayerSignature,
+            plan.LocalPlayerEquipmentSignature,
             plan.BeforeApplySignature);
         actor.PostSpawnPipelineStatus = $"Penumbra stage complete: {penumbraReason}";
         plan.State = PostSpawnApplyState.WaitingAfterPenumbra;
@@ -770,13 +839,56 @@ public sealed class RealNpcSpawnService
 
     private void ResetAppearanceToNpcBase(RuntimeActorInstance actor, PostSpawnApplyPlan plan)
     {
+        this.brioAssemblyBridge.RefreshActor(actor);
+        if (!this.TryValidatePostSpawnActor(actor, out var validationReason))
+        {
+            plan.ElapsedTicks = 0;
+            plan.StableTicks = 0;
+            actor.PostSpawnPipelineState = "WaitingObjectStable";
+            actor.PostSpawnPipelineStatus = $"Target changed after Penumbra/redraw: {validationReason}";
+            plan.State = PostSpawnApplyState.WaitingObjectStable;
+            return;
+        }
+
         var npc = this.database.GetNpcById(actor.NpcId);
-        plan.PresetSignature = npc == null
-            ? "npc=<missing>"
-            : $"source={npc.Appearance.SourceType}; glam={npc.Appearance.GlamourerDesignId}; gameNpc={npc.Appearance.GameNpcKind}/{npc.Appearance.GameNpcBaseId}/{npc.Appearance.GameNpcModelId}/{npc.Appearance.GameNpcCustomizeId}";
+        if (string.IsNullOrWhiteSpace(plan.PresetSignature))
+            plan.PresetSignature = npc == null
+                ? "npc=<missing>"
+                : this.appearanceApplyService.DescribeNpcPreset(npc);
+        actor.LastAppearancePresetSummary = plan.PresetSignature;
         actor.PostSpawnPipelineState = "ResetAppearanceToNpcBase";
         actor.PostSpawnPipelineStatus = $"Preparing full preset overwrite. Preset={plan.PresetSignature}";
         this.log.Information("[ActorAppearance] ResetAppearanceToNpcBase actor={Actor} order={Order} preset={Preset}", actor.RuntimeId, actor.SortOrder, plan.PresetSignature);
+        plan.State = PostSpawnApplyState.ClearEquipmentToEmpty;
+    }
+
+    private void ClearActorEquipmentToEmpty(RuntimeActorInstance actor, PostSpawnApplyPlan plan)
+    {
+        this.brioAssemblyBridge.RefreshActor(actor);
+        if (!this.TryValidatePostSpawnActor(actor, out var validationReason))
+        {
+            plan.ElapsedTicks = 0;
+            plan.StableTicks = 0;
+            actor.PostSpawnPipelineState = "WaitingObjectStable";
+            actor.PostSpawnPipelineStatus = $"Target changed before clear-equipment stage: {validationReason}";
+            plan.State = PostSpawnApplyState.WaitingObjectStable;
+            return;
+        }
+
+        var beforeEquipment = BuildAppearanceComponentSignature(actor.CharacterObject, EquipmentSignatureTokens);
+        plan.ActorBeforeEquipmentSignature = beforeEquipment;
+        actor.LastAppearanceClearEquipmentResult = "No separate verified ClearAllEquipment native path is enabled; proceeding with full preset overwrite. Glamourer designs use full flags=7, and GameNpc applies AppearanceImportOptions.All.";
+        actor.LastAppearanceBeforeSummary = $"{BuildAppearanceSignature(actor.CharacterObject).Summary}; equipment={beforeEquipment}";
+        actor.PostSpawnPipelineState = "ClearAllEquipmentToEmpty";
+        actor.PostSpawnPipelineStatus = actor.LastAppearanceClearEquipmentResult;
+        this.log.Information("[Appearance] ClearAllEquipmentToEmpty actor={Actor} order={Order} targetPtr={Ptr} index={Index} result={Result} beforeEquip={BeforeEquip} preset={Preset}",
+            actor.RuntimeId,
+            actor.SortOrder,
+            actor.Address,
+            actor.ObjectIndex,
+            actor.LastAppearanceClearEquipmentResult,
+            beforeEquipment,
+            plan.PresetSignature);
         plan.State = PostSpawnApplyState.ApplyingAppearance;
     }
 
@@ -787,23 +899,61 @@ public sealed class RealNpcSpawnService
         actor.LastAppearanceAfterSummary = afterSignature.Summary;
         var npc = this.database.GetNpcById(actor.NpcId);
         var allowsCurrentPlayerAppearance = npc?.Appearance.SourceType == CustomNpcAppearanceSourceType.CurrentPlayer;
+        var applyFailed = !string.IsNullOrWhiteSpace(actor.LastAppearanceError);
         var suspicious = !allowsCurrentPlayerAppearance &&
             IsResidualLocalPlayerAppearance(plan.LocalPlayerSignature, plan.LocalPlayerEquipmentSignature, afterSignature, afterEquipmentSignature);
+        IReadOnlyList<string> residualSlots = suspicious
+            ? GetResidualPlayerEquipmentSlots(actor.CharacterObject, this.clientState.GetType().GetProperty("LocalPlayer")?.GetValue(this.clientState))
+            : Array.Empty<string>();
         actor.LastAppearanceRetryCount = plan.AppearanceRetryCount;
-        actor.LastAppearanceValidationResult = suspicious
-            ? $"Suspicious residual LocalPlayer appearance. retry={plan.AppearanceRetryCount}/3; after={afterSignature.Summary}; afterEquip={afterEquipmentSignature}; local={plan.LocalPlayerSignature}; localEquip={plan.LocalPlayerEquipmentSignature}"
-            : $"Appearance verification passed. after={afterSignature.Summary}";
-        this.log.Information("[ActorAppearance] Verify actor={Actor} order={Order} retry={Retry} suspicious={Suspicious} preset={Preset} before={Before} local={Local} after={After}",
+        actor.LastAppearanceRedrawFallbackCount = plan.RedrawFallbackCount;
+        actor.LastAppearanceResidualSlots = string.Join(",", residualSlots);
+        actor.LastAppearanceVerificationState = applyFailed
+            ? AppearanceApplyResult.ApplyFailed.ToString()
+            : suspicious
+                ? AppearanceApplyResult.PlayerGearResidual.ToString()
+                : AppearanceApplyResult.Success.ToString();
+        actor.LastAppearanceValidationResult = applyFailed
+            ? $"Appearance apply reported failure. retry={plan.AppearanceRetryCount}/3; error={actor.LastAppearanceError}; after={afterSignature.Summary}"
+            : suspicious
+                ? $"PlayerGearResidual detected. redrawFallback={plan.RedrawFallbackCount}/2; slots={actor.LastAppearanceResidualSlots}; after={afterSignature.Summary}; afterEquip={afterEquipmentSignature}; local={plan.LocalPlayerSignature}; localEquip={plan.LocalPlayerEquipmentSignature}"
+                : $"Appearance verification passed. after={afterSignature.Summary}";
+        this.log.Information("[Appearance] Verify actor={Actor} order={Order} result={Result} applyRetry={Retry} redrawRetry={RedrawRetry} residualSlots={ResidualSlots} preset={Preset} actorEquip={ActorEquip} localEquip={LocalEquip} before={Before} local={Local} after={After} error={Error}",
+            actor.RuntimeId,
+            actor.SortOrder,
+            actor.LastAppearanceVerificationState,
+            plan.AppearanceRetryCount,
+            plan.RedrawFallbackCount,
+            actor.LastAppearanceResidualSlots,
+            plan.PresetSignature,
+            afterEquipmentSignature,
+            plan.LocalPlayerEquipmentSignature,
+            plan.BeforeApplySignature,
+            plan.LocalPlayerSignature,
+            afterSignature.Summary,
+            actor.LastAppearanceError);
+
+        if (suspicious && plan.RedrawFallbackCount < 2)
+        {
+            actor.PostSpawnPipelineState = "RequestTargetedRedraw";
+            actor.PostSpawnPipelineStatus = actor.LastAppearanceValidationResult;
+            plan.State = PostSpawnApplyState.RequestTargetedRedraw;
+            return;
+        }
+
+        this.log.Information("[ActorAppearance] Verify actor={Actor} order={Order} retry={Retry} applyFailed={ApplyFailed} suspicious={Suspicious} preset={Preset} before={Before} local={Local} after={After} error={Error}",
             actor.RuntimeId,
             actor.SortOrder,
             plan.AppearanceRetryCount,
+            applyFailed,
             suspicious,
             plan.PresetSignature,
             plan.BeforeApplySignature,
             plan.LocalPlayerSignature,
-            afterSignature.Summary);
+            afterSignature.Summary,
+            actor.LastAppearanceError);
 
-        if (suspicious && plan.AppearanceRetryCount < 3)
+        if ((applyFailed || suspicious) && plan.AppearanceRetryCount < 3)
         {
             plan.AppearanceRetryCount++;
             plan.AppearanceWaitTicks = 0;
@@ -814,10 +964,12 @@ public sealed class RealNpcSpawnService
             return;
         }
 
-        if (suspicious)
+        if (applyFailed || suspicious)
         {
             actor.PostSpawnPipelineState = "Failed";
-            actor.PostSpawnPipelineStatus = "Appearance apply failed: equipment/customize still matches LocalPlayer after retries.";
+            actor.PostSpawnPipelineStatus = applyFailed
+                ? $"Appearance apply failed after retries: {actor.LastAppearanceError}"
+                : "RedrawRetryExceeded: equipment/customize still matches LocalPlayer after targeted redraw fallback.";
             actor.LastAppearanceError = actor.PostSpawnPipelineStatus;
             actor.PostSpawnBehaviorReady = true;
             this.activePostSpawnApply = null;
@@ -825,6 +977,62 @@ public sealed class RealNpcSpawnService
         }
 
         plan.State = PostSpawnApplyState.ApplyingBehavior;
+    }
+
+    private void RequestPostSpawnTargetedRedraw(RuntimeActorInstance actor, PostSpawnApplyPlan plan)
+    {
+        this.brioAssemblyBridge.RefreshActor(actor);
+        if (!this.TryValidatePostSpawnActor(actor, out var validationReason))
+        {
+            plan.ElapsedTicks = 0;
+            plan.StableTicks = 0;
+            actor.PostSpawnPipelineState = "WaitingObjectStable";
+            actor.PostSpawnPipelineStatus = $"Target invalid before redraw fallback: {validationReason}";
+            plan.State = PostSpawnApplyState.WaitingObjectStable;
+            return;
+        }
+
+        if (!this.penumbraIpc.RequestRedrawObject(actor, out var redrawReason))
+        {
+            actor.PostSpawnPipelineState = "Failed";
+            actor.PostSpawnPipelineStatus = $"Targeted redraw fallback failed: {redrawReason}";
+            actor.LastAppearanceError = actor.PostSpawnPipelineStatus;
+            actor.PostSpawnBehaviorReady = true;
+            this.log.Warning("[Appearance] Targeted redraw fallback failed actor={Actor} order={Order} reason={Reason}", actor.RuntimeId, actor.SortOrder, redrawReason);
+            this.activePostSpawnApply = null;
+            return;
+        }
+
+        plan.RedrawFallbackCount++;
+        plan.RedrawWaitTicks = 0;
+        plan.LastDrawObjectAddress = ReadActorDrawObjectAddress(actor);
+        actor.LastAppearanceRedrawFallbackCount = plan.RedrawFallbackCount;
+        actor.PostSpawnPipelineState = "WaitingAfterTargetedRedraw";
+        actor.PostSpawnPipelineStatus = $"检测到玩家装备残留，已自动 targeted redraw：{redrawReason}";
+        this.log.Information("[Appearance] Request targeted Penumbra redraw actor={Actor} order={Order} index={Index} retry={Retry} reason={Reason}", actor.RuntimeId, actor.SortOrder, actor.ObjectIndex, plan.RedrawFallbackCount, redrawReason);
+        plan.State = PostSpawnApplyState.WaitingAfterTargetedRedraw;
+    }
+
+    private void WaitAfterPostSpawnTargetedRedraw(RuntimeActorInstance actor, PostSpawnApplyPlan plan)
+    {
+        plan.RedrawWaitTicks++;
+        this.brioAssemblyBridge.RefreshActor(actor);
+        actor.PostSpawnPipelineState = "WaitingAfterTargetedRedraw";
+        actor.PostSpawnPipelineStatus = $"等待 targeted redraw 后 DrawObject 稳定：{plan.RedrawWaitTicks}/5";
+        if (plan.RedrawWaitTicks < 5)
+            return;
+
+        this.log.Information("[Appearance] Redraw wait complete actor={Actor} order={Order} ticks={Ticks} oldDraw={OldDraw} newDraw={NewDraw}", actor.RuntimeId, actor.SortOrder, plan.RedrawWaitTicks, plan.LastDrawObjectAddress, ReadActorDrawObjectAddress(actor));
+        plan.ElapsedTicks = 0;
+        plan.StableTicks = 0;
+        plan.PenumbraWaitTicks = 0;
+        plan.AppearanceWaitTicks = 0;
+        plan.AppearanceEnqueuedAt = DateTime.MinValue;
+        plan.LastAddress = string.Empty;
+        plan.LastDrawObjectAddress = string.Empty;
+        plan.State = PostSpawnApplyState.WaitingObjectStable;
+        actor.PostSpawnPipelineState = "WaitingObjectStable";
+        actor.PostSpawnPipelineStatus = "Targeted redraw complete; re-resolving actor and reapplying full NPC preset.";
     }
 
     private static bool IsResidualLocalPlayerAppearance(string localPlayerSignature, string localPlayerEquipmentSignature, AppearanceSignature afterSignature, string afterEquipmentSignature)
@@ -838,6 +1046,96 @@ public sealed class RealNpcSpawnService
         return !string.IsNullOrWhiteSpace(afterEquipmentSignature) &&
                !afterEquipmentSignature.Contains("unavailable", StringComparison.OrdinalIgnoreCase) &&
                string.Equals(afterEquipmentSignature, localPlayerEquipmentSignature, StringComparison.Ordinal);
+    }
+
+    private static IReadOnlyList<string> GetResidualPlayerEquipmentSlots(object? actorSource, object? localPlayerSource)
+    {
+        var actorMap = BuildAppearanceComponentMap(actorSource, EquipmentSignatureTokens);
+        var localMap = BuildAppearanceComponentMap(localPlayerSource, EquipmentSignatureTokens);
+        if (actorMap.Count == 0 || localMap.Count == 0)
+            return ["equipment-summary"];
+
+        var matches = new List<string>();
+        foreach (var (name, actorValue) in actorMap)
+        {
+            if (!localMap.TryGetValue(name, out var localValue))
+                continue;
+
+            if (string.Equals(actorValue, localValue, StringComparison.Ordinal))
+                matches.Add(NormalizeEquipmentSlotName(name));
+        }
+
+        matches.Sort(StringComparer.OrdinalIgnoreCase);
+        return matches.Count == 0 ? ["equipment-summary"] : matches.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    private static Dictionary<string, string> BuildAppearanceComponentMap(object? source, IReadOnlyList<string> tokens)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (source == null)
+            return result;
+
+        try
+        {
+            var type = source.GetType();
+            foreach (var member in type.GetMembers(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+            {
+                if (member.MemberType is not (MemberTypes.Property or MemberTypes.Field) ||
+                    !tokens.Any(token => member.Name.Contains(token, StringComparison.OrdinalIgnoreCase)))
+                    continue;
+
+                object? value = null;
+                try
+                {
+                    value = member switch
+                    {
+                        PropertyInfo property when property.GetIndexParameters().Length == 0 => property.GetValue(source),
+                        FieldInfo field => field.GetValue(source),
+                        _ => null,
+                    };
+                }
+                catch
+                {
+                    continue;
+                }
+
+                result[member.Name] = FormatSignatureValue(value);
+            }
+        }
+        catch
+        {
+        }
+
+        return result;
+    }
+
+    private static string NormalizeEquipmentSlotName(string memberName)
+    {
+        foreach (var (token, slot) in new[]
+                 {
+                     ("Head", "head"),
+                     ("Body", "body"),
+                     ("Hand", "hands"),
+                     ("Arm", "hands"),
+                     ("Leg", "legs"),
+                     ("Foot", "feet"),
+                     ("Feet", "feet"),
+                     ("Ear", "ears"),
+                     ("Neck", "neck"),
+                     ("Wrist", "wrists"),
+                     ("Ring", "rings"),
+                     ("MainHand", "mainhand"),
+                     ("OffHand", "offhand"),
+                     ("Weapon", "weapon"),
+                     ("Equip", "equipment"),
+                     ("DrawData", "drawdata"),
+                 })
+        {
+            if (memberName.Contains(token, StringComparison.OrdinalIgnoreCase))
+                return slot;
+        }
+
+        return memberName;
     }
 
     private bool TryValidatePostSpawnActor(RuntimeActorInstance actor, out string reason)
@@ -2108,6 +2406,10 @@ public sealed class RealNpcSpawnService
 
         public int AppearanceRetryCount { get; set; }
 
+        public int RedrawFallbackCount { get; set; }
+
+        public int RedrawWaitTicks { get; set; }
+
         public string BeforeApplySignature { get; set; } = string.Empty;
 
         public string LocalPlayerSignature { get; set; } = string.Empty;
@@ -2115,6 +2417,8 @@ public sealed class RealNpcSpawnService
         public string LocalPlayerEquipmentSignature { get; set; } = string.Empty;
 
         public string PresetSignature { get; set; } = string.Empty;
+
+        public string ActorBeforeEquipmentSignature { get; set; } = string.Empty;
     }
 
     private enum PostSpawnApplyState
@@ -2123,13 +2427,26 @@ public sealed class RealNpcSpawnService
         ApplyingPenumbra,
         WaitingAfterPenumbra,
         ResetAppearanceToNpcBase,
+        ClearEquipmentToEmpty,
         ApplyingAppearance,
         WaitingAfterAppearance,
         VerifyAppearance,
+        RequestTargetedRedraw,
+        WaitingAfterTargetedRedraw,
         ApplyingBehavior,
     }
 
     private sealed record AppearanceSignature(string Summary, bool HasAnySignal);
+
+    private enum AppearanceApplyResult
+    {
+        Success,
+        PendingDrawObject,
+        PlayerGearResidual,
+        ApplyFailed,
+        TargetInvalid,
+        RedrawRetryExceeded,
+    }
 
     private static float CalculateXZDistance(Vector3 playerPosition, Vector3 targetPosition)
     {

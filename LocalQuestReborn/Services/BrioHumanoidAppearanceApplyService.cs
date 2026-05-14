@@ -27,6 +27,14 @@ public sealed class BrioHumanoidAppearanceApplyService
 
     public string LastSignature { get; private set; } = string.Empty;
 
+    public string? PendingRuntimeId { get; private set; }
+
+    public bool LastApplyPending { get; private set; }
+
+    public bool LastApplySucceeded { get; private set; }
+
+    public DateTime? LastApplyCompletedAt { get; private set; }
+
     public void Refresh()
     {
         try
@@ -160,14 +168,34 @@ public sealed class BrioHumanoidAppearanceApplyService
             var result = setAppearance.Invoke(capability, [appearance, allOptions]);
             if (result is Task task)
             {
+                this.PendingRuntimeId = actor.RuntimeId;
+                this.LastApplyPending = true;
+                this.LastApplySucceeded = false;
+                this.LastApplyCompletedAt = null;
                 _ = task.ContinueWith(completedTask =>
                 {
+                    this.LastApplyPending = false;
+                    this.LastApplyCompletedAt = DateTime.Now;
                     if (completedTask.Exception != null)
                     {
                         this.LastException = completedTask.Exception.GetBaseException().Message;
+                        this.LastApplySucceeded = false;
                         this.LastResult = $"Brio ActorAppearanceCapability.SetAppearance 异步失败：{this.LastException}";
                     }
+                    else
+                    {
+                        this.LastException = string.Empty;
+                        this.LastResult = $"Brio ActorAppearanceCapability.SetAppearance async completed: ENpcBase={resolution.BaseRowId}, runtime={actor.RuntimeId}";
+                        this.LastApplySucceeded = true;
+                    }
                 }, TaskScheduler.Default);
+            }
+            else
+            {
+                this.PendingRuntimeId = actor.RuntimeId;
+                this.LastApplyPending = false;
+                this.LastApplySucceeded = true;
+                this.LastApplyCompletedAt = DateTime.Now;
             }
 
             reason = $"Brio ActorAppearanceCapability.SetAppearance 已触发：ENpcBase={resolution.BaseRowId}, options=All";

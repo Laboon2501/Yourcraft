@@ -207,6 +207,41 @@ public sealed class PenumbraIpcService
         }
     }
 
+    public bool RequestRedrawObject(RuntimeActorInstance actor, out string reason)
+    {
+        if (this.disposed)
+        {
+            reason = "Penumbra IPC service disposed.";
+            return false;
+        }
+
+        if (!this.IsAvailable || !this.IsEnabled)
+        {
+            reason = $"Penumbra unavailable: {this.LastError}";
+            return false;
+        }
+
+        if (!TryReadObjectIndex(actor, out var objectIndex))
+        {
+            reason = $"Invalid actor object index: {actor.ObjectIndex}";
+            return false;
+        }
+
+        try
+        {
+            var success = this.TryRedrawObject(objectIndex, out var redrawReason);
+            reason = $"Targeted redraw actor={actor.RuntimeId}, index={objectIndex}, success={success}: {redrawReason}";
+            this.log.Information("Penumbra targeted redraw actor={Actor}, index={Index}, success={Success}, reason={Reason}", actor.RuntimeId, objectIndex, success, redrawReason);
+            return success;
+        }
+        catch (Exception ex)
+        {
+            reason = $"Targeted Penumbra redraw failed: {ex.Message}";
+            this.log.Warning(ex, "Targeted Penumbra redraw failed. Actor={Actor}, Index={Index}", actor.RuntimeId, objectIndex);
+            return false;
+        }
+    }
+
     public void CleanupActorAssignment(RuntimeActorInstance actor)
     {
         if (!actor.WeAppliedPenumbraCollection)

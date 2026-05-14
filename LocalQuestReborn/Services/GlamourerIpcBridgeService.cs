@@ -7,7 +7,8 @@ public sealed class GlamourerIpcBridgeService
 {
     private const string ApplyDesignIpcName = "Glamourer.ApplyDesign";
     private const uint DefaultKey = 0u;
-    private const uint EquipmentAndCustomizationFlags = 6u;
+    private const uint FullAppearanceFlags = 7u;
+    private const uint LegacyCustomizationAndParameterFlags = 6u;
 
     private readonly IDalamudPluginInterface pluginInterface;
     private readonly IPluginLog log;
@@ -23,7 +24,7 @@ public sealed class GlamourerIpcBridgeService
 
     public GlamourerIpcBindingDetail? SelectedApplyDesign { get; private set; }
 
-    public string LastMessage { get; private set; } = "尚未调用 Glamourer IPC。";
+    public string LastMessage { get; private set; } = "Glamourer IPC has not been probed.";
 
     public string LastError { get; private set; } = string.Empty;
 
@@ -48,22 +49,22 @@ public sealed class GlamourerIpcBridgeService
 
         this.SelectedApplyDesign = this.details.FirstOrDefault(detail => detail.IsRegistered);
         this.LastMessage = this.SelectedApplyDesign == null
-            ? "未发现新版 Glamourer.ApplyDesign(Guid,int,uint,uint) IPC。"
-            : $"已绑定 Glamourer.ApplyDesign：{this.SelectedApplyDesign.Signature}";
+            ? "No Glamourer.ApplyDesign(Guid,int,uint,uint) IPC binding was found."
+            : $"Bound Glamourer.ApplyDesign: {this.SelectedApplyDesign.Signature}";
     }
 
     public bool ApplyDesignToObject(string designId, int objectIndex, out string reason)
     {
         if (string.IsNullOrWhiteSpace(designId))
         {
-            reason = "Glamourer designId 为空。";
+            reason = "Glamourer designId is empty.";
             this.LastError = reason;
             return false;
         }
 
         if (!Guid.TryParse(designId, out var guid))
         {
-            reason = $"Glamourer designId 不是有效 GUID：{designId}";
+            reason = $"Glamourer designId is not a valid GUID: {designId}";
             this.LastError = reason;
             return false;
         }
@@ -71,7 +72,7 @@ public sealed class GlamourerIpcBridgeService
         var candidates = this.details.Where(detail => detail.IsRegistered).ToList();
         if (candidates.Count == 0)
         {
-            reason = "未发现新版 Glamourer.ApplyDesign(Guid,int,uint,uint) IPC。请先点击“探测 Glamourer IPC”。";
+            reason = "No Glamourer.ApplyDesign(Guid,int,uint,uint) IPC binding was found. Probe Glamourer IPC first.";
             this.LastError = reason;
             this.LastMessage = reason;
             return false;
@@ -93,7 +94,7 @@ public sealed class GlamourerIpcBridgeService
 
         reason = string.Join(" | ", errors);
         this.LastError = reason;
-        this.LastMessage = $"Glamourer ApplyDesign 调用失败：{reason}";
+        this.LastMessage = $"Glamourer ApplyDesign failed: {reason}";
         return false;
     }
 
@@ -122,40 +123,48 @@ public sealed class GlamourerIpcBridgeService
     private bool TryInvokeApplyDesign(GlamourerIpcBindingDetail detail, Guid designId, int objectIndex, out string reason)
     {
         reason = string.Empty;
-        this.LastInvocationParameters = $"designId={designId}, objectIndex={objectIndex}, key={DefaultKey}, flags={EquipmentAndCustomizationFlags}";
         this.LastReturnCode = string.Empty;
+        var errors = new List<string>();
 
-        try
+        foreach (var flags in new[] { FullAppearanceFlags, LegacyCustomizationAndParameterFlags })
         {
-            object? result = detail.InvocationKind switch
+            this.LastInvocationParameters = $"designId={designId}, objectIndex={objectIndex}, key={DefaultKey}, flags={flags}";
+            try
             {
-                GlamourerBridgeInvocationKind.ApplyGuidIntUIntUIntObject =>
-                    this.pluginInterface.GetIpcSubscriber<Guid, int, uint, uint, object>(detail.Name).InvokeFunc(designId, objectIndex, DefaultKey, EquipmentAndCustomizationFlags),
-                GlamourerBridgeInvocationKind.ApplyGuidIntUIntUIntInt =>
-                    this.pluginInterface.GetIpcSubscriber<Guid, int, uint, uint, int>(detail.Name).InvokeFunc(designId, objectIndex, DefaultKey, EquipmentAndCustomizationFlags),
-                GlamourerBridgeInvocationKind.ApplyGuidIntUIntUIntUInt =>
-                    this.pluginInterface.GetIpcSubscriber<Guid, int, uint, uint, uint>(detail.Name).InvokeFunc(designId, objectIndex, DefaultKey, EquipmentAndCustomizationFlags),
-                _ => null,
-            };
+                object? result = detail.InvocationKind switch
+                {
+                    GlamourerBridgeInvocationKind.ApplyGuidIntUIntUIntObject =>
+                        this.pluginInterface.GetIpcSubscriber<Guid, int, uint, uint, object>(detail.Name).InvokeFunc(designId, objectIndex, DefaultKey, flags),
+                    GlamourerBridgeInvocationKind.ApplyGuidIntUIntUIntInt =>
+                        this.pluginInterface.GetIpcSubscriber<Guid, int, uint, uint, int>(detail.Name).InvokeFunc(designId, objectIndex, DefaultKey, flags),
+                    GlamourerBridgeInvocationKind.ApplyGuidIntUIntUIntUInt =>
+                        this.pluginInterface.GetIpcSubscriber<Guid, int, uint, uint, uint>(detail.Name).InvokeFunc(designId, objectIndex, DefaultKey, flags),
+                    _ => null,
+                };
 
-            var code = ConvertReturnCode(result);
-            this.LastReturnCode = code?.ToString() ?? result?.ToString() ?? "null";
-            if (code == 0)
-            {
-                reason = $"Glamourer ApplyDesign 成功。签名=Guid,int,uint,uint -> {detail.ReturnType}，key=0，flags=6，返回码={this.LastReturnCode}，参数={this.LastInvocationParameters}";
-                return true;
+                var code = ConvertReturnCode(result);
+                this.LastReturnCode = code?.ToString() ?? result?.ToString() ?? "null";
+                if (code == 0)
+                {
+                    var flagNote = flags == FullAppearanceFlags
+                        ? "full appearance flags=7 (equipment+customize+parameters)"
+                        : "legacy fallback flags=6 (may be partial)";
+                    reason = $"Glamourer ApplyDesign succeeded. Signature=Guid,int,uint,uint -> {detail.ReturnType}, key=0, {flagNote}, return={this.LastReturnCode}, args={this.LastInvocationParameters}";
+                    return true;
+                }
+
+                errors.Add($"flags={flags} returned {this.LastReturnCode}");
             }
+            catch (Exception ex)
+            {
+                errors.Add($"flags={flags} exception={ex.Message}");
+                detail.LastError = ex.Message;
+                this.log.Warning(ex, "Glamourer ApplyDesign invocation failed. Signature={Signature}, Flags={Flags}", detail.Signature, flags);
+            }
+        }
 
-            reason = $"Glamourer ApplyDesign 返回非 0。签名=Guid,int,uint,uint -> {detail.ReturnType}，key=0，flags=6，返回码={this.LastReturnCode}，参数={this.LastInvocationParameters}";
-            return false;
-        }
-        catch (Exception ex)
-        {
-            reason = $"Glamourer ApplyDesign 调用失败。签名=Guid,int,uint,uint -> {detail.ReturnType}，key=0，flags=6，参数={this.LastInvocationParameters}，异常={ex.Message}";
-            detail.LastError = ex.Message;
-            this.log.Warning(ex, "Glamourer ApplyDesign invocation failed. Signature={Signature}", detail.Signature);
-            return false;
-        }
+        reason = $"Glamourer ApplyDesign failed. Signature=Guid,int,uint,uint -> {detail.ReturnType}. Tried full flags=7 before legacy flags=6. Results: {string.Join("; ", errors)}";
+        return false;
     }
 
     private static long? ConvertReturnCode(object? result)

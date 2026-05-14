@@ -1,6 +1,7 @@
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using LocalQuestReborn.Models;
+using System.Text.Json;
 
 namespace LocalQuestReborn.Services;
 
@@ -43,6 +44,35 @@ public sealed class AppearanceApplyService
     public string HumanoidGlamourerApplyStateLastException => this.gameNpcApplyService.GlamourerApplyStateLastException;
     public string HumanoidBrioActorAppearanceLastResult => this.gameNpcApplyService.BrioActorAppearanceLastResult;
     public string HumanoidBrioActorAppearanceLastException => this.gameNpcApplyService.BrioActorAppearanceLastException;
+    public bool HumanoidBrioActorAppearanceApplyPending => this.gameNpcApplyService.BrioActorAppearanceApplyPending;
+    public string? HumanoidBrioActorAppearancePendingRuntimeId => this.gameNpcApplyService.BrioActorAppearancePendingRuntimeId;
+    public DateTime? HumanoidBrioActorAppearanceApplyCompletedAt => this.gameNpcApplyService.BrioActorAppearanceApplyCompletedAt;
+
+    public bool IsNpcAppearanceApplyPending(RuntimeActorInstance actor)
+        => this.gameNpcApplyService.BrioActorAppearanceApplyPending &&
+           string.Equals(this.gameNpcApplyService.BrioActorAppearancePendingRuntimeId, actor.RuntimeId, StringComparison.OrdinalIgnoreCase);
+
+    public string DescribeNpcPreset(CustomNpc npc)
+    {
+        var appearance = npc.Appearance ?? new CustomNpcAppearance();
+        try
+        {
+            return appearance.SourceType switch
+            {
+                CustomNpcAppearanceSourceType.GameNpc => this.DescribeGameNpcPreset(appearance),
+                CustomNpcAppearanceSourceType.GlamourerDesign => DescribeGlamourerDesignPreset(appearance),
+                CustomNpcAppearanceSourceType.CurrentPlayer => "source=CurrentPlayer; hasEquipment=player-clone; fullDesign=false",
+                CustomNpcAppearanceSourceType.None => "source=None; hasEquipment=false; fullDesign=false",
+                CustomNpcAppearanceSourceType.PenumbraCollection => "source=PenumbraCollection; hasEquipment=false; fullDesign=false; collection-only",
+                CustomNpcAppearanceSourceType.MCDF => "source=MCDF; hasEquipment=unknown; fullDesign=unknown; MCDF apply not connected",
+                _ => $"source={appearance.SourceType}; hasEquipment=unknown; fullDesign=unknown",
+            };
+        }
+        catch (Exception ex)
+        {
+            return $"source={appearance.SourceType}; preset diagnostic failed={ex.Message}";
+        }
+    }
 
     public void RefreshHumanoidAppearancePaths()
         => this.gameNpcApplyService.RefreshPathStatus();
@@ -214,6 +244,130 @@ public sealed class AppearanceApplyService
         actor.LastAppearanceError = reason;
         actor.LastAppearanceApplyResult = reason;
         return false;
+    }
+
+    private string DescribeGameNpcPreset(CustomNpcAppearance appearance)
+    {
+        var resolution = this.gameNpcResolver.Resolve(appearance);
+        if (!resolution.Success)
+            return $"source=GameNpc; hasEquipment=false; fullDesign=false; resolveFailed={resolution.FailureStep}; message={resolution.Message}";
+
+        if (resolution.Appearance.Kind != GameNpcResolvedAppearanceKind.Humanoid)
+            return $"source=GameNpc; kind={resolution.Appearance.Kind}; modelChara={resolution.ModelCharaId}; hasEquipment=false; fullDesign=false";
+
+        var customize = BuildCustomizeParts(resolution.Appearance.Customize);
+        var equipment = BuildEquipmentParts(resolution.Appearance.Equipment);
+        return $"source=GameNpc; kind=Humanoid; hasEquipment=true; fullDesign=true; customizeHash={StableHash(string.Join(';', customize))}; equipmentHash={StableHash(string.Join(';', equipment))}; equipment={string.Join(',', equipment)}";
+    }
+
+    private static string DescribeGlamourerDesignPreset(CustomNpcAppearance appearance)
+    {
+        var path = appearance.Notes;
+        if (string.IsNullOrWhiteSpace(path))
+            return $"source=GlamourerDesign; design={appearance.GlamourerDesignId}; hasEquipment=unknown; fullDesign=unknown; designPath=missing";
+
+        if (!File.Exists(path))
+            return $"source=GlamourerDesign; design={appearance.GlamourerDesignId}; hasEquipment=unknown; fullDesign=unknown; designPathNotFound={path}";
+
+        using var stream = File.OpenRead(path);
+        using var document = JsonDocument.Parse(stream);
+        var hasEquipment = TryFindProperty(document.RootElement, "Equipment", out var equipmentElement);
+        var hasCustomize = TryFindProperty(document.RootElement, "Customize", out var customizeElement) ||
+                           TryFindProperty(document.RootElement, "Customization", out customizeElement);
+        var equipmentRaw = hasEquipment ? NormalizeJson(equipmentElement) : string.Empty;
+        var customizeRaw = hasCustomize ? NormalizeJson(customizeElement) : string.Empty;
+        var slots = hasEquipment ? string.Join(',', ReadJsonSlotNames(equipmentElement)) : "none";
+        return $"source=GlamourerDesign; design={appearance.GlamourerDesignId}; hasEquipment={hasEquipment}; hasCustomize={hasCustomize}; fullDesign={hasEquipment && hasCustomize}; equipmentHash={StableHash(equipmentRaw)}; customizeHash={StableHash(customizeRaw)}; slots={slots}; path={path}";
+    }
+
+    private static IEnumerable<string> BuildCustomizeParts(GameNpcResolvedCustomize customize)
+    {
+        yield return $"Race={customize.Race}";
+        yield return $"Gender={customize.Gender}";
+        yield return $"Tribe={customize.Tribe}";
+        yield return $"BodyType={customize.BodyType}";
+        yield return $"Height={customize.Height}";
+        yield return $"Face={customize.Face}";
+        yield return $"HairStyle={customize.HairStyle}";
+        yield return $"SkinColor={customize.SkinColor}";
+        yield return $"EyeColor={customize.EyeColor}";
+    }
+
+    private static IEnumerable<string> BuildEquipmentParts(GameNpcResolvedEquipment equipment)
+    {
+        yield return $"MainHand={equipment.MainHand}";
+        yield return $"OffHand={equipment.OffHand}";
+        yield return $"Head={equipment.Head}";
+        yield return $"Body={equipment.Body}";
+        yield return $"Hands={equipment.Hands}";
+        yield return $"Legs={equipment.Legs}";
+        yield return $"Feet={equipment.Feet}";
+        yield return $"Ears={equipment.Ears}";
+        yield return $"Neck={equipment.Neck}";
+        yield return $"Wrists={equipment.Wrists}";
+        yield return $"LeftRing={equipment.LeftRing}";
+        yield return $"RightRing={equipment.RightRing}";
+    }
+
+    private static bool TryFindProperty(JsonElement element, string propertyName, out JsonElement found)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if (string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+                {
+                    found = property.Value;
+                    return true;
+                }
+
+                if (TryFindProperty(property.Value, propertyName, out found))
+                    return true;
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                if (TryFindProperty(item, propertyName, out found))
+                    return true;
+            }
+        }
+
+        found = default;
+        return false;
+    }
+
+    private static IEnumerable<string> ReadJsonSlotNames(JsonElement element)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+            return ["<non-object-equipment>"];
+
+        return element.EnumerateObject()
+            .Select(property => property.Name)
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .Take(32)
+            .ToList();
+    }
+
+    private static string NormalizeJson(JsonElement element)
+        => JsonSerializer.Serialize(element);
+
+    private static string StableHash(string text)
+    {
+        unchecked
+        {
+            const ulong offset = 14695981039346656037UL;
+            const ulong prime = 1099511628211UL;
+            var hash = offset;
+            foreach (var ch in text)
+            {
+                hash ^= ch;
+                hash *= prime;
+            }
+
+            return hash.ToString("X16");
+        }
     }
 
     private static bool TryObjectIndexToUshort(int objectIndex, out ushort value)

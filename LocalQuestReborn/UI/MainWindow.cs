@@ -953,6 +953,14 @@ public sealed class MainWindow : Window
             ImGui.TextWrapped($"Penumbra error：{actor.LastPenumbraCollectionError}");
         ImGui.TextWrapped($"最后结果：{(string.IsNullOrWhiteSpace(actor.LastAppearanceApplyResult) ? "未应用" : actor.LastAppearanceApplyResult)}");
         ImGui.TextWrapped($"最后错误：{(string.IsNullOrWhiteSpace(actor.LastAppearanceError) ? "无" : actor.LastAppearanceError)}");
+        if (!string.IsNullOrWhiteSpace(actor.LastAppearanceVerificationState))
+            ImGui.TextWrapped($"外观状态：{actor.LastAppearanceVerificationState}，redraw fallback={actor.LastAppearanceRedrawFallbackCount}");
+        if (!string.IsNullOrWhiteSpace(actor.LastAppearanceResidualSlots))
+            ImGui.TextWrapped($"玩家装备残留槽位：{actor.LastAppearanceResidualSlots}");
+        if (!string.IsNullOrWhiteSpace(actor.LastAppearancePresetSummary))
+            ImGui.TextWrapped($"Preset 摘要：{actor.LastAppearancePresetSummary}");
+        if (!string.IsNullOrWhiteSpace(actor.LastAppearanceClearEquipmentResult))
+            ImGui.TextWrapped($"Clear 装备阶段：{actor.LastAppearanceClearEquipmentResult}");
         if (!string.IsNullOrWhiteSpace(actor.LastAppearanceValidationResult))
             ImGui.TextWrapped($"外观验证：{actor.LastAppearanceValidationResult}");
         if (!string.IsNullOrWhiteSpace(actor.LastAppearanceBeforeSummary))
@@ -975,6 +983,14 @@ public sealed class MainWindow : Window
         if (ImGui.Button("重新应用 GameNpc 外观"))
             this.realNpcSpawn.EnqueueNpcAppearance(actor.RuntimeId);
         ImGui.EndDisabled();
+        if (ImGui.Button("Debug：打印外观摘要"))
+            this.realNpcSpawn.LogActorAppearanceDiagnostics(actor.RuntimeId);
+        ImGui.SameLine();
+        if (ImGui.Button("Debug：Clear 装备 + 重新套外观"))
+            this.realNpcSpawn.ForceClearAndReapplyAppearance(actor.RuntimeId);
+        ImGui.SameLine();
+        if (ImGui.Button("Debug：Penumbra redraw + 重新套外观"))
+            this.realNpcSpawn.ForceTargetedRedrawAndReapplyAppearance(actor.RuntimeId);
         ImGui.EndDisabled();
     }
 

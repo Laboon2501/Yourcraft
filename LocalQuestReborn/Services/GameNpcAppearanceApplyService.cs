@@ -35,6 +35,14 @@ public sealed class GameNpcAppearanceApplyService
 
     public string BrioActorAppearanceSignature => this.brioHumanoidAppearanceApply.LastSignature;
 
+    public string? BrioActorAppearancePendingRuntimeId => this.brioHumanoidAppearanceApply.PendingRuntimeId;
+
+    public bool BrioActorAppearanceApplyPending => this.brioHumanoidAppearanceApply.LastApplyPending;
+
+    public bool BrioActorAppearanceApplySucceeded => this.brioHumanoidAppearanceApply.LastApplySucceeded;
+
+    public DateTime? BrioActorAppearanceApplyCompletedAt => this.brioHumanoidAppearanceApply.LastApplyCompletedAt;
+
     public string CurrentHumanoidApplyPath { get; private set; } = "未调用";
 
     public string LastHumanoidApplyResult { get; private set; } = string.Empty;

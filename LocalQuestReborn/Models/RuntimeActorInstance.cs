@@ -88,11 +88,21 @@ public sealed class RuntimeActorInstance
 
     public string LastAppearanceValidationResult { get; set; } = string.Empty;
 
+    public string LastAppearanceVerificationState { get; set; } = string.Empty;
+
+    public string LastAppearanceResidualSlots { get; set; } = string.Empty;
+
+    public int LastAppearanceRedrawFallbackCount { get; set; }
+
     public string LastAppearanceBeforeSummary { get; set; } = string.Empty;
 
     public string LastAppearanceAfterSummary { get; set; } = string.Empty;
 
     public string LastLocalPlayerAppearanceSummary { get; set; } = string.Empty;
+
+    public string LastAppearancePresetSummary { get; set; } = string.Empty;
+
+    public string LastAppearanceClearEquipmentResult { get; set; } = string.Empty;
 
     public int LastAppearanceRetryCount { get; set; }
 
