@@ -170,7 +170,7 @@ public sealed class MainWindow : Window
             ImGui.EndTabItem();
         }
 
-        if (ImGui.BeginTabItem("Debug"))
+        if (ImGui.BeginTabItem("Debug / 维护"))
         {
             this.DrawDebug();
             ImGui.EndTabItem();
@@ -1773,17 +1773,72 @@ public sealed class MainWindow : Window
 
     private void DrawDebug()
     {
+        ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "维护 / 诊断");
+        ImGui.TextWrapped($"Brio IPC：{this.realNpcSpawn.BrioIpcProbeMessage}");
+        ImGui.TextWrapped($"Glamourer / Penumbra：{this.realNpcSpawn.GlamourerIpcProbeMessage}");
         ImGui.TextWrapped($"Layout status：{this.layoutProbe.LastStatus}");
         ImGui.TextWrapped($"Layer status：{this.layerDump.LastStatus}");
         ImGui.TextWrapped($"Local object status：{this.localLayoutObjects.LastStatus}");
-        ImGui.TextWrapped("实验入口已收敛：Standalone BgObject、动态物体、旧 SetModel/CleanupRender、EventNpc/NamePlate 等实验 UI 当前隐藏。");
+        ImGui.TextWrapped($"Create queue：active={this.localLayoutObjects.IsCreateQueueActive}; pending={this.localLayoutObjects.PendingCreateQueueLength}; success={this.localLayoutObjects.CreateQueueSuccessCount}; failed={this.localLayoutObjects.CreateQueueFailedCount}; reserved={this.localLayoutObjects.ReservedSlotCount}");
         ImGui.Separator();
-        this.DrawBgPartCollisionSourceProbeDebug();
+
+        var candidate = this.GetSelectedBgPart();
+        ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "当前选中 BgPart readback");
+        if (candidate == null)
+        {
+            ImGui.TextWrapped("当前选中 BgPart：无");
+        }
+        else
+        {
+            ImGui.TextWrapped($"resourcePath：{candidate.ResourcePath}");
+            ImGui.TextWrapped($"address：{candidate.Address}");
+            ImGui.TextWrapped($"source：{candidate.SourceKind}; parent={candidate.ParentAddress}; child={candidate.ChildIndex}");
+            ImGui.TextWrapped($"position：{FormatVector(candidate.Position)}; visible={candidate.Visible}; distance={candidate.DistanceToPlayer:F1}y");
+            ImGui.TextWrapped($"carrier reject：{this.localLayoutObjects.GetCarrierRejectReason(candidate, CarrierAllocationPolicy.PreferredListThenAnyValid)}");
+            ImGui.TextWrapped($"carrier warning：{this.localLayoutObjects.GetCarrierWarningReason(candidate)}");
+            if (this.localLayoutObjects.ProtectedBgParts?.IsProtected(candidate, out var protectedReason) == true)
+                ImGui.TextWrapped($"protected：{protectedReason}");
+            if (this.localLayoutObjects.PreferredModifyBgParts?.IsPreferred(candidate, out var preferredReason) == true)
+                ImGui.TextWrapped($"preferred modify：{preferredReason}");
+        }
+
+        ImGui.Separator();
+        ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "本地场景物体维护");
+        ImGui.TextWrapped($"active occupied slot count：{this.localLayoutObjects.ActiveOccupiedSlotCount}");
+        ImGui.TextWrapped($"duplicate slot count：{this.localLayoutObjects.DuplicateSlotCount}");
+        ImGui.TextWrapped($"restore / cleanup busy：{this.localLayoutObjects.IsBusy}");
+        ImGui.BeginDisabled(this.localLayoutObjects.IsBusy);
+        if (ImGui.Button("RestoreAll Dry Run"))
+            this.localLayoutObjects.BuildRestorePlanPreview();
+        ImGui.SameLine();
+        if (ImGui.Button("Rebuild occupied registry"))
+            this.localLayoutObjects.RebuildOccupiedSlotRegistryForUi();
+        ImGui.SameLine();
+        if (ImGui.Button("Force remove failed / invalid"))
+        {
+            this.localLayoutObjects.ForceClearBadInstances();
+            if (!string.IsNullOrWhiteSpace(this.selectedLocalLayoutObjectId) && this.localLayoutObjects.GetById(this.selectedLocalLayoutObjectId) == null)
+                this.selectedLocalLayoutObjectId = string.Empty;
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("Clear restored / invalid"))
+        {
+            this.localLayoutObjects.ClearRestoredAndInvalidInstances();
+            if (!string.IsNullOrWhiteSpace(this.selectedLocalLayoutObjectId) && this.localLayoutObjects.GetById(this.selectedLocalLayoutObjectId) == null)
+                this.selectedLocalLayoutObjectId = string.Empty;
+        }
+        ImGui.EndDisabled();
+
+        if (!string.IsNullOrWhiteSpace(this.localLayoutObjects.LastRestorePlanPreview) && ImGui.CollapsingHeader("RestoreAll 计划预览"))
+            ImGui.TextWrapped(this.localLayoutObjects.LastRestorePlanPreview);
+
+        if (!string.IsNullOrWhiteSpace(this.localLayoutObjects.LastCreateManyDryRunPreview) && ImGui.CollapsingHeader("CreateMany 分配预览"))
+            ImGui.TextWrapped(this.localLayoutObjects.LastCreateManyDryRunPreview);
     }
 
     private void DrawStandaloneBgObjectDebug()
     {
-        if (!ImGui.CollapsingHeader("Standalone BgObject 生成实验（Debug-only）"))
+        if (!ImGui.CollapsingHeader("已隐藏的独立对象旧实验（不在 Debug 页调用）"))
             return;
 
         ImGui.TextWrapped("实验目标：直接调用 Graphics.Scene.BgObject.Create(modelPath, poolName, null)，不占用现有 BgPart slot，不修改 Layout/Layer 容器。");
@@ -1846,10 +1901,10 @@ public sealed class MainWindow : Window
         scale = this.standaloneScale;
         if (ImGui.InputFloat("Standalone Scale Z", ref scale.Z)) this.standaloneScale = Vector3.Max(scale, new Vector3(0.01f));
 
-        ImGui.Checkbox("我确认这是 Standalone BgObject 高风险实验", ref this.confirmStandaloneBgObjectExperiment);
+        ImGui.Checkbox("我确认这是独立对象高风险旧实验", ref this.confirmStandaloneBgObjectExperiment);
         var canCreate = this.realNpcSpawn.EnableUnsafeNativeWrites && this.confirmStandaloneBgObjectExperiment;
         ImGui.BeginDisabled(!canCreate);
-        if (ImGui.Button("CreateOnly Standalone BgObject 实验"))
+        if (ImGui.Button("CreateOnly 独立对象旧实验"))
         {
             var created = this.standaloneBgObjectProbe.Create(
                 this.standaloneModelPath,
@@ -2070,8 +2125,8 @@ public sealed class MainWindow : Window
     {
         ImGui.Separator();
         ImGui.TextColored(new Vector4(1f, 0.45f, 0.25f, 1f), "Scene attach 写入实验已暂停");
-        ImGui.TextWrapped("Standalone scene attach 写入实验已暂停：AddChild 后 objectFlags 异常，疑似调用签名或入口不安全。");
-        ImGui.TextWrapped("已禁用：AddChild、OnAddedToWorld、AddChild -> OnAddedToWorld -> update chain，以及任何 parent/child/prev/next 写入。");
+        ImGui.TextWrapped("独立对象 scene attach 写入实验已暂停：场景链写入后 objectFlags 异常，疑似调用签名或入口不安全。");
+        ImGui.TextWrapped("已禁用：场景挂载、world callback、挂载后 update chain，以及任何 parent/child/prev/next 写入。");
         ImGui.TextWrapped("保留只读：CreateOnly、Dump、Validate、Position 单字段写入、Bounds dump、Standalone vs 真实 BgPart 对比、raw offset dump。");
         if (!string.IsNullOrWhiteSpace(selected.SceneAttachException))
             ImGui.TextWrapped($"最近一次 scene attach 拦截/错误：{selected.SceneAttachException}");
