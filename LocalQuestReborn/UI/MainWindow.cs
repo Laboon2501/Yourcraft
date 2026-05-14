@@ -424,6 +424,21 @@ public sealed class MainWindow : Window
     private void DrawActorInstances()
     {
         this.EnsureSelectedNpc();
+        var available = ImGui.GetContentRegionAvail();
+        var leftWidth = Math.Min(560f, Math.Max(380f, available.X * 0.45f));
+
+        if (ImGui.BeginChild("ActorInstancesLeftPanel", new Vector2(leftWidth, 0f), true, ImGuiWindowFlags.AlwaysVerticalScrollbar))
+            this.DrawActorSpawnAndListPanel();
+        ImGui.EndChild();
+
+        ImGui.SameLine();
+        if (ImGui.BeginChild("ActorInstancesDetailsPanel", Vector2.Zero, true, ImGuiWindowFlags.AlwaysVerticalScrollbar))
+            this.DrawSelectedActorDetailsPanel();
+        ImGui.EndChild();
+    }
+
+    private void DrawActorSpawnAndListPanel()
+    {
         var selectedNpc = this.GetSelectedNpc();
         if (ImGui.BeginCombo("选中 NPC 模板", this.SelectedNpcLabel()))
         {
@@ -437,6 +452,7 @@ public sealed class MainWindow : Window
             }
             ImGui.EndCombo();
         }
+        selectedNpc = this.GetSelectedNpc();
 
         if (ImGui.Button("刷新有效性"))
             this.realNpcSpawn.RefreshActors();
@@ -506,12 +522,18 @@ public sealed class MainWindow : Window
             ImGui.PopID();
         }
         ImGui.EndTable();
+    }
 
+    private void DrawSelectedActorDetailsPanel()
+    {
         var selectedActor = string.IsNullOrWhiteSpace(this.selectedActorRuntimeId) ? null : this.realNpcSpawn.GetActor(this.selectedActorRuntimeId);
         if (selectedActor == null)
+        {
+            ImGui.TextWrapped("当前没有选中 Actor。请在左侧 Actor 列表中选择一个实例。");
             return;
+        }
         var npc = this.database.GetNpcById(selectedActor.NpcId);
-        ImGui.Separator();
+        ImGui.PushID(selectedActor.RuntimeId);
         ImGui.TextWrapped($"选中 Actor：{selectedActor.RuntimeId}");
         ImGui.TextWrapped($"模板 NPC：{selectedActor.TemplateNpcId} / {selectedActor.NpcId}");
         ImGui.TextWrapped($"显示名：{selectedActor.DisplayName}");
@@ -522,12 +544,14 @@ public sealed class MainWindow : Window
         if (ImGui.Button("删除此 Actor"))
         {
             this.DeleteSelectedActor(selectedActor);
+            ImGui.PopID();
             return;
         }
 
         this.DrawSelectedActorTransformEditor(selectedActor, npc);
         this.DrawSelectedActorBehaviorEditor(selectedActor, npc);
         this.DrawSelectedActorAppearanceEditor(selectedActor, npc);
+        ImGui.PopID();
     }
 
     private void DrawSelectedActorTransformEditor(RuntimeActorInstance actor, CustomNpc? npc)
