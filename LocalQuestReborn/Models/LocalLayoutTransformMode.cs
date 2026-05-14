@@ -8,6 +8,7 @@ public enum LocalLayoutTransformMode
 
 public enum CarrierAllocationPolicy
 {
+    PreferredListThenAnyValid,
     PreferredSameModelThenFarthestSafe,
     StrictFarthestSafe,
     DebugNearest,

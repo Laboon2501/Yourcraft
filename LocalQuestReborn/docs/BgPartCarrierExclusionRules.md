@@ -4,13 +4,13 @@
 
 Local scene objects use slot-backed copy. The selected BgPart is only a template/source. A different BgPart slot is allocated as the carrier, recreated to the target mdl, transformed, and later restored from its own original snapshot.
 
-The default policy is `PreferredSameModelThenFarthestSafe`.
+The default policy is fixed as `PreferredListThenAnyValid`; the UI no longer exposes multiple carrier strategies.
 
 1. Prefer free slots with the same `resourcePath` as the template.
-2. If same-model slots are not enough, use the farthest safe fallback carrier.
-3. Fallback excludes floor, wall, ceiling, terrain, large building pieces, dynamic/controller-driven objects, and SharedGroup children.
+2. If same-model slots are not enough, use slots/resource paths from the Preferred Modify list.
+3. If that is still not enough, use any valid bg/bgcommon BgPart.
 
-`StrictFarthestSafe` ignores same-model preference and selects the farthest safe slot from the whole accepted set. `DebugNearest` exists only for allocator diagnostics and is not recommended for official creation.
+The Protected list always wins over the Preferred Modify list. Protected BgParts are never allocated as carriers and are not modified.
 
 ## Allocation Order
 
@@ -20,39 +20,42 @@ Same-model stage:
 - `slotAddress != templateSlotAddress`
 - not occupied
 - not reserved
+- not protected
 - valid BgPart pointer
 - valid GraphicsObject
 - valid ModelResourceHandle
-- not SharedGroup child
-- not dynamic/high-risk
-- not protected
-- not floor/wall/terrain/structure-like unless whitelisted
 
 Sorting:
 
-- invisible first
 - distance descending
 - address as stable tie-breaker
 
-Fallback stage:
+Preferred Modify stage:
 
 - only used after the same-model stage
-- does not require the same `resourcePath`
-- carrier is recreated to the template mdl or custom mdl before use
-- excludes `FloorLike`, `WallLike`, `TerrainLike`, `StructureLike`, `TooLarge`, and `TooCloseImportantGeometry`
-- excludes protected slots and protected resource paths
+- matches a preferred slot before a preferred resource path
+- not occupied, reserved, protected, or the template slot
+- valid BgPart pointer, GraphicsObject, and ModelResourceHandle
 
 Sorting:
 
-- invisible first
 - distance descending
+- preferred slot before preferred resource path
 - address as stable tie-breaker
+
+AnyValidBgPart stage:
+
+- only used after same-model and preferred modify stages
+- accepts any valid bg/bgcommon BgPart that is not occupied, reserved, protected, or the template slot
+- floor/wall/terrain/structure/SharedGroup/dynamic classifications are warnings, not hard rejects
 
 Distance is always recomputed as `Vector3.Distance(playerPosition, slot.WorldPosition)` when a player position is available. The allocator must not use the current UI row order or nearest-first ordering for official allocation.
 
-## Exclusion Patterns
+## Warning Patterns
 
 Short tokens such as `flo`, `flr`, and `wal` are matched by path component. This avoids rejecting normal names such as `flow1`.
+
+These patterns no longer block allocation by default. They are surfaced as `warningReason`; use the Protected list for objects that must never be modified.
 
 FloorLike:
 

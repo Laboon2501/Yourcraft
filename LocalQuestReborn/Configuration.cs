@@ -20,4 +20,8 @@ public sealed class Configuration : IPluginConfiguration
     public List<ProtectedBgPartSlot> ProtectedBgPartSlots { get; set; } = [];
 
     public List<ProtectedBgPartResourcePath> ProtectedBgPartResourcePaths { get; set; } = [];
+
+    public List<PreferredModifyBgPartSlot> PreferredModifyBgPartSlots { get; set; } = [];
+
+    public List<PreferredModifyBgPartResourcePath> PreferredModifyBgPartResourcePaths { get; set; } = [];
 }

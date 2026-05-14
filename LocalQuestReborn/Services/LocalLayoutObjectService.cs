@@ -21,6 +21,7 @@ public sealed unsafe class LocalLayoutObjectService
     private readonly BgPartCollisionSourceResolver collisionSourceResolver = new();
     private readonly BgPartCarrierAllocator carrierAllocator = new();
     private readonly ProtectedBgPartRegistry? protectedBgParts;
+    private readonly PreferredModifyBgPartRegistry? preferredModifyBgParts;
     private readonly AnimatedPlaybackSystem animatedPlaybackSystem = new();
     private readonly List<LocalLayoutObjectInstance> instances = [];
     private readonly Dictionary<ulong, LocalLayoutObjectInstance> occupiedSlots = [];
@@ -28,9 +29,10 @@ public sealed unsafe class LocalLayoutObjectService
     private CreateManyJob? activeCreateManyJob;
     private AllocationPlan? lastAllocationPlan;
 
-    public LocalLayoutObjectService(ProtectedBgPartRegistry? protectedBgParts = null)
+    public LocalLayoutObjectService(ProtectedBgPartRegistry? protectedBgParts = null, PreferredModifyBgPartRegistry? preferredModifyBgParts = null)
     {
         this.protectedBgParts = protectedBgParts;
+        this.preferredModifyBgParts = preferredModifyBgParts;
     }
 
     public bool IsBusy { get; private set; }
@@ -100,10 +102,17 @@ public sealed unsafe class LocalLayoutObjectService
 
     public ProtectedBgPartRegistry? ProtectedBgParts => this.protectedBgParts;
 
+    public PreferredModifyBgPartRegistry? PreferredModifyBgParts => this.preferredModifyBgParts;
+
     private string ProtectedVersion
         => this.protectedBgParts == null
             ? "none"
             : $"slots:{string.Join("|", this.protectedBgParts.ProtectedSlots.Select(item => $"{item.TerritoryType}:{item.SourceType}:{item.ResourcePath}:{item.OriginalPosition.X:F2},{item.OriginalPosition.Y:F2},{item.OriginalPosition.Z:F2}:{item.ChildIndex}").OrderBy(value => value, StringComparer.OrdinalIgnoreCase))};paths:{string.Join("|", this.protectedBgParts.ProtectedResourcePaths.Select(item => $"{item.TerritoryType}:{item.AppliesToCurrentTerritoryOnly}:{item.ResourcePath}").OrderBy(value => value, StringComparer.OrdinalIgnoreCase))}";
+
+    private string PreferredModifyVersion
+        => this.preferredModifyBgParts == null
+            ? "none"
+            : $"slots:{string.Join("|", this.preferredModifyBgParts.PreferredSlots.Select(item => $"{item.TerritoryType}:{item.SourceType}:{item.ResourcePath}:{item.OriginalPosition.X:F2},{item.OriginalPosition.Y:F2},{item.OriginalPosition.Z:F2}:{item.ChildIndex}").OrderBy(value => value, StringComparer.OrdinalIgnoreCase))};paths:{string.Join("|", this.preferredModifyBgParts.PreferredResourcePaths.Select(item => $"{item.TerritoryType}:{item.AppliesToCurrentTerritoryOnly}:{item.ResourcePath}").OrderBy(value => value, StringComparer.OrdinalIgnoreCase))}";
 
     public void StopAllPlayback(string reason = "用户手动停止全部动画回放。")
         => this.animatedPlaybackSystem.StopAllAndDetach(this.instances, reason);
@@ -138,10 +147,10 @@ public sealed unsafe class LocalLayoutObjectService
     }
 
     public LocalLayoutObjectInstance? CreateFromCandidate(LayoutProbeInstance? candidate, Vector3 playerPosition, LocalLayoutTransformMode mode)
-        => this.CreateFromCandidate(candidate, playerPosition, mode, template: null, applyTemplateModel: false, allowReservedSlot: false, CarrierAllocationPolicy.SafeOnly);
+        => this.CreateFromCandidate(candidate, playerPosition, mode, template: null, applyTemplateModel: false, allowReservedSlot: false, CarrierAllocationPolicy.PreferredListThenAnyValid);
 
     public LocalLayoutObjectInstance? CreateFromTemplate(LayoutProbeInstance? template, LayoutProbeInstance? targetSlot, Vector3 position, LocalLayoutTransformMode mode, bool applyTemplateModel = false)
-        => this.CreateFromCandidate(targetSlot, position, mode, template, applyTemplateModel, allowReservedSlot: false, CarrierAllocationPolicy.SafeOnly);
+        => this.CreateFromCandidate(targetSlot, position, mode, template, applyTemplateModel, allowReservedSlot: false, CarrierAllocationPolicy.PreferredListThenAnyValid);
 
     public LocalLayoutObjectInstance? CreateCopyFromTemplate(
         LayoutProbeInstance? template,
@@ -166,7 +175,7 @@ public sealed unsafe class LocalLayoutObjectService
 
         if (carrier == null)
         {
-            this.LastStatus = $"没有可用 carrier slot：policy={carrierPolicy}; sameModel={allocation.SameModelAvailable}; fallback={allocation.FallbackAvailable}。请查看 CreateMany Dry Run Preview。";
+            this.LastStatus = $"没有可用 carrier slot：sameModel={allocation.SameModelAvailable}; preferredModify={allocation.PreferredModifyAvailable}; anyValid={allocation.AnyValidAvailable}。请查看 CreateMany Dry Run Preview。";
             return null;
         }
 
@@ -373,7 +382,7 @@ public sealed unsafe class LocalLayoutObjectService
             fullLayoutConfirmed,
             defaultRotationEuler,
             defaultScale,
-            CarrierAllocationPolicy.PreferredSameModelThenFarthestSafe,
+            CarrierAllocationPolicy.PreferredListThenAnyValid,
             createAsManyAsPossible: true,
             playerPosition);
 
@@ -446,11 +455,11 @@ public sealed unsafe class LocalLayoutObjectService
         {
             if (slots.Count == 0 || !createAsManyAsPossible)
             {
-                this.LastStatus = $"可用 carrier 不足：请求 {count}，可用 {plan.TotalAvailable}。policy={carrierPolicy}; sameModel={plan.SameModelAvailable}; fallback={plan.FallbackAvailable}。请查看 CreateMany Dry Run Preview。";
-                return created;
-            }
+            this.LastStatus = $"可用 carrier 不足：请求 {count}，可用 {plan.TotalAvailable}。sameModel={plan.SameModelAvailable}; preferredModify={plan.PreferredModifyAvailable}; anyValid={plan.AnyValidAvailable}。请查看 CreateMany Dry Run Preview。";
+            return created;
+        }
 
-            this.LastStatus = $"可用 carrier 不足：请求 {count}，可用 {plan.TotalAvailable}。policy={carrierPolicy}；按“尽可能创建”继续创建 {slots.Count} 个。";
+            this.LastStatus = $"可用 carrier 不足：请求 {count}，可用 {plan.TotalAvailable}。按“尽可能创建”继续创建 {slots.Count} 个。";
         }
 
         var targetMdlPath = hasCustomMdlPath ? customMdlPath : template.ResourcePath;
@@ -485,7 +494,7 @@ public sealed unsafe class LocalLayoutObjectService
             templateWarning,
             count,
             carrierPolicy);
-        this.LastStatus = $"已使用 allocation plan id={plan.Id} 创建批量复制队列：requested={count}; queued={pending.Count}; policy={carrierPolicy}; targetMdl={targetMdlPath}; 每帧处理 1 个实例。{templateWarning}";
+        this.LastStatus = $"已使用 allocation plan id={plan.Id} 创建批量复制队列：requested={count}; queued={pending.Count}; order=SameModel->PreferredModifyList->AnyValidBgPart; targetMdl={targetMdlPath}; 每帧处理 1 个实例。{templateWarning}";
         return created;
     }
 
@@ -513,7 +522,7 @@ public sealed unsafe class LocalLayoutObjectService
             $"allocationPlanId={plan.Id}",
             $"playerPosition={(playerPosition.HasValue ? FormatVector(playerPosition.Value) : "unknown")}",
             $"requestedCount={requestedCount}",
-            $"allocationMode={carrierPolicy}",
+            "allocationMode=PreferredListThenAnyValid",
             $"templateSlotAddress={template?.Address ?? "未选择"}",
             $"templateResourcePath={template?.ResourcePath ?? "未选择"}",
             $"excludeTemplateSlot={(template != null ? "是" : "否")}",
@@ -523,9 +532,11 @@ public sealed unsafe class LocalLayoutObjectService
             $"reserved slots={allocation.ReservedCount}",
             $"free slots={allocation.FreeCount}",
             $"same model available slot count={allocation.SameModelAvailable}",
-            $"fallback safe carrier count={allocation.FallbackAvailable}",
+            $"preferred modify available slot count={allocation.PreferredModifyAvailable}",
+            $"any valid available slot count={allocation.AnyValidAvailable}",
+            $"protected rejected count={(allocation.Rejected.TryGetValue("Protected", out var protectedRejectedCount) ? protectedRejectedCount : 0)}",
             $"available under selected policy={allocation.TotalAvailable}",
-            $"carrierAllocationPolicy={carrierPolicy}",
+            "carrierAllocationOrder=SameModel -> PreferredModifyList -> AnyValidBgPart",
             $"allocatedCount={selected.Count}",
             $"orderValidation={allocation.OrderValidationMessage}",
             "rejected slots：",
@@ -552,15 +563,12 @@ public sealed unsafe class LocalLayoutObjectService
             for (var index = 0; index < selected.Count; index++)
             {
                 var slot = selected[index];
-                var reason = template != null && string.Equals(slot.ResourcePath, template.ResourcePath, StringComparison.OrdinalIgnoreCase)
-                    ? "SameResource"
-                    : hasCustomMdlPath ? "FarthestSafeCustomMdlCarrier" : allowDifferentResourcePathSlots ? "FarthestSafeDifferentResourceAllowed" : "FarthestSafeFallback";
-                lines.Add($"  [{index}] slot={slot.Address}; path={slot.ResourcePath}; position={FormatVector(slot.Position)}; distance={BgPartCarrierAllocator.GetDistance(slot, playerPosition):F1}; selectedReason={reason}; warningReason={FirstNonEmpty(slot.CarrierWarningReason, "无")}");
+                lines.Add($"  [{index}] slot={slot.Address}; path={slot.ResourcePath}; position={FormatVector(slot.Position)}; distance={BgPartCarrierAllocator.GetDistance(slot, playerPosition):F1}; allocationStage={FirstNonEmpty(slot.CarrierAllocationStage, "Unknown")}; warningReason={FirstNonEmpty(slot.CarrierWarningReason, "无")}; protected=false");
             }
         }
 
         lines.Add("top 10 farthest accepted slots：");
-        lines.AddRange(allocation.AcceptedTop10.Select((slot, index) => $"  [{index}] slot={slot.Address}; path={slot.ResourcePath}; position={FormatVector(slot.Position)}; distance={BgPartCarrierAllocator.GetDistance(slot, playerPosition):F1}; warningReason={FirstNonEmpty(slot.CarrierWarningReason, "无")}"));
+        lines.AddRange(allocation.AcceptedTop10.Select((slot, index) => $"  [{index}] slot={slot.Address}; path={slot.ResourcePath}; position={FormatVector(slot.Position)}; distance={BgPartCarrierAllocator.GetDistance(slot, playerPosition):F1}; allocationStage={FirstNonEmpty(slot.CarrierAllocationStage, "Unknown")}; warningReason={FirstNonEmpty(slot.CarrierWarningReason, "无")}"));
         lines.Add("top 10 farthest rejected slots：");
         lines.AddRange(allocation.RejectedTop10.Select((slot, index) => $"  [{index}] slot={slot.Address}; path={slot.ResourcePath}; position={FormatVector(slot.Position)}; distance={BgPartCarrierAllocator.GetDistance(slot, playerPosition):F1}; rejectReason={slot.CarrierRejectReason}"));
 
@@ -891,7 +899,7 @@ public sealed unsafe class LocalLayoutObjectService
             policy,
             playerPosition,
             this.GetBasicCarrierRejectReason,
-            this.GetFallbackCarrierRejectReason,
+            this.GetPreferredModifyReason,
             this.GetCarrierWarningReason,
             address => TryNormalizeSlotAddress(address, out var normalized) && this.occupiedSlots.ContainsKey(normalized),
             address => TryNormalizeSlotAddress(address, out var normalized) && this.reservedSlots.Contains(normalized));
@@ -908,7 +916,7 @@ public sealed unsafe class LocalLayoutObjectService
         var slots = candidateSlots.ToList();
         var currentPlan = this.lastAllocationPlan;
         if (currentPlan == null
-            || currentPlan.IsStale(template, requestedCount, policy, playerPosition, this.ProtectedVersion, this.GetOccupiedRegistryVersion(), slots)
+            || currentPlan.IsStale(template, requestedCount, policy, playerPosition, this.ProtectedVersion, this.PreferredModifyVersion, this.GetOccupiedRegistryVersion(), slots)
             || currentPlan.SelectedSlots.Count == 0)
         {
             this.LastStatus = "AllocationPlan 已过期或不存在，请先点击 CreateMany Dry Run Preview。";
@@ -945,17 +953,19 @@ public sealed unsafe class LocalLayoutObjectService
             policy,
             playerPosition,
             this.ProtectedVersion,
+            this.PreferredModifyVersion,
             this.GetOccupiedRegistryVersion(),
             candidateSlots.Select(slot => slot.Address).OrderBy(address => address, StringComparer.OrdinalIgnoreCase).ToList(),
             allocation.Selected.ToList(),
             allocation.SameModelAvailable,
-            allocation.FallbackAvailable,
+            allocation.PreferredModifyAvailable,
+            allocation.AnyValidAvailable,
             allocation.TotalAvailable,
             allocation.IsOrderValid,
             allocation.OrderValidationMessage);
 
     public string GetCarrierRejectReason(LayoutProbeInstance? slot)
-        => this.GetCarrierRejectReason(slot, CarrierAllocationPolicy.SafeOnly);
+        => this.GetCarrierRejectReason(slot, CarrierAllocationPolicy.PreferredListThenAnyValid);
 
     public string GetCarrierRejectReason(LayoutProbeInstance? slot, CarrierAllocationPolicy policy)
         => this.GetCarrierRejectReason(slot, new HashSet<string>(StringComparer.OrdinalIgnoreCase), policy);
@@ -966,6 +976,9 @@ public sealed unsafe class LocalLayoutObjectService
             return string.Empty;
 
         var warnings = new List<string>();
+        var structuralReason = GetStructuralCarrierRejectReason(slot);
+        if (!string.IsNullOrWhiteSpace(structuralReason))
+            warnings.Add(structuralReason);
         if (string.Equals(slot.SourceKind, "SharedGroup", StringComparison.Ordinal)
             || !string.IsNullOrWhiteSpace(slot.ParentAddress)
             || !string.IsNullOrWhiteSpace(slot.SharedGroupPath)
@@ -979,6 +992,14 @@ public sealed unsafe class LocalLayoutObjectService
             warnings.Add($"DynamicSuspected: {dynamicReason}");
 
         return string.Join("; ", warnings);
+    }
+
+    public string GetPreferredModifyReason(LayoutProbeInstance? slot)
+    {
+        if (slot == null || this.preferredModifyBgParts == null)
+            return string.Empty;
+
+        return this.preferredModifyBgParts.IsPreferred(slot, out var reason) ? reason : string.Empty;
     }
 
     private string GetCarrierRejectReasonForAllocatedTemplateCarrier(LayoutProbeInstance? slot, LayoutProbeInstance template, CarrierAllocationPolicy policy)
@@ -1058,6 +1079,8 @@ public sealed unsafe class LocalLayoutObjectService
 
     private string GetFallbackCarrierRejectReason(LayoutProbeInstance slot, CarrierAllocationPolicy policy)
     {
+        if (policy == CarrierAllocationPolicy.PreferredListThenAnyValid)
+            return string.Empty;
         if (MatchesPatternList(slot.ResourcePath, this.CarrierWhitelistPatternText))
             return string.Empty;
         if (MatchesPatternList(slot.ResourcePath, this.CarrierBlacklistPatternText))
@@ -3562,11 +3585,13 @@ public sealed unsafe class LocalLayoutObjectService
         CarrierAllocationPolicy policy,
         Vector3? playerPosition,
         string protectedVersion,
+        string preferredModifyVersion,
         string occupiedRegistryVersion,
         IReadOnlyList<string> candidateAddresses,
         IReadOnlyList<LayoutProbeInstance> selectedSlots,
         int sameModelAvailable,
-        int fallbackAvailable,
+        int preferredModifyAvailable,
+        int anyValidAvailable,
         int totalAvailable,
         bool isOrderValid,
         string orderValidationMessage)
@@ -3585,6 +3610,8 @@ public sealed unsafe class LocalLayoutObjectService
 
         public string ProtectedVersion { get; } = protectedVersion;
 
+        public string PreferredModifyVersion { get; } = preferredModifyVersion;
+
         public string OccupiedRegistryVersion { get; } = occupiedRegistryVersion;
 
         public IReadOnlyList<string> CandidateAddresses { get; } = candidateAddresses;
@@ -3593,7 +3620,11 @@ public sealed unsafe class LocalLayoutObjectService
 
         public int SameModelAvailable { get; } = sameModelAvailable;
 
-        public int FallbackAvailable { get; } = fallbackAvailable;
+        public int PreferredModifyAvailable { get; } = preferredModifyAvailable;
+
+        public int AnyValidAvailable { get; } = anyValidAvailable;
+
+        public int FallbackAvailable { get; } = anyValidAvailable;
 
         public int TotalAvailable { get; } = totalAvailable;
 
@@ -3607,6 +3638,7 @@ public sealed unsafe class LocalLayoutObjectService
             CarrierAllocationPolicy policy,
             Vector3? playerPosition,
             string protectedVersion,
+            string preferredModifyVersion,
             string occupiedRegistryVersion,
             IReadOnlyList<LayoutProbeInstance> currentCandidates)
         {
@@ -3616,7 +3648,7 @@ public sealed unsafe class LocalLayoutObjectService
                 return true;
             if (this.RequestedCount != requestedCount || this.Policy != policy)
                 return true;
-            if (this.ProtectedVersion != protectedVersion || this.OccupiedRegistryVersion != occupiedRegistryVersion)
+            if (this.ProtectedVersion != protectedVersion || this.PreferredModifyVersion != preferredModifyVersion || this.OccupiedRegistryVersion != occupiedRegistryVersion)
                 return true;
             if (this.PlayerPosition.HasValue != playerPosition.HasValue)
                 return true;

@@ -29,9 +29,17 @@ public sealed class BgPartCarrierAllocationResult
 
     public int SameModelAvailable { get; set; }
 
-    public int FallbackAvailable { get; set; }
+    public int PreferredModifyAvailable { get; set; }
 
-    public int TotalAvailable => this.SameModelAvailable + this.FallbackAvailable;
+    public int AnyValidAvailable { get; set; }
+
+    public int FallbackAvailable
+    {
+        get => this.AnyValidAvailable;
+        set => this.AnyValidAvailable = value;
+    }
+
+    public int TotalAvailable => this.SameModelAvailable + this.PreferredModifyAvailable + this.AnyValidAvailable;
 
     public void AddReject(string reason)
     {
@@ -105,7 +113,7 @@ public sealed class BgPartCarrierAllocator
         CarrierAllocationPolicy policy,
         Vector3? playerPosition,
         Func<LayoutProbeInstance?, ISet<string>, string> getBasicRejectReason,
-        Func<LayoutProbeInstance, CarrierAllocationPolicy, string> getFallbackRejectReason,
+        Func<LayoutProbeInstance, string> getPreferredReason,
         Func<LayoutProbeInstance, string> getWarningReason,
         Func<string, bool> isOccupied,
         Func<string, bool> isReserved)
@@ -126,12 +134,15 @@ public sealed class BgPartCarrierAllocator
         result.FreeCount = Math.Max(0, result.TotalSlots - result.OccupiedCount - result.ReservedCount);
 
         var sameModel = new List<LayoutProbeInstance>();
-        var fallback = new List<LayoutProbeInstance>();
+        var preferredSlot = new List<LayoutProbeInstance>();
+        var preferredResourcePath = new List<LayoutProbeInstance>();
+        var anyValid = new List<LayoutProbeInstance>();
         var accepted = new List<LayoutProbeInstance>();
         foreach (var slot in bgParts)
         {
             slot.CarrierRejectReason = string.Empty;
             slot.CarrierWarningReason = string.Empty;
+            slot.CarrierAllocationStage = string.Empty;
 
             var basicReject = getBasicRejectReason(slot, excluded);
             if (!string.IsNullOrWhiteSpace(basicReject))
@@ -143,32 +154,31 @@ public sealed class BgPartCarrierAllocator
 
             if (template != null && string.Equals(slot.ResourcePath, template.ResourcePath, StringComparison.OrdinalIgnoreCase))
             {
-                var sameModelReject = getFallbackRejectReason(slot, policy);
-                if (!string.IsNullOrWhiteSpace(sameModelReject))
-                {
-                    result.AddReject(sameModelReject);
-                    slot.CarrierRejectReason = sameModelReject;
-                    continue;
-                }
-
                 sameModel.Add(slot);
                 accepted.Add(slot);
                 var warning = getWarningReason(slot);
                 slot.CarrierWarningReason = warning;
+                slot.CarrierAllocationStage = "SameModel";
                 result.AddAcceptedWarning(warning);
                 slot.CarrierRejectReason = string.Empty;
                 continue;
             }
 
-            var fallbackReject = getFallbackRejectReason(slot, policy);
-            if (!string.IsNullOrWhiteSpace(fallbackReject))
+            var preferredReason = getPreferredReason(slot);
+            if (!string.IsNullOrWhiteSpace(preferredReason))
             {
-                result.AddReject(fallbackReject);
-                slot.CarrierRejectReason = fallbackReject;
-                continue;
+                if (preferredReason.Contains("PreferredSlot", StringComparison.OrdinalIgnoreCase))
+                    preferredSlot.Add(slot);
+                else
+                    preferredResourcePath.Add(slot);
+                slot.CarrierAllocationStage = "PreferredModifyList";
+            }
+            else
+            {
+                anyValid.Add(slot);
+                slot.CarrierAllocationStage = "AnyValidBgPart";
             }
 
-            fallback.Add(slot);
             accepted.Add(slot);
             var fallbackWarning = getWarningReason(slot);
             slot.CarrierWarningReason = fallbackWarning;
@@ -177,32 +187,26 @@ public sealed class BgPartCarrierAllocator
         }
 
         result.SameModelAvailable = sameModel.Count;
-        result.FallbackAvailable = fallback.Count;
+        result.PreferredModifyAvailable = preferredSlot.Count + preferredResourcePath.Count;
+        result.AnyValidAvailable = anyValid.Count;
         result.AcceptedTop10.AddRange(SortByFarthestFromPlayer(accepted, playerPosition).Take(10));
         result.RejectedTop10.AddRange(SortRejectedByFarthestFromPlayer(bgParts, playerPosition)
             .Where(slot => !string.IsNullOrWhiteSpace(slot.CarrierRejectReason))
             .Take(10));
 
         var sortedSameModel = SortByFarthestFromPlayer(sameModel, playerPosition).ToList();
-        var sortedFallback = SortByFarthestFromPlayer(fallback, playerPosition).ToList();
-        if (policy == CarrierAllocationPolicy.StrictFarthestSafe)
-        {
-            result.Selected.AddRange(SortByFarthestFromPlayer(accepted, playerPosition));
-        }
-        else if (policy == CarrierAllocationPolicy.DebugNearest)
-        {
-            result.Selected.AddRange(SortByNearestFromPlayer(accepted, playerPosition));
-        }
-        else
-        {
-            result.Selected.AddRange(sortedSameModel);
-            result.Selected.AddRange(sortedFallback);
-        }
+        var sortedPreferredSlot = SortByFarthestFromPlayer(preferredSlot, playerPosition).ToList();
+        var sortedPreferredResourcePath = SortByFarthestFromPlayer(preferredResourcePath, playerPosition).ToList();
+        var sortedAnyValid = SortByFarthestFromPlayer(anyValid, playerPosition).ToList();
+        result.Selected.AddRange(sortedSameModel);
+        result.Selected.AddRange(sortedPreferredSlot);
+        result.Selected.AddRange(sortedPreferredResourcePath);
+        result.Selected.AddRange(sortedAnyValid);
 
         if (requestedCount < result.Selected.Count)
             result.Selected.RemoveRange(requestedCount, result.Selected.Count - requestedCount);
 
-        result.IsOrderValid = ValidateOrder(result.Selected, sortedSameModel, sortedFallback, accepted, policy, playerPosition, out var orderError);
+        result.IsOrderValid = ValidateOrder(result.Selected, sortedSameModel, sortedPreferredSlot, sortedPreferredResourcePath, sortedAnyValid, playerPosition, out var orderError);
         result.OrderValidationMessage = orderError;
 
         return result;
@@ -212,11 +216,6 @@ public sealed class BgPartCarrierAllocator
         => slots
             .OrderByDescending(slot => GetDistance(slot, playerPosition))
             .ThenByDescending(slot => !slot.Visible)
-            .ThenBy(slot => slot.Address);
-
-    private static IOrderedEnumerable<LayoutProbeInstance> SortByNearestFromPlayer(IEnumerable<LayoutProbeInstance> slots, Vector3? playerPosition)
-        => slots
-            .OrderBy(slot => GetDistance(slot, playerPosition))
             .ThenBy(slot => slot.Address);
 
     private static IOrderedEnumerable<LayoutProbeInstance> SortRejectedByFarthestFromPlayer(IEnumerable<LayoutProbeInstance> slots, Vector3? playerPosition)
@@ -230,9 +229,9 @@ public sealed class BgPartCarrierAllocator
     private static bool ValidateOrder(
         IReadOnlyList<LayoutProbeInstance> selected,
         IReadOnlyList<LayoutProbeInstance> sameModel,
-        IReadOnlyList<LayoutProbeInstance> fallback,
-        IReadOnlyList<LayoutProbeInstance> accepted,
-        CarrierAllocationPolicy policy,
+        IReadOnlyList<LayoutProbeInstance> preferredSlot,
+        IReadOnlyList<LayoutProbeInstance> preferredResourcePath,
+        IReadOnlyList<LayoutProbeInstance> anyValid,
         Vector3? playerPosition,
         out string message)
     {
@@ -240,12 +239,13 @@ public sealed class BgPartCarrierAllocator
         if (selected.Count == 0)
             return true;
 
-        var expected = policy switch
-        {
-            CarrierAllocationPolicy.StrictFarthestSafe => SortByFarthestFromPlayer(accepted, playerPosition).FirstOrDefault(),
-            CarrierAllocationPolicy.DebugNearest => SortByNearestFromPlayer(accepted, playerPosition).FirstOrDefault(),
-            _ => sameModel.Count > 0 ? sameModel[0] : fallback.FirstOrDefault(),
-        };
+        var expected = sameModel.Count > 0
+            ? sameModel[0]
+            : preferredSlot.Count > 0
+                ? preferredSlot[0]
+                : preferredResourcePath.Count > 0
+                    ? preferredResourcePath[0]
+                    : anyValid.FirstOrDefault();
 
         if (expected == null || string.Equals(expected.Address, selected[0].Address, StringComparison.OrdinalIgnoreCase))
             return true;
