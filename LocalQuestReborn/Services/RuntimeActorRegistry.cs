@@ -18,12 +18,16 @@ public sealed class RuntimeActorRegistry
     public IReadOnlyList<RuntimeActorInstance> GetByNpcId(string npcId)
         => this.instances.Values
             .Where(instance => string.Equals(instance.NpcId, npcId, StringComparison.OrdinalIgnoreCase))
-            .OrderBy(instance => instance.SpawnTime)
+            .OrderBy(instance => instance.SortOrder)
+            .ThenBy(instance => instance.SpawnSequence)
+            .ThenBy(instance => instance.SpawnTime)
             .ToList();
 
     public IReadOnlyList<RuntimeActorInstance> GetAll()
         => this.instances.Values
-            .OrderByDescending(instance => instance.SpawnTime)
+            .OrderBy(instance => instance.SortOrder)
+            .ThenBy(instance => instance.SpawnSequence)
+            .ThenBy(instance => instance.SpawnTime)
             .ToList();
 
     public RuntimeActorInstance? GetLatestByNpcId(string npcId)

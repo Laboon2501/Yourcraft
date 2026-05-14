@@ -18,6 +18,7 @@ public sealed class RealNpcSpawnService
     private readonly AppearanceApplyService appearanceApplyService;
     private readonly AppearanceApplyQueue appearanceApplyQueue;
     private readonly ActorAnimationService animationService;
+    private readonly ActorAnimationRigService animationRigService;
     private readonly ActorActionSequenceService actionSequenceService;
     private readonly ActorLookAtService lookAtService;
     private readonly PlayerLookAtActorService playerLookAtActorService;
@@ -37,6 +38,13 @@ public sealed class RealNpcSpawnService
     private uint lastTerritoryType;
     private int gposeRebuildQueueCount;
     private DateTime lastSpawnIntentFallbackCheckAt = DateTime.MinValue;
+    private long nextRuntimeActorSequence;
+    private readonly Queue<PostSpawnApplyPlan> postSpawnApplyQueue = new();
+    private PostSpawnApplyPlan? activePostSpawnApply;
+    private readonly Queue<GposeActorRebuildSnapshot> pendingGposeRebuilds = new();
+    private string activeGposeRebuildRuntimeId = string.Empty;
+    private int gposeRebuildTotalCount;
+    private int gposeRebuildSuccessCount;
 
     public RealNpcSpawnService(
         IClientState clientState,
@@ -49,6 +57,7 @@ public sealed class RealNpcSpawnService
         AppearanceApplyService appearanceApplyService,
         AppearanceApplyQueue appearanceApplyQueue,
         ActorAnimationService animationService,
+        ActorAnimationRigService animationRigService,
         ActorActionSequenceService actionSequenceService,
         ActorLookAtService lookAtService,
         PlayerLookAtActorService playerLookAtActorService,
@@ -75,6 +84,7 @@ public sealed class RealNpcSpawnService
         this.appearanceApplyService = appearanceApplyService;
         this.appearanceApplyQueue = appearanceApplyQueue;
         this.animationService = animationService;
+        this.animationRigService = animationRigService;
         this.actionSequenceService = actionSequenceService;
         this.lookAtService = lookAtService;
         this.playerLookAtActorService = playerLookAtActorService;
@@ -296,6 +306,8 @@ public sealed class RealNpcSpawnService
             instance.NpcId = npc.Id;
             instance.NpcName = npc.Name;
             instance.DisplayName = npc.Name;
+            instance.SortOrder = this.GetNpcSortOrder(npc.Id);
+            instance.SpawnSequence = ++this.nextRuntimeActorSequence;
             instance.SpawnedTerritoryType = (ushort)Math.Clamp((int)this.clientState.TerritoryType, 0, ushort.MaxValue);
             instance.SpawnedTerritoryName = this.clientState.TerritoryType.ToString();
             instance.SpawnPosition = spawnPosition;
@@ -312,13 +324,14 @@ public sealed class RealNpcSpawnService
             instance.PenumbraMode = npc.PenumbraMode;
             instance.PenumbraCollectionId = npc.PenumbraCollectionId;
             instance.PenumbraCollectionNameCache = npc.PenumbraCollectionNameCache;
+            instance.PostSpawnBehaviorReady = false;
+            instance.PostSpawnPipelineState = "SpawnedPointerAcquired";
+            instance.PostSpawnPipelineStatus = "Spawn returned; waiting for DrawObject before applying appearance.";
             this.actionSequenceService.Reset(instance);
             this.nameplateService.TryReadActorName(instance);
             this.targetabilityService.TryReadTargetability(instance);
             this.ApplyActorTransform(instance.RuntimeId, spawnPosition, spawnRotation, spawnScale);
-            this.EnqueueNpcAppearance(instance.RuntimeId);
-            if (npc.AutoPlayDefaultAnimation && npc.DefaultAnimationId > 0)
-                this.PlayAnimation(instance.RuntimeId, npc.DefaultAnimationId);
+            this.QueuePostSpawnApply(instance.RuntimeId, "spawn");
 
             this.LastMessage = $"{reason} 外观应用已加入队列。";
             return instance;
@@ -364,6 +377,8 @@ public sealed class RealNpcSpawnService
     {
         this.lookAtService.Stop(instance, out _);
         this.actionSequenceService.Stop(instance);
+        if (instance.HasAnimationRigNativeOverride)
+            this.animationRigService.RestoreAnimationRig(instance, out _);
         this.appearanceApplyQueue.RemoveJobsForActor(instance.RuntimeId);
         this.penumbraIpc.CleanupActorAssignment(instance);
 
@@ -614,6 +629,48 @@ public sealed class RealNpcSpawnService
 
         var success = this.animationService.Stop(instance, out var reason);
         this.LastMessage = success ? "已停止动画并尝试恢复 idle。" : $"停止动画失败：{reason}";
+        return success;
+    }
+
+    public bool ApplyActorAnimationRig(string runtimeId)
+    {
+        var instance = this.registry.GetByRuntimeId(runtimeId);
+        if (instance == null)
+        {
+            this.LastMessage = $"Runtime Actor not found: {runtimeId}";
+            return false;
+        }
+
+        var success = this.animationRigService.ApplyAnimationRigOverride(instance, out var reason);
+        this.LastMessage = reason;
+        return success;
+    }
+
+    public bool RestoreActorAnimationRig(string runtimeId)
+    {
+        var instance = this.registry.GetByRuntimeId(runtimeId);
+        if (instance == null)
+        {
+            this.LastMessage = $"Runtime Actor not found: {runtimeId}";
+            return false;
+        }
+
+        var success = this.animationRigService.RestoreAnimationRig(instance, out var reason);
+        this.LastMessage = reason;
+        return success;
+    }
+
+    public bool ReapplyActorCurrentAnimation(string runtimeId)
+    {
+        var instance = this.registry.GetByRuntimeId(runtimeId);
+        if (instance == null)
+        {
+            this.LastMessage = $"Runtime Actor not found: {runtimeId}";
+            return false;
+        }
+
+        var success = this.animationRigService.ReapplyCurrentAnimationWithRig(instance, out var reason);
+        this.LastMessage = reason;
         return success;
     }
 
@@ -1210,6 +1267,14 @@ public sealed class RealNpcSpawnService
             .Where(actor => string.Equals(actor.SpawnSource, "BrioAssembly", StringComparison.OrdinalIgnoreCase) || actor.CharacterObject != null)
             .ToList();
 
+        this.log.Information("[RealNpcSpawnService] GPose exit detected. Clearing old actor pointers and queuing rebuild. Count={Count}", oldActors.Count);
+        this.actionSequenceService.StopAll();
+        var rebuildSnapshots = oldActors
+            .Select(this.CreateGposeRebuildSnapshot)
+            .Where(snapshot => snapshot != null)
+            .Cast<GposeActorRebuildSnapshot>()
+            .ToList();
+
         foreach (var actor in oldActors)
         {
             actor.IsValid = false;
@@ -1218,25 +1283,25 @@ public sealed class RealNpcSpawnService
             this.registry.Remove(actor.RuntimeId);
         }
 
-        var respawnList = this.spawnIntentRegistry.GetAll()
-            .Where(intent => intent.ShouldBeSpawned && !intent.SuppressedUntilUserSpawn && intent.RespawnAfterGpose)
-            .Select(intent => this.database.GetNpcById(intent.NpcId))
-            .Where(npc => npc != null)
-            .Cast<CustomNpc>()
-            .ToList();
-
-        this.gposeRebuildQueueCount = respawnList.Count;
+        this.gposeRebuildQueueCount = rebuildSnapshots.Count;
         var successCount = 0;
-        foreach (var npc in respawnList)
+        foreach (var snapshot in rebuildSnapshots)
         {
             try
             {
-                if (this.SpawnUnique(npc) != null)
-                    successCount++;
+                this.log.Information("[RealNpcSpawnService] Rebuild actor after GPose begin. RuntimeId={OldRuntimeId}, NpcId={NpcId}, Name={Name}", snapshot.OldRuntimeId, snapshot.Npc.Id, snapshot.Npc.Name);
+                var rebuilt = this.SpawnNew(snapshot.Npc);
+                if (rebuilt == null)
+                    continue;
+
+                this.ApplyGposeRebuildSnapshot(rebuilt, snapshot);
+                this.spawnIntentRegistry.UpdateLastRuntime(snapshot.Npc, rebuilt);
+                successCount++;
+                this.log.Information("[RealNpcSpawnService] Rebuild actor after GPose end. OldRuntimeId={OldRuntimeId}, NewRuntimeId={NewRuntimeId}", snapshot.OldRuntimeId, rebuilt.RuntimeId);
             }
             catch (Exception ex)
             {
-                this.log.Warning(ex, "[RealNpcSpawnService] Failed to rebuild actor after GPose. NpcId={NpcId}", npc.Id);
+                this.log.Warning(ex, "[RealNpcSpawnService] Failed to rebuild actor after GPose. NpcId={NpcId}", snapshot.Npc.Id);
             }
             finally
             {
@@ -1244,9 +1309,102 @@ public sealed class RealNpcSpawnService
             }
         }
 
-        this.LastGposeRebuildResult = $"GPose 退出后重建完成：旧 Actor {oldActors.Count} 个，重建 {successCount}/{respawnList.Count} 个。";
+        this.LastGposeRebuildResult = $"GPose 退出后重建完成：旧 Actor {oldActors.Count} 个，重建 {successCount}/{rebuildSnapshots.Count} 个。";
         this.LastMessage = this.LastGposeRebuildResult;
     }
+
+    private GposeActorRebuildSnapshot? CreateGposeRebuildSnapshot(RuntimeActorInstance actor)
+    {
+        var npc = this.database.GetNpcById(actor.NpcId);
+        if (npc == null)
+            return null;
+
+        return new GposeActorRebuildSnapshot
+        {
+            OldRuntimeId = actor.RuntimeId,
+            Npc = npc,
+            Position = actor.TransformEditPosition == Vector3.Zero ? actor.SpawnPosition : actor.TransformEditPosition,
+            RotationEuler = actor.TransformEditRotationEuler,
+            Scale = NormalizeScale(actor.TransformEditScale == Vector3.Zero ? actor.SpawnScale : actor.TransformEditScale),
+            DefaultAnimationId = actor.DefaultAnimationId,
+            CurrentAnimationId = actor.CurrentAnimationId,
+            AnimationEnabled = actor.AnimationEnabled,
+            EnableActionSequence = actor.EnableActionSequence,
+            ActionSequenceLoop = actor.ActionSequenceLoop,
+            ActionSequenceLoopDelay = actor.ActionSequenceLoopDelay,
+            ActionSequence = actor.ActionSequence.Select(CloneActionSequenceStep).ToList(),
+            LookAtPlayerEnabled = actor.LookAtPlayerEnabled,
+            LookAtRadius = actor.LookAtRadius,
+            PenumbraMode = actor.PenumbraMode,
+            PenumbraCollectionId = actor.PenumbraCollectionId,
+            PenumbraCollectionNameCache = actor.PenumbraCollectionNameCache,
+            AnimationRigMode = actor.AnimationRigMode,
+            AnimationRigPreset = actor.AnimationRigPreset,
+            CustomRigRace = actor.CustomRigRace,
+            CustomRigSex = actor.CustomRigSex,
+            CustomRigTribe = actor.CustomRigTribe,
+        };
+    }
+
+    private void ApplyGposeRebuildSnapshot(RuntimeActorInstance actor, GposeActorRebuildSnapshot snapshot)
+    {
+        actor.DefaultAnimationId = snapshot.DefaultAnimationId;
+        actor.CurrentAnimationId = snapshot.CurrentAnimationId;
+        actor.AnimationEnabled = snapshot.AnimationEnabled;
+        actor.EnableActionSequence = snapshot.EnableActionSequence;
+        actor.ActionSequenceLoop = snapshot.ActionSequenceLoop;
+        actor.ActionSequenceLoopDelay = snapshot.ActionSequenceLoopDelay;
+        actor.ActionSequence = snapshot.ActionSequence.Select(CloneActionSequenceStep).ToList();
+        actor.LookAtPlayerEnabled = snapshot.LookAtPlayerEnabled;
+        actor.LookAtRadius = Math.Max(0.1f, snapshot.LookAtRadius);
+        actor.LookAtMode = NpcLookAtMode.NativeLookAt;
+        actor.PenumbraMode = snapshot.PenumbraMode;
+        actor.PenumbraCollectionId = snapshot.PenumbraCollectionId;
+        actor.PenumbraCollectionNameCache = snapshot.PenumbraCollectionNameCache;
+        actor.AnimationRigMode = snapshot.AnimationRigMode;
+        actor.AnimationRigPreset = snapshot.AnimationRigPreset;
+        actor.CustomRigRace = snapshot.CustomRigRace;
+        actor.CustomRigSex = snapshot.CustomRigSex;
+        actor.CustomRigTribe = snapshot.CustomRigTribe;
+        actor.VisibilityRuntimeState = ActorVisibilityRuntimeState.Visible;
+        actor.LookAtPausedByActionSequence = false;
+
+        this.ApplyActorTransform(actor.RuntimeId, snapshot.Position, snapshot.RotationEuler, snapshot.Scale);
+        this.EnqueueNpcAppearance(actor.RuntimeId);
+        this.actionSequenceService.Reset(actor);
+
+        if (actor.AnimationRigMode == ActorAnimationRigMode.Override && actor.AnimationRigPreset != ActorAnimationRigPreset.Current)
+            this.animationRigService.ApplyAnimationRigOverride(actor, out _);
+
+        if (!actor.EnableActionSequence && actor.CurrentAnimationId > 0)
+            this.animationService.PlayTransientTimeline(actor, actor.CurrentAnimationId, out _);
+    }
+
+    private static ActorActionSequenceStep CloneActionSequenceStep(ActorActionSequenceStep step)
+        => new()
+        {
+            Id = step.Id,
+            Name = step.Name,
+            Kind = step.Kind,
+            DurationSeconds = step.DurationSeconds,
+            AnimationId = step.AnimationId,
+            LoopAnimation = step.LoopAnimation,
+            StayInPose = step.StayInPose,
+            RepeatAfterSeconds = step.RepeatAfterSeconds,
+            ExpressionId = step.ExpressionId,
+            PlayExpressionWithAction = step.PlayExpressionWithAction,
+            ExpressionDelaySeconds = step.ExpressionDelaySeconds,
+            ExpressionDurationSeconds = step.ExpressionDurationSeconds,
+            LoopExpression = step.LoopExpression,
+            ExpressionWeight = step.ExpressionWeight,
+            ExpressionLayer = step.ExpressionLayer,
+            BubbleText = step.BubbleText,
+            BubbleDurationSeconds = step.BubbleDurationSeconds,
+            BubbleUseAutoDuration = step.BubbleUseAutoDuration,
+            ShowBubbleOnEnter = step.ShowBubbleOnEnter,
+            HideBubbleOnDespawn = step.HideBubbleOnDespawn,
+            AllowLookAtDuringStep = step.AllowLookAtDuringStep,
+        };
 
     private void RebuildMissingIntentActorsIfNeeded()
     {
@@ -1278,6 +1436,53 @@ public sealed class RealNpcSpawnService
             this.LastGposeRebuildResult = $"备用检查已重建缺失 Actor：{rebuilt} 个。";
             this.LastMessage = this.LastGposeRebuildResult;
         }
+    }
+
+    private sealed class GposeActorRebuildSnapshot
+    {
+        public string OldRuntimeId { get; init; } = string.Empty;
+
+        public required CustomNpc Npc { get; init; }
+
+        public Vector3 Position { get; init; }
+
+        public Vector3 RotationEuler { get; init; }
+
+        public Vector3 Scale { get; init; }
+
+        public uint DefaultAnimationId { get; init; }
+
+        public uint CurrentAnimationId { get; init; }
+
+        public bool AnimationEnabled { get; init; }
+
+        public bool EnableActionSequence { get; init; }
+
+        public bool ActionSequenceLoop { get; init; }
+
+        public float ActionSequenceLoopDelay { get; init; }
+
+        public List<ActorActionSequenceStep> ActionSequence { get; init; } = [];
+
+        public bool LookAtPlayerEnabled { get; init; }
+
+        public float LookAtRadius { get; init; }
+
+        public PenumbraCollectionMode PenumbraMode { get; init; }
+
+        public Guid? PenumbraCollectionId { get; init; }
+
+        public string PenumbraCollectionNameCache { get; init; } = string.Empty;
+
+        public ActorAnimationRigMode AnimationRigMode { get; init; }
+
+        public ActorAnimationRigPreset AnimationRigPreset { get; init; }
+
+        public byte CustomRigRace { get; init; }
+
+        public byte CustomRigSex { get; init; }
+
+        public byte CustomRigTribe { get; init; }
     }
 
     private static float CalculateXZDistance(Vector3 playerPosition, Vector3 targetPosition)

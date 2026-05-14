@@ -33,6 +33,12 @@ public sealed class ActorActionSequenceService
                 continue;
             }
 
+            if (!actor.PostSpawnBehaviorReady)
+            {
+                actor.ActionSequenceStatus = $"Waiting post-spawn pipeline: {actor.PostSpawnPipelineState}";
+                continue;
+            }
+
             if (!actor.IsValid || actor.CharacterObject == null)
             {
                 this.StopActorIfNeeded(actor, clearBubble: true, restoreVisibility: false);

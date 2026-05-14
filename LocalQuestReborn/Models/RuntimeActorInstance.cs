@@ -28,6 +28,10 @@ public sealed class RuntimeActorInstance
 
     public DateTime SpawnTime { get; set; } = DateTime.Now;
 
+    public int SortOrder { get; set; } = int.MaxValue;
+
+    public long SpawnSequence { get; set; }
+
     public Vector3 LastKnownPosition { get; set; }
 
     public Quaternion LastKnownRotation { get; set; } = Quaternion.Identity;
@@ -81,6 +85,12 @@ public sealed class RuntimeActorInstance
     public string LastAppearanceApplyResult { get; set; } = string.Empty;
 
     public DateTime? LastAppearanceAppliedAt { get; set; }
+
+    public bool PostSpawnBehaviorReady { get; set; } = true;
+
+    public string PostSpawnPipelineState { get; set; } = "Ready";
+
+    public string PostSpawnPipelineStatus { get; set; } = string.Empty;
 
     public PenumbraCollectionMode PenumbraMode { get; set; } = PenumbraCollectionMode.DoNotTouch;
 
@@ -150,6 +160,8 @@ public sealed class RuntimeActorInstance
 
     public bool LookAtPausedByActionSequence { get; set; }
 
+    public ActorAnimationRigMode AnimationRigMode { get; set; } = ActorAnimationRigMode.Current;
+
     public ActorAnimationRigPreset AnimationRigPreset { get; set; } = ActorAnimationRigPreset.Current;
 
     public byte CustomRigRace { get; set; }
@@ -157,6 +169,24 @@ public sealed class RuntimeActorInstance
     public byte CustomRigSex { get; set; }
 
     public byte CustomRigTribe { get; set; }
+
+    public bool HasAnimationRigNativeOverride { get; set; }
+
+    public byte OriginalRigRace { get; set; }
+
+    public byte OriginalRigSex { get; set; }
+
+    public byte OriginalRigBodyType { get; set; }
+
+    public byte OriginalRigTribe { get; set; }
+
+    public byte AppliedRigRace { get; set; }
+
+    public byte AppliedRigSex { get; set; }
+
+    public byte AppliedRigBodyType { get; set; }
+
+    public byte AppliedRigTribe { get; set; }
 
     public string AnimationRigStatus { get; set; } = "Current";
 
