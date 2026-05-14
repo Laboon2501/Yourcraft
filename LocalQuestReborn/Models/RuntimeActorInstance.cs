@@ -86,6 +86,16 @@ public sealed class RuntimeActorInstance
 
     public DateTime? LastAppearanceAppliedAt { get; set; }
 
+    public string LastAppearanceValidationResult { get; set; } = string.Empty;
+
+    public string LastAppearanceBeforeSummary { get; set; } = string.Empty;
+
+    public string LastAppearanceAfterSummary { get; set; } = string.Empty;
+
+    public string LastLocalPlayerAppearanceSummary { get; set; } = string.Empty;
+
+    public int LastAppearanceRetryCount { get; set; }
+
     public bool PostSpawnBehaviorReady { get; set; } = true;
 
     public string PostSpawnPipelineState { get; set; } = "Ready";

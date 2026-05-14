@@ -14,14 +14,17 @@ public sealed class ActorAnimationRigService
         this.log = log;
     }
 
+    public bool IsSupported => false;
+
+    public string UnsupportedReason => "当前版本尚未找到安全的 animation-only data path override。为了避免改变外观，已禁用直接应用。";
+
     public bool ApplyAnimationRigOverride(RuntimeActorInstance actor, out string reason)
     {
         if (actor.AnimationRigMode == ActorAnimationRigMode.Current || actor.AnimationRigPreset == ActorAnimationRigPreset.Current)
             return this.RestoreAnimationRig(actor, out reason);
 
         actor.HasAnimationRigNativeOverride = false;
-        actor.AnimationRigStatus =
-            $"Unsupported current build: no verified animation-only data-path override for {actor.AnimationRigPreset}. Rig selection is saved but no native appearance/customize fields were written.";
+        actor.AnimationRigStatus = $"Unsupported: {this.UnsupportedReason} Rig={actor.AnimationRigPreset} 已保存，但未应用到 native 动画系统。";
         this.ReapplyCurrentAnimationWithRig(actor, out var replayReason);
         reason = $"{actor.AnimationRigStatus} Replay result: {replayReason}";
         this.log.Debug("Animation rig override skipped as unsupported. RuntimeId={RuntimeId}, Rig={Rig}, Replay={Replay}", actor.RuntimeId, actor.AnimationRigPreset, replayReason);

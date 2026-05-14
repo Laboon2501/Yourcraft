@@ -125,7 +125,7 @@ public sealed class AppearanceApplyQueue
                 return;
             }
 
-            var success = this.appearanceApplyService.ApplyNpcAppearance(npc, actor);
+            var success = this.appearanceApplyService.ApplyNpcPresetAppearance(npc, actor);
             stopwatch.Stop();
             this.LastElapsedMilliseconds = stopwatch.ElapsedMilliseconds;
 

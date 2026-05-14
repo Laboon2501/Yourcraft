@@ -84,6 +84,37 @@ public sealed class AppearanceApplyService
         }
     }
 
+    public bool ApplyNpcPresetAppearance(CustomNpc npc, RuntimeActorInstance actor)
+    {
+        try
+        {
+            var appearance = npc.Appearance ?? new CustomNpcAppearance();
+            actor.AppearanceSourceType = appearance.SourceType.ToString();
+            var success = appearance.SourceType switch
+            {
+                CustomNpcAppearanceSourceType.None => this.ApplyNone(actor),
+                CustomNpcAppearanceSourceType.CurrentPlayer => this.ApplyCurrentPlayer(actor),
+                CustomNpcAppearanceSourceType.GlamourerDesign => this.ApplyGlamourerDesign(appearance, actor),
+                CustomNpcAppearanceSourceType.GameNpc => this.ApplyGameNpc(appearance, actor),
+                CustomNpcAppearanceSourceType.MCDF => this.Fail(actor, "MCDF", "MCDF appearance apply is not connected to a safe path yet."),
+                CustomNpcAppearanceSourceType.PenumbraCollection => this.ApplyPenumbraAppearanceSource(actor),
+                _ => this.Fail(actor, appearance.SourceType.ToString(), $"Unknown appearance source: {appearance.SourceType}"),
+            };
+
+            actor.LastAppearanceAppliedAt = DateTime.Now;
+            return success;
+        }
+        catch (Exception ex)
+        {
+            actor.LastAppearanceMethod = "Failed";
+            actor.LastAppearanceError = ex.Message;
+            actor.LastAppearanceApplyResult = $"Appearance apply exception: {ex.Message}";
+            actor.LastAppearanceAppliedAt = DateTime.Now;
+            this.log.Error(ex, "ApplyNpcPresetAppearance failed. RuntimeId={RuntimeId}, NpcId={NpcId}", actor.RuntimeId, npc.Id);
+            return false;
+        }
+    }
+
     private bool ApplyNone(RuntimeActorInstance actor)
     {
         actor.LastAppearanceMethod = "None";
@@ -121,7 +152,7 @@ public sealed class AppearanceApplyService
         if (!this.glamourerIpcBridge.ApplyDesignToObject(appearance.GlamourerDesignId, objectIndex, out var applyReason))
             return this.Fail(actor, "GlamourerDesign", applyReason);
 
-        var redraw = this.TryPenumbraRedraw(objectIndex);
+        var redraw = "post-preset Penumbra redraw skipped; collection redraw happens before preset apply.";
         var ipc = this.glamourerIpcBridge.SelectedApplyDesign;
         actor.LastAppearanceMethod = $"GlamourerDesign via {ipc?.Name ?? "unknown"}";
         actor.LastAppearanceError = string.Empty;
@@ -144,9 +175,7 @@ public sealed class AppearanceApplyService
             return false;
         }
 
-        var redraw = int.TryParse(actor.ObjectIndex, out var objectIndex)
-            ? this.TryPenumbraRedraw(objectIndex)
-            : "ObjectIndex 不可用，跳过 redraw。";
+        var redraw = "post-preset Penumbra redraw skipped; collection redraw happens before preset apply.";
         actor.LastAppearanceMethod = "GameNpc";
         actor.LastAppearanceError = string.Empty;
         actor.LastAppearanceApplyResult = $"GameNpc 外观已应用。Kind={resolution.Appearance.Kind}, ModelCharaId={resolution.ModelCharaId}。{applyReason} {redraw} 解析链={chain}";

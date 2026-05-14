@@ -33,7 +33,7 @@
       "LookAtRadius": 8,
       "LookAtMode": "NativeLookAt",
       "RespawnAfterGpose": true,
-      "PenumbraMode": "DoNotTouch",
+      "PenumbraMode": "InheritDefault",
       "PenumbraCollectionId": null,
       "PenumbraCollectionNameCache": "",
       "Notes": "",

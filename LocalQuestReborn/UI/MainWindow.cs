@@ -651,6 +651,7 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"显示名：{selectedActor.DisplayName}");
         ImGui.TextWrapped($"生成地图：{selectedActor.SpawnedTerritoryType} {selectedActor.SpawnedTerritoryName}");
         ImGui.TextWrapped($"当前外观来源：{selectedActor.AppearanceSourceType}");
+        ImGui.TextWrapped($"Post-spawn pipeline：{selectedActor.PostSpawnPipelineState} / {selectedActor.PostSpawnPipelineStatus}");
         ImGui.TextWrapped($"最后外观：{selectedActor.LastAppearanceApplyResult}");
         ImGui.TextWrapped($"错误：{selectedActor.LastError}");
         if (ImGui.Button("删除此 Actor"))
@@ -952,6 +953,14 @@ public sealed class MainWindow : Window
             ImGui.TextWrapped($"Penumbra error：{actor.LastPenumbraCollectionError}");
         ImGui.TextWrapped($"最后结果：{(string.IsNullOrWhiteSpace(actor.LastAppearanceApplyResult) ? "未应用" : actor.LastAppearanceApplyResult)}");
         ImGui.TextWrapped($"最后错误：{(string.IsNullOrWhiteSpace(actor.LastAppearanceError) ? "无" : actor.LastAppearanceError)}");
+        if (!string.IsNullOrWhiteSpace(actor.LastAppearanceValidationResult))
+            ImGui.TextWrapped($"外观验证：{actor.LastAppearanceValidationResult}");
+        if (!string.IsNullOrWhiteSpace(actor.LastAppearanceBeforeSummary))
+            ImGui.TextWrapped($"Apply 前：{actor.LastAppearanceBeforeSummary}");
+        if (!string.IsNullOrWhiteSpace(actor.LastLocalPlayerAppearanceSummary))
+            ImGui.TextWrapped($"LocalPlayer：{actor.LastLocalPlayerAppearanceSummary}");
+        if (!string.IsNullOrWhiteSpace(actor.LastAppearanceAfterSummary))
+            ImGui.TextWrapped($"Apply 后：{actor.LastAppearanceAfterSummary}");
 
         ImGui.BeginDisabled(!actor.IsValid || actor.CharacterObject == null);
         if (ImGui.Button("应用 NPC 模板外观"))
@@ -1029,10 +1038,17 @@ public sealed class MainWindow : Window
                 actor.CustomRigTribe = (byte)Math.Clamp(customTribe, 0, byte.MaxValue);
         }
 
-        ImGui.BeginDisabled(!actor.IsValid || actor.CharacterObject == null);
+        var canApplyRig = actor.IsValid &&
+            actor.CharacterObject != null &&
+            (actor.AnimationRigMode == ActorAnimationRigMode.Current || actor.AnimationRigPreset == ActorAnimationRigPreset.Current || this.realNpcSpawn.IsAnimationRigOverrideSupported);
+        ImGui.BeginDisabled(!canApplyRig);
         if (ImGui.Button("应用动画骨架"))
             this.realNpcSpawn.ApplyActorAnimationRig(actor.RuntimeId);
+        if (!canApplyRig && ImGui.IsItemHovered())
+            ImGui.SetTooltip(this.realNpcSpawn.AnimationRigUnsupportedReason);
+        ImGui.EndDisabled();
         ImGui.SameLine();
+        ImGui.BeginDisabled(!actor.IsValid || actor.CharacterObject == null);
         if (ImGui.Button("恢复当前 Actor 原始骨架"))
             this.realNpcSpawn.RestoreActorAnimationRig(actor.RuntimeId);
         ImGui.SameLine();
