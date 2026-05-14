@@ -16,4 +16,8 @@ public sealed class Configuration : IPluginConfiguration
     public bool ShowInteractionHint { get; set; } = true;
 
     public Vector2 TrackerPosition { get; set; } = new(1420f, 340f);
+
+    public List<ProtectedBgPartSlot> ProtectedBgPartSlots { get; set; } = [];
+
+    public List<ProtectedBgPartResourcePath> ProtectedBgPartResourcePaths { get; set; } = [];
 }

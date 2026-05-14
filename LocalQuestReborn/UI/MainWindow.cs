@@ -29,6 +29,7 @@ public sealed class MainWindow : Window
     private string selectedBgPartAddress = string.Empty;
     private string templateBgPartAddress = string.Empty;
     private string bgPartSearchText = string.Empty;
+    private string protectedBgPartSearchText = string.Empty;
     private string glamourerSearchText = string.Empty;
     private string gameNpcSearchText = string.Empty;
     private int actorBatchCount = 3;
@@ -38,7 +39,7 @@ public sealed class MainWindow : Window
     private bool confirmFullLayoutCollisionMode;
     private bool allowDifferentResourcePathSlots;
     private bool createAsManyAsPossible = true;
-    private CarrierAllocationPolicy carrierAllocationPolicy = CarrierAllocationPolicy.ExpandedStatic;
+    private CarrierAllocationPolicy carrierAllocationPolicy = CarrierAllocationPolicy.PreferredSameModelThenFarthestSafe;
     private int layoutCopyCount = 1;
     private float layoutCopySpacing = 2f;
     private float layoutCopySpacingY;
@@ -153,6 +154,12 @@ public sealed class MainWindow : Window
         if (ImGui.BeginTabItem("BgPart Slot Pool"))
         {
             this.DrawBgPartPool();
+            ImGui.EndTabItem();
+        }
+
+        if (ImGui.BeginTabItem("BgPart 保护列表"))
+        {
+            this.DrawBgPartProtectionTab();
             ImGui.EndTabItem();
         }
 
@@ -754,7 +761,6 @@ public sealed class MainWindow : Window
     private void DrawLocalLayoutObjects()
     {
         ImGui.TextWrapped("Slot-backed 复制：占用当前地图已有 BgPart slot 作为 carrier，可恢复；不会真正新增 LayoutInstance。");
-        ImGui.TextWrapped("Standalone 生成：Debug 实验路线，不占用原场景 slot；入口在 Debug 页。");
         ImGui.TextWrapped($"状态：{this.localLayoutObjects.LastStatus}");
         ImGui.TextWrapped($"模型状态：{this.localLayoutObjects.LastModelOverrideStatus}");
         ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "v9.8 静态稳定版：动态 BgPart / SharedGroup / controller 驱动物体暂不支持，命中风险对象时会拒绝创建。");
@@ -815,28 +821,30 @@ public sealed class MainWindow : Window
                 this.selectedLocalLayoutObjectId = string.Empty;
         }
         ImGui.EndDisabled();
-        ImGui.SameLine();
-        ImGui.BeginDisabled(this.localLayoutObjects.IsBusy);
-        if (ImGui.Button("重建 occupied registry"))
-            this.localLayoutObjects.RebuildOccupiedSlotRegistryForUi();
-        ImGui.SameLine();
-        if (ImGui.Button("RestoreAll Dry Run"))
-            this.localLayoutObjects.BuildRestorePlanPreview();
-        ImGui.SameLine();
-        if (ImGui.Button("清理已恢复/无效实例"))
+        if (ImGui.CollapsingHeader("高级恢复工具"))
         {
-            this.localLayoutObjects.ClearRestoredAndInvalidInstances();
-            if (!string.IsNullOrWhiteSpace(this.selectedLocalLayoutObjectId) && this.localLayoutObjects.GetById(this.selectedLocalLayoutObjectId) == null)
-                this.selectedLocalLayoutObjectId = string.Empty;
+            ImGui.BeginDisabled(this.localLayoutObjects.IsBusy);
+            if (ImGui.Button("重建 occupied registry"))
+                this.localLayoutObjects.RebuildOccupiedSlotRegistryForUi();
+            ImGui.SameLine();
+            if (ImGui.Button("RestoreAll Dry Run"))
+                this.localLayoutObjects.BuildRestorePlanPreview();
+            ImGui.SameLine();
+            if (ImGui.Button("清理已恢复/无效实例"))
+            {
+                this.localLayoutObjects.ClearRestoredAndInvalidInstances();
+                if (!string.IsNullOrWhiteSpace(this.selectedLocalLayoutObjectId) && this.localLayoutObjects.GetById(this.selectedLocalLayoutObjectId) == null)
+                    this.selectedLocalLayoutObjectId = string.Empty;
+            }
+            ImGui.SameLine();
+            if (ImGui.Button("强制清理坏实例"))
+            {
+                this.localLayoutObjects.ForceClearBadInstances();
+                if (!string.IsNullOrWhiteSpace(this.selectedLocalLayoutObjectId) && this.localLayoutObjects.GetById(this.selectedLocalLayoutObjectId) == null)
+                    this.selectedLocalLayoutObjectId = string.Empty;
+            }
+            ImGui.EndDisabled();
         }
-        ImGui.SameLine();
-        if (ImGui.Button("强制清理坏实例"))
-        {
-            this.localLayoutObjects.ForceClearBadInstances();
-            if (!string.IsNullOrWhiteSpace(this.selectedLocalLayoutObjectId) && this.localLayoutObjects.GetById(this.selectedLocalLayoutObjectId) == null)
-                this.selectedLocalLayoutObjectId = string.Empty;
-        }
-        ImGui.EndDisabled();
         if (!string.IsNullOrWhiteSpace(this.localLayoutObjects.LastRestorePlanPreview) && ImGui.CollapsingHeader("RestoreAll 计划预览"))
             ImGui.TextWrapped(this.localLayoutObjects.LastRestorePlanPreview);
 
@@ -895,7 +903,7 @@ public sealed class MainWindow : Window
         copyDefaultScale = this.layoutCopyDefaultScale;
         if (ImGui.InputFloat("默认 Scale Z", ref copyDefaultScale.Z)) this.layoutCopyDefaultScale = Vector3.Max(copyDefaultScale, new Vector3(0.01f));
         EditString("批量默认 custom mdl path（可留空）", this.layoutBatchCustomMdlPath, 512, value => this.layoutBatchCustomMdlPath = value);
-        ImGui.TextWrapped("留空时只占用同 resourcePath slot；填写 bg/...mdl 或 bgcommon/...mdl 时，可使用任意 bg/bgcommon 可用 slot，并在创建后逐个应用该 mdl。");
+        ImGui.TextWrapped("留空时使用模板 resourcePath；填写 bg/...mdl 或 bgcommon/...mdl 时，每个复制体会独立应用该 mdl。");
         var usePlayerBase = !this.layoutUseManualBasePosition;
         if (ImGui.RadioButton("起始位置：玩家当前位置", usePlayerBase))
             this.layoutUseManualBasePosition = false;
@@ -915,14 +923,23 @@ public sealed class MainWindow : Window
             if (ImGui.Button("手动起点设为玩家当前位置") && this.runtime.PlayerPosition.HasValue)
                 this.layoutManualBasePosition = this.runtime.PlayerPosition.Value;
         }
-        var allowDifferent = this.allowDifferentResourcePathSlots;
-        if (ImGui.Checkbox("允许不同 bg/bgcommon slot（未填写 custom mdl 时不建议）", ref allowDifferent))
-            this.allowDifferentResourcePathSlots = allowDifferent;
-        if (this.allowDifferentResourcePathSlots)
-            ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "警告：未填写 custom mdl path 时，使用不同 resourcePath slot 不是复制模板，只是移动不同物体。");
+        this.allowDifferentResourcePathSlots = true;
+        ImGui.TextWrapped("同模型 slot 不足时会自动使用安全 fallback carrier，并先 recreate 成模板/自定义 mdl；模板本体不会被修改。");
         DrawEnumCombo("Carrier 分配策略", this.carrierAllocationPolicy, value => this.carrierAllocationPolicy = value);
+        if (this.carrierAllocationPolicy == CarrierAllocationPolicy.PreferredSameModelThenFarthestSafe)
+            ImGui.TextWrapped("默认策略：优先使用同 resourcePath 空闲 slot；不足时选择离玩家最远的安全静态 carrier。");
+        if (this.carrierAllocationPolicy == CarrierAllocationPolicy.StrictFarthestSafe)
+            ImGui.TextWrapped("严格最远：不优先同模型，直接从所有安全 slot 中选择离玩家最远的 carrier。");
+        if (this.carrierAllocationPolicy == CarrierAllocationPolicy.DebugNearest)
+            ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "Debug 最近 slot：不推荐，仅用于排查 allocator，不作为正式创建策略。");
         if (this.carrierAllocationPolicy == CarrierAllocationPolicy.AnyValidBgPart)
             ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "数量优先：会临时占用地图更多原始物件，恢复全部后还原。");
+        if (ImGui.CollapsingHeader("Carrier blacklist / whitelist"))
+        {
+            EditString("carrier blacklist pattern", this.localLayoutObjects.CarrierBlacklistPatternText, 512, value => this.localLayoutObjects.CarrierBlacklistPatternText = value);
+            EditString("carrier whitelist pattern", this.localLayoutObjects.CarrierWhitelistPatternText, 512, value => this.localLayoutObjects.CarrierWhitelistPatternText = value);
+            ImGui.TextWrapped("用逗号、分号或换行分隔；whitelist 只覆盖 fallback 的结构排除，不会覆盖 occupied/reserved/template/invalid/dynamic。");
+        }
         ImGui.Checkbox("可用不足时尽可能创建", ref this.createAsManyAsPossible);
         var mode = this.layoutCopyDefaultMode;
         var fullLayoutBlocked = mode == LocalLayoutTransformMode.FullLayoutWithCollision && !this.confirmFullLayoutCollisionMode;
@@ -931,36 +948,31 @@ public sealed class MainWindow : Window
             ? this.layoutManualBasePosition
             : this.runtime.PlayerPosition ?? Vector3.Zero;
         var allBgParts = this.AllBgParts().ToList();
-        var availableNearest = allBgParts.Where(slot => !this.localLayoutObjects.IsSlotOccupied(slot.Address)).OrderBy(slot => slot.DistanceToPlayer).ToList();
-        var availableFarthest = availableNearest.OrderByDescending(slot => slot.DistanceToPlayer).ToList();
-        var availableInvisible = availableNearest.Where(slot => !slot.Visible).Concat(availableNearest.Where(slot => slot.Visible)).ToList();
+        var availableSlots = allBgParts.Where(slot => !this.localLayoutObjects.IsSlotOccupied(slot.Address)).ToList();
         var hasBatchMdl = !string.IsNullOrWhiteSpace(this.layoutBatchCustomMdlPath);
         var sameResourceAvailable = template == null
             ? 0
-            : availableNearest.Count(slot => !string.Equals(slot.Address, template.Address, StringComparison.OrdinalIgnoreCase)
+            : availableSlots.Count(slot => !string.Equals(slot.Address, template.Address, StringComparison.OrdinalIgnoreCase)
                 && string.Equals(slot.ResourcePath, template.ResourcePath, StringComparison.OrdinalIgnoreCase));
         var anySupportedAvailable = template == null
             ? 0
-            : availableNearest.Count(slot => !string.Equals(slot.Address, template.Address, StringComparison.OrdinalIgnoreCase)
+            : availableSlots.Count(slot => !string.Equals(slot.Address, template.Address, StringComparison.OrdinalIgnoreCase)
                 && IsSupportedMdlPath(slot.ResourcePath));
-        var plannedAvailable = hasBatchMdl || this.allowDifferentResourcePathSlots ? anySupportedAvailable : sameResourceAvailable;
         ImGui.TextWrapped(template == null
             ? "同 resourcePath 可用 slot：请先设置模板。"
             : $"模板 resourcePath：{template.ResourcePath}");
-        ImGui.TextWrapped($"同 resourcePath 可用 slot 数：{sameResourceAvailable}；bg/bgcommon 可用 slot 数：{anySupportedAvailable}；当前将创建：{Math.Min(this.layoutCopyCount, plannedAvailable)}");
+        ImGui.TextWrapped($"同 resourcePath 空闲 slot 初筛：{sameResourceAvailable}；bg/bgcommon 空闲 slot 初筛：{anySupportedAvailable}。实际可用数量以 Dry Run 的安全 carrier 统计为准。");
         if (ImGui.Button("CreateMany Dry Run Preview"))
-            this.localLayoutObjects.BuildCreateManyDryRunPreview(template, allBgParts, this.layoutCopyCount, this.allowDifferentResourcePathSlots, this.layoutBatchCustomMdlPath, this.carrierAllocationPolicy);
+            this.localLayoutObjects.BuildCreateManyDryRunPreview(template, allBgParts, this.layoutCopyCount, this.allowDifferentResourcePathSlots, this.layoutBatchCustomMdlPath, this.carrierAllocationPolicy, this.runtime.PlayerPosition);
+        ImGui.TextWrapped(string.IsNullOrWhiteSpace(this.localLayoutObjects.LastAllocationPlanId)
+            ? "当前没有可用 AllocationPlan；创建 N 个前请先 Dry Run。"
+            : $"当前 AllocationPlan：{this.localLayoutObjects.LastAllocationPlanId}");
         if (!string.IsNullOrWhiteSpace(this.localLayoutObjects.LastCreateManyDryRunPreview) && ImGui.CollapsingHeader("CreateMany 分配预览"))
             ImGui.TextWrapped(this.localLayoutObjects.LastCreateManyDryRunPreview);
 
         ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || this.localLayoutObjects.IsCreateQueueActive || !this.realNpcSpawn.EnableUnsafeNativeWrites || template == null || !hasBasePosition || fullLayoutBlocked);
         if (ImGui.Button(mode == LocalLayoutTransformMode.VisualOnly ? "创建 N 个 VisualOnly 复制体" : "创建 N 个 FullLayoutWithCollision 复制体"))
-            this.CreateMany(template, availableNearest, this.layoutCopyCount, basePosition, mode);
-        if (ImGui.Button("从最远可用 slot 分配"))
-            this.CreateMany(template, availableFarthest, this.layoutCopyCount, basePosition, mode);
-        ImGui.SameLine();
-        if (ImGui.Button("从不可见 slot 分配"))
-            this.CreateMany(template, availableInvisible, this.layoutCopyCount, basePosition, mode);
+            this.CreateMany(template, allBgParts, this.layoutCopyCount, basePosition, mode);
         ImGui.EndDisabled();
     }
 
@@ -981,7 +993,8 @@ public sealed class MainWindow : Window
             this.layoutCopyDefaultRotationEuler,
             this.layoutCopyDefaultScale,
             this.carrierAllocationPolicy,
-            this.createAsManyAsPossible);
+            this.createAsManyAsPossible,
+            this.runtime.PlayerPosition);
         var last = created.LastOrDefault();
         if (last != null)
             this.selectedLocalLayoutObjectId = last.Id;
@@ -1013,6 +1026,7 @@ public sealed class MainWindow : Window
             ImGui.TextWrapped(string.IsNullOrWhiteSpace(carrierReject)
                 ? "carrier 状态：可作为静态 carrier"
                 : $"carrierRejectReason：{carrierReject}");
+            this.DrawProtectedBgPartControls(candidate);
         }
         ImGui.InputText("搜索 resourcePath/type", ref this.bgPartSearchText, 256);
 
@@ -1159,6 +1173,177 @@ public sealed class MainWindow : Window
             if (string.Equals(this.selectedLocalLayoutObjectId, deleteId, StringComparison.Ordinal))
                 this.selectedLocalLayoutObjectId = string.Empty;
         }
+    }
+
+    private void DrawProtectedBgPartControls(LayoutProbeInstance candidate)
+    {
+        var registry = this.localLayoutObjects.ProtectedBgParts;
+        if (registry == null)
+            return;
+
+        var isProtected = registry.IsProtected(candidate, out var protectedReason);
+        ImGui.TextWrapped(isProtected
+            ? $"保护状态：已保护 | {protectedReason}"
+            : "保护状态：未保护");
+
+        if (ImGui.Button("保护当前选中 BgPart slot"))
+            registry.ProtectSlot(candidate, "User protected from LocalQuestReborn UI");
+        ImGui.SameLine();
+        if (ImGui.Button("取消保护当前 slot"))
+            registry.UnprotectSlot(candidate);
+        if (ImGui.Button("保护当前 resourcePath 全部同款"))
+            registry.ProtectResourcePath(candidate.ResourcePath, currentTerritoryOnly: true, "User protected resourcePath from LocalQuestReborn UI");
+        ImGui.SameLine();
+        if (ImGui.Button("取消保护当前 resourcePath"))
+            registry.UnprotectResourcePath(candidate.ResourcePath);
+
+        ImGui.TextDisabled("完整保护列表、搜索、移除和清空在顶部页签：BgPart 保护列表。");
+    }
+
+    private void DrawBgPartProtectionTab()
+    {
+        var registry = this.localLayoutObjects.ProtectedBgParts;
+        if (registry == null)
+        {
+            ImGui.TextWrapped("BgPart 保护列表服务不可用。");
+            return;
+        }
+
+        ImGui.TextWrapped("这里集中管理不会被 slot-backed 复制占用、recreate、改 mdl 或移动 transform 的 BgPart。被保护对象仍可作为只读模板 source。");
+        ImGui.TextWrapped($"protected slots：{registry.ProtectedSlots.Count}; protected resourcePaths：{registry.ProtectedResourcePaths.Count}");
+        ImGui.InputText("搜索保护项", ref this.protectedBgPartSearchText, 256);
+        ImGui.SameLine();
+        if (ImGui.Button("重新扫描 BgPart"))
+            this.layoutProbe.EnumerateInstances(this.runtime.PlayerPosition);
+
+        var candidate = this.GetSelectedBgPart();
+        ImGui.Separator();
+        ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "当前选中 BgPart 快捷保护");
+        if (candidate == null)
+        {
+            ImGui.TextWrapped("当前没有选中 BgPart。可以在“本地场景物体”或“BgPart Slot Pool”里选一个。");
+        }
+        else
+        {
+            ImGui.TextWrapped($"{candidate.ResourcePath} | {candidate.Address} | source={candidate.SourceKind} | child={candidate.ChildIndex} | pos={FormatVector(candidate.Position)}");
+            this.DrawProtectedBgPartControls(candidate);
+        }
+
+        ImGui.Separator();
+        ImGui.BeginDisabled(registry.ProtectedSlots.Count == 0 && registry.ProtectedResourcePaths.Count == 0);
+        if (ImGui.Button("清空保护列表"))
+            registry.Clear();
+        ImGui.EndDisabled();
+
+        this.DrawProtectedResourcePathTable(registry);
+        this.DrawProtectedSlotTable(registry);
+    }
+
+    private void DrawProtectedResourcePathTable(ProtectedBgPartRegistry registry)
+    {
+        var rows = registry.ProtectedResourcePaths
+            .Where(item => this.MatchesProtectedBgPartSearch(item.ResourcePath, item.Note, item.TerritoryType.ToString()))
+            .ToList();
+        ImGui.TextWrapped($"resourcePath 保护：显示 {rows.Count}/{registry.ProtectedResourcePaths.Count}");
+        if (!ImGui.BeginTable("ProtectedBgPartResourcePaths", 5, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 180f)))
+            return;
+
+        ImGui.TableSetupColumn("scope");
+        ImGui.TableSetupColumn("territory");
+        ImGui.TableSetupColumn("resourcePath");
+        ImGui.TableSetupColumn("note");
+        ImGui.TableSetupColumn("操作");
+        ImGui.TableHeadersRow();
+
+        ProtectedBgPartResourcePath? removeItem = null;
+        for (var i = 0; i < rows.Count; i++)
+        {
+            var item = rows[i];
+            ImGui.TableNextRow();
+            ImGui.PushID($"protected-resource-{i}-{item.ResourcePath}");
+            ImGui.TableSetColumnIndex(0);
+            ImGui.TextUnformatted(item.AppliesToCurrentTerritoryOnly ? "当前地图" : "全部地图");
+            ImGui.TableSetColumnIndex(1);
+            ImGui.TextUnformatted(item.AppliesToCurrentTerritoryOnly ? item.TerritoryType.ToString() : "all");
+            ImGui.TableSetColumnIndex(2);
+            ImGui.TextWrapped(item.ResourcePath);
+            ImGui.TableSetColumnIndex(3);
+            ImGui.TextWrapped(item.Note);
+            ImGui.TableSetColumnIndex(4);
+            if (ImGui.Button("移除"))
+                removeItem = item;
+            ImGui.PopID();
+        }
+
+        ImGui.EndTable();
+        if (removeItem != null)
+            registry.RemoveResourcePathEntry(removeItem);
+    }
+
+    private void DrawProtectedSlotTable(ProtectedBgPartRegistry registry)
+    {
+        var rows = registry.ProtectedSlots
+            .Where(item => this.MatchesProtectedBgPartSearch(
+                item.ResourcePath,
+                item.Note,
+                item.SourceType,
+                item.LayoutInstanceAddress,
+                item.SharedGroupPath,
+                item.StableKey,
+                item.TerritoryType.ToString()))
+            .ToList();
+        ImGui.TextWrapped($"slot 保护：显示 {rows.Count}/{registry.ProtectedSlots.Count}");
+        if (!ImGui.BeginTable("ProtectedBgPartSlots", 8, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 260f)))
+            return;
+
+        ImGui.TableSetupColumn("territory");
+        ImGui.TableSetupColumn("source");
+        ImGui.TableSetupColumn("resourcePath");
+        ImGui.TableSetupColumn("position");
+        ImGui.TableSetupColumn("shared group / child");
+        ImGui.TableSetupColumn("address / stableKey");
+        ImGui.TableSetupColumn("note");
+        ImGui.TableSetupColumn("操作");
+        ImGui.TableHeadersRow();
+
+        ProtectedBgPartSlot? removeItem = null;
+        for (var i = 0; i < rows.Count; i++)
+        {
+            var item = rows[i];
+            ImGui.TableNextRow();
+            ImGui.PushID($"protected-slot-{i}-{item.LayoutInstanceAddress}-{item.StableKey}");
+            ImGui.TableSetColumnIndex(0);
+            ImGui.TextUnformatted(item.TerritoryType == 0 ? "all" : item.TerritoryType.ToString());
+            ImGui.TableSetColumnIndex(1);
+            ImGui.TextWrapped(item.SourceType);
+            ImGui.TableSetColumnIndex(2);
+            ImGui.TextWrapped(item.ResourcePath);
+            ImGui.TableSetColumnIndex(3);
+            ImGui.TextWrapped(FormatVector(ToVector3(item.OriginalPosition)));
+            ImGui.TableSetColumnIndex(4);
+            ImGui.TextWrapped(string.IsNullOrWhiteSpace(item.SharedGroupPath) ? $"child={item.ChildIndex}" : $"{item.SharedGroupPath} | child={item.ChildIndex}");
+            ImGui.TableSetColumnIndex(5);
+            ImGui.TextWrapped($"{item.LayoutInstanceAddress} | {item.StableKey}");
+            ImGui.TableSetColumnIndex(6);
+            ImGui.TextWrapped(item.Note);
+            ImGui.TableSetColumnIndex(7);
+            if (ImGui.Button("移除"))
+                removeItem = item;
+            ImGui.PopID();
+        }
+
+        ImGui.EndTable();
+        if (removeItem != null)
+            registry.RemoveSlotEntry(removeItem);
+    }
+
+    private bool MatchesProtectedBgPartSearch(params string?[] values)
+    {
+        if (string.IsNullOrWhiteSpace(this.protectedBgPartSearchText))
+            return true;
+
+        var query = this.protectedBgPartSearchText.Trim();
+        return values.Any(value => !string.IsNullOrWhiteSpace(value) && value.Contains(query, StringComparison.OrdinalIgnoreCase));
     }
 
     private void DrawSelectedLocalLayoutObjectControls()
@@ -1335,7 +1520,7 @@ public sealed class MainWindow : Window
         foreach (var group in groups)
         {
             var slots = group.ToList();
-            var available = slots.Where(slot => !this.localLayoutObjects.IsSlotOccupied(slot.Address)).OrderBy(slot => slot.DistanceToPlayer).ToList();
+            var available = slots.Where(slot => !this.localLayoutObjects.IsSlotOccupied(slot.Address)).ToList();
             ImGui.TableNextRow();
             ImGui.PushID(group.Key);
             ImGui.TableSetColumnIndex(0);
@@ -1355,22 +1540,26 @@ public sealed class MainWindow : Window
             ImGui.TableSetColumnIndex(6);
             ImGui.TextUnformatted($"{slots.Min(slot => slot.DistanceToPlayer):F1}");
             ImGui.TableSetColumnIndex(7);
-            ImGui.BeginDisabled(available.Count == 0 || !this.runtime.PlayerPosition.HasValue || !this.realNpcSpawn.EnableUnsafeNativeWrites);
-            if (ImGui.Button("占用最近 slot"))
+            var templateSlot = slots.OrderBy(slot => slot.Address).FirstOrDefault();
+            ImGui.BeginDisabled(templateSlot == null);
+            if (ImGui.Button("设为模板"))
             {
-                var created = this.localLayoutObjects.CreateFromCandidate(available.FirstOrDefault(), this.runtime.PlayerPosition!.Value, LocalLayoutTransformMode.VisualOnly);
-                if (created != null) this.selectedLocalLayoutObjectId = created.Id;
+                this.templateBgPartAddress = templateSlot!.Address;
+                this.layoutBatchCustomMdlPath = templateSlot.ResourcePath;
             }
+            ImGui.EndDisabled();
             ImGui.SameLine();
-            if (ImGui.Button("占用最远 slot"))
+            ImGui.BeginDisabled(templateSlot == null || !this.runtime.PlayerPosition.HasValue || !this.realNpcSpawn.EnableUnsafeNativeWrites || this.localLayoutObjects.IsBusy || this.localLayoutObjects.IsCreateQueueActive);
+            if (ImGui.Button("创建 1 个复制体"))
             {
-                var created = this.localLayoutObjects.CreateFromCandidate(available.OrderByDescending(slot => slot.DistanceToPlayer).FirstOrDefault(), this.runtime.PlayerPosition!.Value, LocalLayoutTransformMode.VisualOnly);
-                if (created != null) this.selectedLocalLayoutObjectId = created.Id;
-            }
-            ImGui.SameLine();
-            if (ImGui.Button("占用不可见 slot"))
-            {
-                var created = this.localLayoutObjects.CreateFromCandidate(available.FirstOrDefault(slot => !slot.Visible) ?? available.FirstOrDefault(), this.runtime.PlayerPosition!.Value, LocalLayoutTransformMode.VisualOnly);
+                var created = this.localLayoutObjects.CreateCopyFromTemplate(
+                    templateSlot,
+                    this.AllBgParts(),
+                    this.runtime.PlayerPosition!.Value,
+                    LocalLayoutTransformMode.VisualOnly,
+                    this.carrierAllocationPolicy,
+                    this.realNpcSpawn.EnableUnsafeNativeWrites,
+                    fullLayoutConfirmed: true);
                 if (created != null) this.selectedLocalLayoutObjectId = created.Id;
             }
             ImGui.EndDisabled();
@@ -1384,7 +1573,7 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"Layout status：{this.layoutProbe.LastStatus}");
         ImGui.TextWrapped($"Layer status：{this.layerDump.LastStatus}");
         ImGui.TextWrapped($"Local object status：{this.localLayoutObjects.LastStatus}");
-        this.DrawStandaloneBgObjectDebug();
+        ImGui.TextWrapped("实验入口已收敛：Standalone BgObject、动态物体、旧 SetModel/CleanupRender、EventNpc/NamePlate 等实验 UI 当前隐藏。");
         ImGui.Separator();
         this.DrawBgPartCollisionSourceProbeDebug();
     }

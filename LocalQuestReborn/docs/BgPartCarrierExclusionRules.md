@@ -1,0 +1,168 @@
+# BgPart Carrier Exclusion Rules
+
+## Goal
+
+Local scene objects use slot-backed copy. The selected BgPart is only a template/source. A different BgPart slot is allocated as the carrier, recreated to the target mdl, transformed, and later restored from its own original snapshot.
+
+The default policy is `PreferredSameModelThenFarthestSafe`.
+
+1. Prefer free slots with the same `resourcePath` as the template.
+2. If same-model slots are not enough, use the farthest safe fallback carrier.
+3. Fallback excludes floor, wall, ceiling, terrain, large building pieces, dynamic/controller-driven objects, and SharedGroup children.
+
+`StrictFarthestSafe` ignores same-model preference and selects the farthest safe slot from the whole accepted set. `DebugNearest` exists only for allocator diagnostics and is not recommended for official creation.
+
+## Allocation Order
+
+Same-model stage:
+
+- `slot.resourcePath == template.resourcePath`
+- `slotAddress != templateSlotAddress`
+- not occupied
+- not reserved
+- valid BgPart pointer
+- valid GraphicsObject
+- valid ModelResourceHandle
+- not SharedGroup child
+- not dynamic/high-risk
+- not protected
+- not floor/wall/terrain/structure-like unless whitelisted
+
+Sorting:
+
+- invisible first
+- distance descending
+- address as stable tie-breaker
+
+Fallback stage:
+
+- only used after the same-model stage
+- does not require the same `resourcePath`
+- carrier is recreated to the template mdl or custom mdl before use
+- excludes `FloorLike`, `WallLike`, `TerrainLike`, `StructureLike`, `TooLarge`, and `TooCloseImportantGeometry`
+- excludes protected slots and protected resource paths
+
+Sorting:
+
+- invisible first
+- distance descending
+- address as stable tie-breaker
+
+Distance is always recomputed as `Vector3.Distance(playerPosition, slot.WorldPosition)` when a player position is available. The allocator must not use the current UI row order or nearest-first ordering for official allocation.
+
+## Exclusion Patterns
+
+Short tokens such as `flo`, `flr`, and `wal` are matched by path component. This avoids rejecting normal names such as `flow1`.
+
+FloorLike:
+
+- `floor`
+- `flo`
+- `flr`
+- `yuka`
+
+WallLike:
+
+- `wall`
+- `wal`
+- `kabe`
+
+TerrainLike / scene foundation:
+
+- `ceil`
+- `ceiling`
+- `tenjo`
+- `roof`
+- `ground`
+- `gnd`
+- `terrain`
+- `land`
+- `road`
+- `base`
+- `bgbase`
+- `map`
+- `sea`
+- `water`
+- `sky`
+- `cliff`
+- `rock_large`
+- `foundation`
+- `field_base`
+
+StructureLike / architecture:
+
+- `building`
+- `bld`
+- `house_base`
+- `room`
+- `room_base`
+- `pillar_large`
+- `arch_large`
+- `bgcommon/hou/common/general/*/bgparts/com_b*_m*.mdl`
+- `*/hou/*/bgparts/*_wall*.mdl`
+- `*/hou/*/bgparts/*_floor*.mdl`
+- `*/hou/*/bgparts/*_roof*.mdl`
+- `*/hou/*/bgparts/*_ceil*.mdl`
+- `*/hou/*/bgparts/*_base*.mdl`
+- `*/hou/*/bgparts/*_m0*.mdl`
+
+TooLarge:
+
+- any scale component has absolute value greater than `20`
+
+TooCloseImportantGeometry:
+
+- distance to player is less than `8y`
+- and the object appears structural or large
+
+## Always Excluded
+
+- `TemplateSlot`
+- `Protected`
+- `Occupied`
+- `Reserved`
+- `InvalidGraphicsObject`
+- `InvalidModelHandle`
+- `SharedGroupChild`
+- `DynamicControlled`
+- `UnsafeComplex`
+- paths outside `bg/...mdl` or `bgcommon/...mdl`
+
+## User Overrides
+
+The UI exposes carrier blacklist and whitelist pattern fields.
+
+- blacklist adds extra fallback rejects
+- whitelist allows fallback carriers that were only rejected by structural rules
+- whitelist does not override occupied, reserved, template slot, invalid graphics, SharedGroup child, or dynamic/controller-driven rejects
+
+Patterns are simple substring matches. Separate multiple patterns with comma, semicolon, or newline.
+
+## Protected BgParts
+
+The protection list is persisted in plugin configuration:
+
+- `ProtectedBgPartSlots`
+- `ProtectedBgPartResourcePaths`
+
+Protected entries cannot be used as carriers and cannot be modified by mdl recreate, transform writes, or collision writes. They may still be used as read-only templates or read-only collision sources.
+
+Slot protection is matched by territory, resourcePath, source type, approximate original position, SharedGroup path/child index when present, and stable key/address when available. ResourcePath protection can be scoped to the current territory.
+
+## Restore Requirement
+
+Restore must use only `instance.OriginalSlotSnapshot.OriginalResourcePath` as the target. It must not use the template path, custom mdl, a global fallback path, or a default model.
+
+Both VisualOnly and FullLayoutWithCollision restore:
+
+- original mdl
+- original layout transform
+- original graphics transform
+- original collision source / secondary state
+- original visible state
+
+## Current Limitations
+
+Dynamic BgPart, SharedGroup child, and controller-driven objects are not supported as official copy targets or carriers. When selected, the UI should report that the object is likely controller/SharedGroup/dynamic-material driven and ask the user to choose a static BgPart or manually enter an mdl path.
+
+Standalone BgObject / true spawn remains paused and is not part of the v11.8 official flow.

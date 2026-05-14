@@ -54,6 +54,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly LayoutInstanceTransformService layoutTransform;
     private readonly LayoutInstanceCloneService layoutClone;
     private readonly LayerDumpService layerDump;
+    private readonly ProtectedBgPartRegistry protectedBgParts;
     private readonly LocalLayoutObjectService localLayoutObjects;
     private readonly BgPartVisualTransformProbeService bgPartVisualProbe;
     private readonly RotationMatrixExperimentService rotationMatrixExperiment;
@@ -128,7 +129,8 @@ public sealed class Plugin : IDalamudPlugin
         this.layoutTransform = new LayoutInstanceTransformService();
         this.layoutClone = new LayoutInstanceCloneService();
         this.layerDump = new LayerDumpService();
-        this.localLayoutObjects = new LocalLayoutObjectService();
+        this.protectedBgParts = new ProtectedBgPartRegistry(this.configuration, () => this.runtime.TerritoryType, () => this.pluginInterface.SavePluginConfig(this.configuration));
+        this.localLayoutObjects = new LocalLayoutObjectService(this.protectedBgParts);
         this.bgPartVisualProbe = new BgPartVisualTransformProbeService();
         this.rotationMatrixExperiment = new RotationMatrixExperimentService(this.bgPartVisualProbe);
         this.bgPartVisualRescue = new BgPartVisualRescueService(this.bgPartVisualProbe);
