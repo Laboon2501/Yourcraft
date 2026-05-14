@@ -17,6 +17,8 @@ public sealed class MainWindow : Window
     private readonly LocalLayoutObjectService localLayoutObjects;
     private readonly BgPartCollisionSourceProbeService bgPartCollisionSourceProbe;
     private readonly AnimatedBgPartControllerProbeService animatedBgPartControllerProbe;
+    private readonly StandaloneBgObjectProbeService standaloneBgObjectProbe;
+    private readonly StandaloneRenderListProbeService standaloneRenderListProbe;
     private readonly GameNpcCatalogService gameNpcCatalog;
     private readonly GlamourerDesignCatalogService glamourerDesignCatalog;
     private readonly Action reloadAction;
@@ -48,6 +50,13 @@ public sealed class MainWindow : Window
     private Vector3 layoutManualBasePosition;
     private string layoutBatchCustomMdlPath = string.Empty;
     private string collisionProbeTargetMdlPath = string.Empty;
+    private string selectedStandaloneObjectId = string.Empty;
+    private string standaloneModelPath = "bg/ffxiv/sea_s1/fld/common/bgparts/s1f0_a0_oba03.mdl";
+    private int standalonePoolNameIndex;
+    private Vector3 standalonePosition;
+    private Vector3 standaloneRotationDegrees;
+    private Vector3 standaloneScale = Vector3.One;
+    private bool confirmStandaloneBgObjectExperiment;
 
     public MainWindow(
         Configuration configuration,
@@ -69,6 +78,8 @@ public sealed class MainWindow : Window
         GraphicsSceneObjectTransformService graphicsSceneObjectTransform,
         BgPartCollisionSourceProbeService bgPartCollisionSourceProbe,
         AnimatedBgPartControllerProbeService animatedBgPartControllerProbe,
+        StandaloneBgObjectProbeService standaloneBgObjectProbe,
+        StandaloneRenderListProbeService standaloneRenderListProbe,
         MeddleStyleSceneProbeService meddleSceneProbe,
         GameNpcCatalogService gameNpcCatalog,
         GameNpcAppearanceResolver gameNpcAppearanceResolver,
@@ -85,6 +96,8 @@ public sealed class MainWindow : Window
         this.localLayoutObjects = localLayoutObjects;
         this.bgPartCollisionSourceProbe = bgPartCollisionSourceProbe;
         this.animatedBgPartControllerProbe = animatedBgPartControllerProbe;
+        this.standaloneBgObjectProbe = standaloneBgObjectProbe;
+        this.standaloneRenderListProbe = standaloneRenderListProbe;
         this.gameNpcCatalog = gameNpcCatalog;
         this.glamourerDesignCatalog = glamourerDesignCatalog;
         this.reloadAction = reloadAction;
@@ -740,7 +753,8 @@ public sealed class MainWindow : Window
 
     private void DrawLocalLayoutObjects()
     {
-        ImGui.TextWrapped("正式功能：复用当前地图已有 BgPart slot。VisualOnly 写 Graphics.Scene.Object transform，不移动 collision。");
+        ImGui.TextWrapped("Slot-backed 复制：占用当前地图已有 BgPart slot 作为 carrier，可恢复；不会真正新增 LayoutInstance。");
+        ImGui.TextWrapped("Standalone 生成：Debug 实验路线，不占用原场景 slot；入口在 Debug 页。");
         ImGui.TextWrapped($"状态：{this.localLayoutObjects.LastStatus}");
         ImGui.TextWrapped($"模型状态：{this.localLayoutObjects.LastModelOverrideStatus}");
         ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "v9.8 静态稳定版：动态 BgPart / SharedGroup / controller 驱动物体暂不支持，命中风险对象时会拒绝创建。");
@@ -1370,7 +1384,305 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"Layout status：{this.layoutProbe.LastStatus}");
         ImGui.TextWrapped($"Layer status：{this.layerDump.LastStatus}");
         ImGui.TextWrapped($"Local object status：{this.localLayoutObjects.LastStatus}");
+        this.DrawStandaloneBgObjectDebug();
+        ImGui.Separator();
         this.DrawBgPartCollisionSourceProbeDebug();
+    }
+
+    private void DrawStandaloneBgObjectDebug()
+    {
+        if (!ImGui.CollapsingHeader("Standalone BgObject 生成实验（Debug-only）"))
+            return;
+
+        ImGui.TextWrapped("实验目标：直接调用 Graphics.Scene.BgObject.Create(modelPath, poolName, null)，不占用现有 BgPart slot，不修改 Layout/Layer 容器。");
+        ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "CreateOnly：创建后不写 transform、不 UpdateRender、不 NotifyTransformChanged。先延迟只读验证，再手动单字段写入。");
+
+        var candidate = this.GetSelectedBgPart();
+        ImGui.TextWrapped(candidate == null
+            ? "当前选中 BgPart：无"
+            : $"当前选中 BgPart：{candidate.ResourcePath} | {candidate.Address}");
+        ImGui.BeginDisabled(candidate == null);
+        if (ImGui.Button("Dump 现有 BgPart Scene.Object / scene links"))
+            this.standaloneBgObjectProbe.ProbeExistingBgPart(candidate);
+        ImGui.EndDisabled();
+        if (ImGui.CollapsingHeader("现有 BgPart probe 结果"))
+            ImGui.TextWrapped(this.standaloneBgObjectProbe.LastProbeResult);
+
+        ImGui.Separator();
+        EditString("Standalone mdl path", this.standaloneModelPath, 512, value => this.standaloneModelPath = value);
+        ImGui.TextWrapped("支持 bg/...mdl 与 bgcommon/...mdl；Standalone 不使用 ResourceCategory 参数，路径由 BgObject.Create/SetModel 内部处理。");
+        var poolNames = new[]
+        {
+            StandaloneBgObjectProbeService.PluginPoolName,
+            StandaloneBgObjectProbeService.LayoutBgPartsPoolName,
+        };
+        var poolNamePreview = poolNames[Math.Clamp(this.standalonePoolNameIndex, 0, poolNames.Length - 1)];
+        if (ImGui.BeginCombo("poolName", poolNamePreview))
+        {
+            for (var i = 0; i < poolNames.Length; i++)
+            {
+                if (ImGui.Selectable(poolNames[i], i == this.standalonePoolNameIndex))
+                    this.standalonePoolNameIndex = i;
+            }
+            ImGui.EndCombo();
+        }
+        ImGui.TextWrapped("真实 CreatePrimary 使用 Client.LayoutEngine.Layer.BgPartsLayoutInstance；可和插件自定义 poolName 做状态对比。");
+
+        if (this.standalonePosition == Vector3.Zero && this.runtime.PlayerPosition.HasValue)
+            this.standalonePosition = this.runtime.PlayerPosition.Value;
+
+        var position = this.standalonePosition;
+        if (ImGui.InputFloat("Standalone Position X", ref position.X)) this.standalonePosition = position;
+        position = this.standalonePosition;
+        if (ImGui.InputFloat("Standalone Position Y", ref position.Y)) this.standalonePosition = position;
+        position = this.standalonePosition;
+        if (ImGui.InputFloat("Standalone Position Z", ref position.Z)) this.standalonePosition = position;
+        if (ImGui.Button("Standalone 位置设为玩家当前位置") && this.runtime.PlayerPosition.HasValue)
+            this.standalonePosition = this.runtime.PlayerPosition.Value;
+
+        var rotationDegrees = this.standaloneRotationDegrees;
+        if (ImGui.InputFloat("Standalone Pitch X (deg)", ref rotationDegrees.X)) this.standaloneRotationDegrees = rotationDegrees;
+        rotationDegrees = this.standaloneRotationDegrees;
+        if (ImGui.InputFloat("Standalone Yaw Y (deg)", ref rotationDegrees.Y)) this.standaloneRotationDegrees = rotationDegrees;
+        rotationDegrees = this.standaloneRotationDegrees;
+        if (ImGui.InputFloat("Standalone Roll Z (deg)", ref rotationDegrees.Z)) this.standaloneRotationDegrees = rotationDegrees;
+
+        var scale = this.standaloneScale;
+        if (ImGui.InputFloat("Standalone Scale X", ref scale.X)) this.standaloneScale = Vector3.Max(scale, new Vector3(0.01f));
+        scale = this.standaloneScale;
+        if (ImGui.InputFloat("Standalone Scale Y", ref scale.Y)) this.standaloneScale = Vector3.Max(scale, new Vector3(0.01f));
+        scale = this.standaloneScale;
+        if (ImGui.InputFloat("Standalone Scale Z", ref scale.Z)) this.standaloneScale = Vector3.Max(scale, new Vector3(0.01f));
+
+        ImGui.Checkbox("我确认这是 Standalone BgObject 高风险实验", ref this.confirmStandaloneBgObjectExperiment);
+        var canCreate = this.realNpcSpawn.EnableUnsafeNativeWrites && this.confirmStandaloneBgObjectExperiment;
+        ImGui.BeginDisabled(!canCreate);
+        if (ImGui.Button("CreateOnly Standalone BgObject 实验"))
+        {
+            var created = this.standaloneBgObjectProbe.Create(
+                this.standaloneModelPath,
+                poolNamePreview,
+                this.standalonePosition,
+                new Vector3(
+                    DegreesToRadians(this.standaloneRotationDegrees.X),
+                    DegreesToRadians(this.standaloneRotationDegrees.Y),
+                    DegreesToRadians(this.standaloneRotationDegrees.Z)),
+                this.standaloneScale,
+                this.realNpcSpawn.EnableUnsafeNativeWrites,
+                this.confirmStandaloneBgObjectExperiment);
+            if (created != null)
+                this.selectedStandaloneObjectId = created.Id;
+        }
+        ImGui.EndDisabled();
+        if (!canCreate)
+            ImGui.TextDisabled("创建按钮需要 Unsafe/native 写入 + 二次确认。");
+
+        ImGui.TextWrapped($"Standalone 状态：{this.standaloneBgObjectProbe.LastCreateResult}");
+        if (!string.IsNullOrWhiteSpace(this.standaloneBgObjectProbe.LastError))
+            ImGui.TextWrapped($"Standalone 错误：{this.standaloneBgObjectProbe.LastError}");
+
+        this.DrawStandaloneObjectList();
+        this.DrawSelectedStandaloneObjectControls();
+    }
+
+    private void DrawStandaloneObjectList()
+    {
+        var instances = this.standaloneBgObjectProbe.Instances;
+        ImGui.TextWrapped($"Standalone owned object count：{instances.Count}");
+        if (instances.Count == 0)
+            return;
+
+        if (!ImGui.BeginTable("StandaloneBgObjectTable", 7, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable))
+            return;
+
+        ImGui.TableSetupColumn("选择");
+        ImGui.TableSetupColumn("id");
+        ImGui.TableSetupColumn("address");
+        ImGui.TableSetupColumn("visible");
+        ImGui.TableSetupColumn("state");
+        ImGui.TableSetupColumn("model");
+        ImGui.TableSetupColumn("last error");
+        ImGui.TableHeadersRow();
+        foreach (var instance in instances)
+        {
+            ImGui.TableNextRow();
+            ImGui.PushID(instance.Id);
+            ImGui.TableSetColumnIndex(0);
+            if (ImGui.RadioButton("##selectStandalone", string.Equals(this.selectedStandaloneObjectId, instance.Id, StringComparison.Ordinal)))
+                this.selectedStandaloneObjectId = instance.Id;
+            ImGui.TableSetColumnIndex(1);
+            ImGui.TextUnformatted(ShortId(instance.Id));
+            ImGui.TableSetColumnIndex(2);
+            ImGui.TextUnformatted(instance.ObjectAddress);
+            ImGui.TableSetColumnIndex(3);
+            ImGui.TextUnformatted(instance.IsVisible.ToString());
+            ImGui.TableSetColumnIndex(4);
+            ImGui.TextUnformatted(instance.State.ToString());
+            ImGui.TableSetColumnIndex(5);
+            ImGui.TextWrapped(string.IsNullOrWhiteSpace(instance.ModelResourcePathReadback) ? instance.ModelPath : instance.ModelResourcePathReadback);
+            ImGui.TableSetColumnIndex(6);
+            ImGui.TextWrapped(string.IsNullOrWhiteSpace(instance.LastError) ? "无" : instance.LastError);
+            ImGui.PopID();
+        }
+
+        ImGui.EndTable();
+    }
+
+    private void DrawSelectedStandaloneObjectControls()
+    {
+        var selected = string.IsNullOrWhiteSpace(this.selectedStandaloneObjectId)
+            ? null
+            : this.standaloneBgObjectProbe.GetById(this.selectedStandaloneObjectId);
+        if (selected == null)
+            return;
+
+        ImGui.Separator();
+        ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "选中 Standalone 对象");
+        ImGui.TextWrapped($"id：{selected.Id}");
+        ImGui.TextWrapped($"address：{selected.ObjectAddress}");
+        ImGui.TextWrapped($"poolName：{selected.PoolName}");
+        ImGui.TextWrapped($"modelHandle：{selected.ModelResourceHandleAddress}; loadState={selected.LoadStateReadback}; path={selected.ModelResourcePathReadback}");
+        ImGui.TextWrapped($"state：{selected.State}; valid={selected.IsValid}; vtable={selected.VTableReadback}");
+        ImGui.TextWrapped($"validation：{selected.ValidationStatus}");
+        ImGui.TextWrapped($"activation：step={selected.ActivationStep}; result={selected.ActivationResult}; exception={(string.IsNullOrWhiteSpace(selected.ActivationException) ? "无" : selected.ActivationException)}");
+        ImGui.TextWrapped($"scene attach：step={selected.SceneAttachStep}; result={selected.SceneAttachResult}; exception={(string.IsNullOrWhiteSpace(selected.SceneAttachException) ? "无" : selected.SceneAttachException)}");
+        ImGui.TextWrapped($"bounds：{selected.BoundsReadback}");
+        ImGui.TextWrapped($"transform：{selected.TransformReadback}");
+        ImGui.TextWrapped($"scene links：{selected.SceneLinkReadback}");
+        ImGui.TextWrapped($"attachState：{selected.AttachState}; scanHit={selected.ParentChildScanHit}; scanCount={selected.ParentChildScanCount}; truncated={selected.ParentChildScanTruncated}; elapsed={selected.ParentChildScanElapsedMs:F2}ms");
+        if (!string.IsNullOrWhiteSpace(selected.ParentChildScanStatus))
+            ImGui.TextWrapped($"scan：{selected.ParentChildScanStatus}");
+
+        var pos = selected.Position;
+        if (ImGui.InputFloat("Selected Standalone Position X", ref pos.X)) selected.Position = pos;
+        pos = selected.Position;
+        if (ImGui.InputFloat("Selected Standalone Position Y", ref pos.Y)) selected.Position = pos;
+        pos = selected.Position;
+        if (ImGui.InputFloat("Selected Standalone Position Z", ref pos.Z)) selected.Position = pos;
+
+        var rotDegrees = new Vector3(
+            RadiansToDegrees(selected.RotationEuler.X),
+            RadiansToDegrees(selected.RotationEuler.Y),
+            RadiansToDegrees(selected.RotationEuler.Z));
+        if (ImGui.InputFloat("Selected Standalone Pitch X (deg)", ref rotDegrees.X)) selected.RotationEuler = new Vector3(DegreesToRadians(rotDegrees.X), selected.RotationEuler.Y, selected.RotationEuler.Z);
+        rotDegrees = new Vector3(RadiansToDegrees(selected.RotationEuler.X), RadiansToDegrees(selected.RotationEuler.Y), RadiansToDegrees(selected.RotationEuler.Z));
+        if (ImGui.InputFloat("Selected Standalone Yaw Y (deg)", ref rotDegrees.Y)) selected.RotationEuler = new Vector3(selected.RotationEuler.X, DegreesToRadians(rotDegrees.Y), selected.RotationEuler.Z);
+        rotDegrees = new Vector3(RadiansToDegrees(selected.RotationEuler.X), RadiansToDegrees(selected.RotationEuler.Y), RadiansToDegrees(selected.RotationEuler.Z));
+        if (ImGui.InputFloat("Selected Standalone Roll Z (deg)", ref rotDegrees.Z)) selected.RotationEuler = new Vector3(selected.RotationEuler.X, selected.RotationEuler.Y, DegreesToRadians(rotDegrees.Z));
+
+        var scale = selected.Scale;
+        if (ImGui.InputFloat("Selected Standalone Scale X", ref scale.X)) selected.Scale = Vector3.Max(scale, new Vector3(0.01f));
+        scale = selected.Scale;
+        if (ImGui.InputFloat("Selected Standalone Scale Y", ref scale.Y)) selected.Scale = Vector3.Max(scale, new Vector3(0.01f));
+        scale = selected.Scale;
+        if (ImGui.InputFloat("Selected Standalone Scale Z", ref scale.Z)) selected.Scale = Vector3.Max(scale, new Vector3(0.01f));
+
+        if (ImGui.Button("Dump Standalone object（只读）"))
+            this.standaloneBgObjectProbe.Dump(selected.Id);
+        ImGui.SameLine();
+        if (ImGui.Button("Validate Standalone object（只读）"))
+            this.standaloneBgObjectProbe.Validate(selected.Id);
+        ImGui.SameLine();
+        if (ImGui.Button("对比 Standalone 与当前选中真实 BgPart render 状态"))
+            this.standaloneBgObjectProbe.CompareWithBgPart(selected.Id, this.GetSelectedBgPart());
+        ImGui.SameLine();
+        if (ImGui.Button("Standalone vs 真实 BgPart scene attach 对比"))
+            this.standaloneBgObjectProbe.CompareSceneAttachWithBgPart(selected.Id, this.GetSelectedBgPart());
+        ImGui.SameLine();
+        if (ImGui.Button("Raw +0x00~+0xA0 / offset 对比（只读）"))
+            this.standaloneBgObjectProbe.DumpRawObjectLayoutComparison(selected.Id, this.GetSelectedBgPart());
+        ImGui.SameLine();
+        if (ImGui.Button("Standalone active/render list 对比（只读）"))
+            this.standaloneRenderListProbe.Compare(selected, this.GetSelectedBgPart());
+        ImGui.SameLine();
+        if (ImGui.Button("展开完整 parent child chain（限 2048）"))
+            this.standaloneBgObjectProbe.FullParentChildScan(selected.Id);
+        ImGui.TextWrapped($"active/render list probe：{this.standaloneRenderListProbe.LastStatus}");
+        if (ImGui.CollapsingHeader("Standalone dump"))
+            ImGui.TextWrapped(selected.LastDump);
+        if (ImGui.CollapsingHeader("Raw object layout 缓存"))
+            ImGui.TextWrapped(string.IsNullOrWhiteSpace(selected.RawObjectLayoutDump) ? "尚未执行 raw object layout dump。" : selected.RawObjectLayoutDump);
+        if (ImGui.CollapsingHeader("Standalone active/render list 只读结果"))
+            ImGui.TextWrapped(this.standaloneRenderListProbe.LastDump);
+        if (ImGui.CollapsingHeader("完整 parent child chain 缓存"))
+            ImGui.TextWrapped(string.IsNullOrWhiteSpace(selected.FullParentChildScanDump) ? "尚未执行完整扫描。" : selected.FullParentChildScanDump);
+
+        this.DrawStandaloneActivationButtons(selected);
+        this.DrawStandaloneSceneAttachButtons(selected);
+
+        ImGui.BeginDisabled(!selected.CanWritePosition || !this.realNpcSpawn.EnableUnsafeNativeWrites || !this.confirmStandaloneBgObjectExperiment);
+        if (ImGui.Button("Standalone 尝试写 Position（高风险，只写单字段）"))
+            this.standaloneBgObjectProbe.TryWritePosition(selected.Id, selected.Position, this.realNpcSpawn.EnableUnsafeNativeWrites, this.confirmStandaloneBgObjectExperiment);
+        ImGui.SameLine();
+        if (ImGui.Button("Position 目标设为玩家当前位置") && this.runtime.PlayerPosition.HasValue)
+            selected.Position = this.runtime.PlayerPosition.Value;
+        ImGui.EndDisabled();
+
+        ImGui.BeginDisabled(!selected.CanWriteRotationScale || !this.realNpcSpawn.EnableUnsafeNativeWrites || !this.confirmStandaloneBgObjectExperiment);
+        if (ImGui.Button("Standalone 尝试写 Rotation/Scale（需 Position 成功后）"))
+            this.standaloneBgObjectProbe.TryWriteRotationScale(selected.Id, selected.RotationEuler, selected.Scale, this.realNpcSpawn.EnableUnsafeNativeWrites, this.confirmStandaloneBgObjectExperiment);
+        ImGui.EndDisabled();
+
+        ImGui.BeginDisabled(!selected.OwnedByPlugin);
+        if (ImGui.Button("隐藏/移除 Standalone（安全分支）"))
+            this.standaloneBgObjectProbe.HideOrRemove(selected.Id, this.realNpcSpawn.EnableUnsafeNativeWrites, this.confirmStandaloneBgObjectExperiment);
+        ImGui.SameLine();
+        if (ImGui.Button("全部 Standalone 标记移除/隐藏"))
+            this.standaloneBgObjectProbe.HideAll(this.realNpcSpawn.EnableUnsafeNativeWrites, this.confirmStandaloneBgObjectExperiment);
+        ImGui.EndDisabled();
+        ImGui.SameLine();
+        if (ImGui.Button("仅从列表移除此记录"))
+        {
+            this.standaloneBgObjectProbe.ForceRemove(selected.Id);
+            this.selectedStandaloneObjectId = string.Empty;
+        }
+
+        if (ImGui.Button("人工确认：可见"))
+        {
+            selected.ManualVisibleConfirmed = true;
+            selected.ManuallyVisible = true;
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("人工确认：仍不可见"))
+            selected.ManuallyStillInvisible = true;
+        ImGui.SameLine();
+        if (ImGui.Button("人工确认：模型异常"))
+            selected.ManuallyModelAbnormal = true;
+        ImGui.SameLine();
+        if (ImGui.Button("人工确认：游戏不稳定"))
+            selected.ManuallyGameUnstable = true;
+        ImGui.SameLine();
+        if (ImGui.Button("人工确认：原地图未受影响"))
+            selected.ManualOriginalMapUnaffectedConfirmed = true;
+        ImGui.SameLine();
+        if (ImGui.Button("人工确认：已隐藏/不可见"))
+            selected.ManualHiddenConfirmed = true;
+        ImGui.TextWrapped($"人工确认：visible={selected.ManuallyVisible}; stillInvisible={selected.ManuallyStillInvisible}; abnormal={selected.ManuallyModelAbnormal}; unstable={selected.ManuallyGameUnstable}; mapUnaffected={selected.ManualOriginalMapUnaffectedConfirmed}; hidden={selected.ManualHiddenConfirmed}");
+    }
+
+    private void DrawStandaloneActivationButtons(StandaloneObjectInstance selected)
+    {
+        ImGui.Separator();
+        ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "Bounds dump / render 状态只读取证");
+        ImGui.TextWrapped("Render activation 写入实验已暂停；当前只保留 ComputeSphereBounds bounds dump，不调用 UpdateRender/UpdateCulling/NotifyTransformChanged。");
+        var canActivate = selected.State is StandaloneObjectState.ValidatedReadOnly or StandaloneObjectState.PositionWriteSucceeded;
+        ImGui.BeginDisabled(!canActivate || !this.realNpcSpawn.EnableUnsafeNativeWrites || !this.confirmStandaloneBgObjectExperiment);
+        if (ImGui.Button("ComputeSphereBounds bounds dump（只读）"))
+            this.standaloneBgObjectProbe.ExecuteActivationStep(selected.Id, "ComputeSphereBounds", this.realNpcSpawn.EnableUnsafeNativeWrites, this.confirmStandaloneBgObjectExperiment);
+        ImGui.EndDisabled();
+        if (!canActivate)
+            ImGui.TextDisabled("activation 需要 state=ValidatedReadOnly 或 PositionWriteSucceeded。");
+    }
+
+    private void DrawStandaloneSceneAttachButtons(StandaloneObjectInstance selected)
+    {
+        ImGui.Separator();
+        ImGui.TextColored(new Vector4(1f, 0.45f, 0.25f, 1f), "Scene attach 写入实验已暂停");
+        ImGui.TextWrapped("Standalone scene attach 写入实验已暂停：AddChild 后 objectFlags 异常，疑似调用签名或入口不安全。");
+        ImGui.TextWrapped("已禁用：AddChild、OnAddedToWorld、AddChild -> OnAddedToWorld -> update chain，以及任何 parent/child/prev/next 写入。");
+        ImGui.TextWrapped("保留只读：CreateOnly、Dump、Validate、Position 单字段写入、Bounds dump、Standalone vs 真实 BgPart 对比、raw offset dump。");
+        if (!string.IsNullOrWhiteSpace(selected.SceneAttachException))
+            ImGui.TextWrapped($"最近一次 scene attach 拦截/错误：{selected.SceneAttachException}");
     }
 
     private void DrawBgPartCollisionSourceProbeDebug()
