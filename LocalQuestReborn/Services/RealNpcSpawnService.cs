@@ -18,7 +18,6 @@ public sealed class RealNpcSpawnService
     private readonly AppearanceApplyService appearanceApplyService;
     private readonly AppearanceApplyQueue appearanceApplyQueue;
     private readonly ActorAnimationService animationService;
-    private readonly ActorAnimationRigService animationRigService;
     private readonly ActorActionSequenceService actionSequenceService;
     private readonly ActorLookAtService lookAtService;
     private readonly PlayerLookAtActorService playerLookAtActorService;
@@ -73,7 +72,6 @@ public sealed class RealNpcSpawnService
         AppearanceApplyService appearanceApplyService,
         AppearanceApplyQueue appearanceApplyQueue,
         ActorAnimationService animationService,
-        ActorAnimationRigService animationRigService,
         ActorActionSequenceService actionSequenceService,
         ActorLookAtService lookAtService,
         PlayerLookAtActorService playerLookAtActorService,
@@ -100,7 +98,6 @@ public sealed class RealNpcSpawnService
         this.appearanceApplyService = appearanceApplyService;
         this.appearanceApplyQueue = appearanceApplyQueue;
         this.animationService = animationService;
-        this.animationRigService = animationRigService;
         this.actionSequenceService = actionSequenceService;
         this.lookAtService = lookAtService;
         this.playerLookAtActorService = playerLookAtActorService;
@@ -227,8 +224,6 @@ public sealed class RealNpcSpawnService
     public bool IsHumanoidBrioActorAppearanceAvailable => this.appearanceApplyService.IsHumanoidBrioActorAppearanceAvailable;
     public string HumanoidBrioActorAppearanceSignature => this.appearanceApplyService.HumanoidBrioActorAppearanceSignature;
     public bool IsHumanoidAppearanceManagerAvailable => false;
-    public bool IsAnimationRigOverrideSupported => this.animationRigService.IsSupported;
-    public string AnimationRigUnsupportedReason => this.animationRigService.UnsupportedReason;
     public string HumanoidAppearanceCurrentPath => this.appearanceApplyService.HumanoidAppearanceCurrentPath;
     public string HumanoidAppearanceLastResult => this.appearanceApplyService.HumanoidAppearanceLastResult;
     public string HumanoidAppearanceLastException => this.appearanceApplyService.HumanoidAppearanceLastException;
@@ -661,8 +656,6 @@ public sealed class RealNpcSpawnService
     {
         this.lookAtService.Stop(instance, out _);
         this.actionSequenceService.Stop(instance);
-        if (instance.HasAnimationRigNativeOverride)
-            this.animationRigService.RestoreAnimationRig(instance, out _);
         this.appearanceApplyQueue.RemoveJobsForActor(instance.RuntimeId);
         this.penumbraIpc.CleanupActorAssignment(instance);
 
@@ -1983,12 +1976,6 @@ public sealed class RealNpcSpawnService
     private void ApplyPostSpawnBehavior(RuntimeActorInstance actor)
     {
         this.RestoreTransformExact(actor, "Before post-spawn behavior");
-        if (actor.AnimationRigMode == ActorAnimationRigMode.Override && actor.AnimationRigPreset != ActorAnimationRigPreset.Current)
-        {
-            actor.AnimationRigStatus = "Rig probe skipped during post-spawn. Actor creation/appearance pipeline is isolated; apply rig manually after Ready.";
-            this.log.Information("[AnimationRig] skipped automatic post-spawn rig probe actor={Actor} order={Order}", actor.RuntimeId, actor.SortOrder);
-        }
-
         this.actionSequenceService.Reset(actor);
         if (!actor.EnableActionSequence && actor.CurrentAnimationId > 0)
             this.animationService.PlayTransientTimeline(actor, actor.CurrentAnimationId, out _);
@@ -2063,352 +2050,6 @@ public sealed class RealNpcSpawnService
         this.VerifyNoUnexpectedTransformChange(instance, "After StopAnimation");
         this.LastMessage = success ? "已停止动画并尝试恢复 idle。" : $"停止动画失败：{reason}";
         return success;
-    }
-
-    public bool ApplyActorAnimationRig(string runtimeId)
-    {
-        var instance = this.registry.GetByRuntimeId(runtimeId);
-        if (instance == null)
-        {
-            this.LastMessage = $"Runtime Actor not found: {runtimeId}";
-            return false;
-        }
-
-        if (!this.TryValidateRigProbeAllowed(instance, out var blockReason))
-        {
-            this.LastMessage = blockReason;
-            instance.AnimationRigStatus = $"RigProbe skipped: {blockReason}";
-            return false;
-        }
-
-        var success = this.animationRigService.ApplyAnimationRigOverride(instance, out var reason);
-        this.VerifyNoUnexpectedTransformChange(instance, "After ApplyAnimationRig");
-        this.LastMessage = reason;
-        return success;
-    }
-
-    public bool RestoreActorAnimationRig(string runtimeId)
-    {
-        var instance = this.registry.GetByRuntimeId(runtimeId);
-        if (instance == null)
-        {
-            this.LastMessage = $"Runtime Actor not found: {runtimeId}";
-            return false;
-        }
-
-        if (!this.TryValidateRigProbeAllowed(instance, out var blockReason))
-        {
-            this.LastMessage = blockReason;
-            instance.AnimationRigStatus = $"RigProbe skipped: {blockReason}";
-            return false;
-        }
-
-        var success = this.animationRigService.RestoreAnimationRig(instance, out var reason);
-        this.VerifyNoUnexpectedTransformChange(instance, "After RestoreAnimationRig");
-        this.LastMessage = reason;
-        return success;
-    }
-
-    public bool ReapplyActorCurrentAnimation(string runtimeId)
-    {
-        var instance = this.registry.GetByRuntimeId(runtimeId);
-        if (instance == null)
-        {
-            this.LastMessage = $"Runtime Actor not found: {runtimeId}";
-            return false;
-        }
-
-        if (!this.TryValidateRigProbeAllowed(instance, out var blockReason))
-        {
-            this.LastMessage = blockReason;
-            instance.AnimationRigStatus = $"RigProbe skipped: {blockReason}";
-            return false;
-        }
-
-        var success = this.animationRigService.ReapplyCurrentAnimationWithRig(instance, out var reason);
-        this.VerifyNoUnexpectedTransformChange(instance, "After ReapplyCurrentAnimation");
-        this.LastMessage = reason;
-        return success;
-    }
-
-    public void DumpActorExperimentalDataPath(string runtimeId)
-    {
-        var instance = this.registry.GetByRuntimeId(runtimeId);
-        if (instance == null)
-        {
-            this.LastMessage = $"Runtime Actor not found: {runtimeId}";
-            return;
-        }
-
-        if (!this.TryValidateReadOnlyAnimationProbeAllowed(instance, out var blockReason))
-        {
-            this.LastMessage = blockReason;
-            instance.ExperimentalDataPathLastResult = $"DataPath dump skipped: {blockReason}";
-            return;
-        }
-
-        this.animationRigService.DumpExperimentalDataPathState(instance);
-        this.LastMessage = instance.ExperimentalDataPathLastResult;
-    }
-
-    public bool ApplyActorExperimentalDataPathOnce(string runtimeId)
-    {
-        var instance = this.registry.GetByRuntimeId(runtimeId);
-        if (instance == null)
-        {
-            this.LastMessage = $"Runtime Actor not found: {runtimeId}";
-            return false;
-        }
-
-        if (!this.TryValidateRigProbeAllowed(instance, out var blockReason))
-        {
-            this.LastMessage = blockReason;
-            instance.ExperimentalDataPathLastResult = $"DataPath apply skipped: {blockReason}";
-            return false;
-        }
-
-        var success = this.animationRigService.ApplyExperimentalDataPathOnce(instance, out var reason);
-        this.VerifyNoUnexpectedTransformChange(instance, "After ApplyExperimentalDataPathOnce");
-        this.LastMessage = reason;
-        return success;
-    }
-
-    public bool ApplyActorExperimentalDataPathAndReplay(string runtimeId)
-    {
-        var instance = this.registry.GetByRuntimeId(runtimeId);
-        if (instance == null)
-        {
-            this.LastMessage = $"Runtime Actor not found: {runtimeId}";
-            return false;
-        }
-
-        if (!this.TryValidateRigProbeAllowed(instance, out var blockReason))
-        {
-            this.LastMessage = blockReason;
-            instance.ExperimentalDataPathLastResult = $"DataPath replay skipped: {blockReason}";
-            return false;
-        }
-
-        var success = this.animationRigService.ApplyExperimentalDataPathAndReplay(instance, out var reason);
-        this.VerifyNoUnexpectedTransformChange(instance, "After ApplyExperimentalDataPathAndReplay");
-        this.LastMessage = reason;
-        return success;
-    }
-
-    public bool RestoreActorExperimentalDataPath(string runtimeId)
-    {
-        var instance = this.registry.GetByRuntimeId(runtimeId);
-        if (instance == null)
-        {
-            this.LastMessage = $"Runtime Actor not found: {runtimeId}";
-            return false;
-        }
-
-        if (!this.TryValidateRigProbeAllowed(instance, out var blockReason))
-        {
-            this.LastMessage = blockReason;
-            instance.ExperimentalDataPathLastResult = $"DataPath restore skipped: {blockReason}";
-            return false;
-        }
-
-        var success = this.animationRigService.RestoreOriginalDataPath(instance, out var reason);
-        this.VerifyNoUnexpectedTransformChange(instance, "After RestoreExperimentalDataPath");
-        this.LastMessage = reason;
-        return success;
-    }
-
-    public void DumpActorAnimationRigDebugReport(string runtimeId)
-    {
-        var instance = this.registry.GetByRuntimeId(runtimeId);
-        if (instance == null)
-        {
-            this.LastMessage = $"Runtime Actor not found: {runtimeId}";
-            return;
-        }
-
-        this.animationRigService.DumpLastDebugReport(instance);
-        this.LastMessage = $"AnimationRig debug report dumped to log for actor {runtimeId[..Math.Min(8, runtimeId.Length)]}.";
-    }
-
-    public void DumpActorAnimationPathBeforeExternalChange(string runtimeId)
-    {
-        var instance = this.registry.GetByRuntimeId(runtimeId);
-        if (instance == null)
-        {
-            this.LastMessage = $"Runtime Actor not found: {runtimeId}";
-            return;
-        }
-
-        if (!this.TryValidateReadOnlyAnimationProbeAllowed(instance, out var blockReason))
-        {
-            this.LastMessage = blockReason;
-            instance.AnimationPathResolverStatus = $"RigProbe skipped: {blockReason}";
-            return;
-        }
-
-        this.animationRigService.DumpAnimationPathBeforeExternalChange(instance);
-        this.LastMessage = instance.AnimationPathResolverStatus;
-    }
-
-    public void DumpActorAnimationPathAfterExternalChange(string runtimeId)
-    {
-        var instance = this.registry.GetByRuntimeId(runtimeId);
-        if (instance == null)
-        {
-            this.LastMessage = $"Runtime Actor not found: {runtimeId}";
-            return;
-        }
-
-        if (!this.TryValidateReadOnlyAnimationProbeAllowed(instance, out var blockReason))
-        {
-            this.LastMessage = blockReason;
-            instance.AnimationPathResolverStatus = $"RigProbe skipped: {blockReason}";
-            return;
-        }
-
-        this.animationRigService.DumpAnimationPathAfterExternalChange(instance);
-        this.LastMessage = instance.AnimationPathResolverStatus;
-    }
-
-    public bool CompareActorAnimationPathExternalDumps(string runtimeId)
-    {
-        var instance = this.registry.GetByRuntimeId(runtimeId);
-        if (instance == null)
-        {
-            this.LastMessage = $"Runtime Actor not found: {runtimeId}";
-            return false;
-        }
-
-        if (!this.TryValidateReadOnlyAnimationProbeAllowed(instance, out var blockReason))
-        {
-            this.LastMessage = blockReason;
-            instance.AnimationPathResolverStatus = $"RigProbe skipped: {blockReason}";
-            return false;
-        }
-
-        var success = this.animationRigService.CompareExternalAnimationPathDumps(instance, out var reason);
-        this.LastMessage = reason;
-        return success;
-    }
-
-    public bool CompareActorAnimationPathWithActor(string runtimeId, string otherRuntimeId)
-    {
-        var instance = this.registry.GetByRuntimeId(runtimeId);
-        var other = this.registry.GetByRuntimeId(otherRuntimeId);
-        if (instance == null || other == null)
-        {
-            this.LastMessage = "Compare failed: one of the actors was not found.";
-            return false;
-        }
-
-        if (string.Equals(instance.RuntimeId, other.RuntimeId, StringComparison.OrdinalIgnoreCase))
-        {
-            this.LastMessage = "Compare failed: choose a different actor.";
-            return false;
-        }
-
-        if (!this.TryValidateReadOnlyAnimationProbeAllowed(instance, out var blockReason))
-        {
-            this.LastMessage = blockReason;
-            instance.AnimationPathResolverStatus = $"RigProbe skipped: {blockReason}";
-            return false;
-        }
-
-        if (!this.TryValidateReadOnlyAnimationProbeAllowed(other, out blockReason))
-        {
-            this.LastMessage = blockReason;
-            other.AnimationPathResolverStatus = $"RigProbe skipped: {blockReason}";
-            return false;
-        }
-
-        var success = this.animationRigService.CompareAnimationPathWithActor(instance, other, out var reason);
-        this.VerifyNoUnexpectedTransformChange(instance, "After AnimationPath compare A");
-        this.VerifyNoUnexpectedTransformChange(other, "After AnimationPath compare B");
-        this.LastMessage = reason;
-        return success;
-    }
-
-    private bool TryValidateRigProbeAllowed(RuntimeActorInstance instance, out string reason)
-    {
-        if (this.validityMonitorService.CurrentIsGposing)
-        {
-            reason = "GPose 中当前仅开放 AnimationDataPathProbe 只读 Dump/Compare；Rig Apply/Restore/Replay 已禁用。";
-            return false;
-        }
-
-        if (this.spawnWarmupInProgress)
-        {
-            reason = "Actor not ready; rig probe skipped because spawn prewarm is running.";
-            return false;
-        }
-
-        if (this.pendingActorSpawns.Count > 0 ||
-            this.activePostSpawnApply != null ||
-            this.postSpawnApplyQueue.Count > 0 ||
-            this.pendingGposeRebuilds.Count > 0 ||
-            this.activeGposeRebuildSnapshot != null ||
-            !string.IsNullOrWhiteSpace(this.activeGposeRebuildRuntimeId))
-        {
-            reason = "Actor not ready; rig probe skipped because formal spawn/rebuild/appearance queue is active.";
-            return false;
-        }
-
-        if (!instance.IsValid || instance.CharacterObject == null)
-        {
-            reason = "Actor not ready; rig probe skipped because actor is invalid or missing native object.";
-            return false;
-        }
-
-        if (!instance.PostSpawnBehaviorReady ||
-            !string.Equals(instance.PostSpawnPipelineState, "Ready", StringComparison.OrdinalIgnoreCase))
-        {
-            reason = $"Actor not ready; rig probe skipped because post-spawn state is {instance.PostSpawnPipelineState}.";
-            return false;
-        }
-
-        if (!this.TryValidatePostSpawnActor(instance, out var validationReason))
-        {
-            reason = $"Actor not ready; rig probe skipped because target validation failed: {validationReason}";
-            return false;
-        }
-
-        reason = string.Empty;
-        return true;
-    }
-
-    private bool TryValidateReadOnlyAnimationProbeAllowed(RuntimeActorInstance instance, out string reason)
-    {
-        if (this.spawnWarmupInProgress)
-        {
-            reason = "Actor not ready; read-only animation probe skipped because spawn prewarm is running.";
-            return false;
-        }
-
-        if (this.pendingActorSpawns.Count > 0 ||
-            this.activePostSpawnApply != null ||
-            this.postSpawnApplyQueue.Count > 0 ||
-            this.pendingGposeRebuilds.Count > 0 ||
-            this.activeGposeRebuildSnapshot != null ||
-            !string.IsNullOrWhiteSpace(this.activeGposeRebuildRuntimeId))
-        {
-            reason = "Actor rebuild running; probe skipped.";
-            return false;
-        }
-
-        if (this.validityMonitorService.CurrentIsGposing)
-        {
-            if (instance.CharacterObject == null || string.IsNullOrWhiteSpace(instance.Address))
-            {
-                reason = "GPose readonly probe skipped: actor runtime pointer is unavailable.";
-                return false;
-            }
-
-            reason = string.Empty;
-            this.log.Information("[AnimationRig] GPose readonly probe allowed actor={Actor} ptr={Pointer}", instance.RuntimeId, instance.Address);
-            return true;
-        }
-
-        return this.TryValidateRigProbeAllowed(instance, out reason);
     }
 
     public void ResetActionSequence(string runtimeId)
@@ -3075,11 +2716,6 @@ public sealed class RealNpcSpawnService
             PenumbraMode = actor.PenumbraMode,
             PenumbraCollectionId = actor.PenumbraCollectionId,
             PenumbraCollectionNameCache = actor.PenumbraCollectionNameCache,
-            AnimationRigMode = actor.AnimationRigMode,
-            AnimationRigPreset = actor.AnimationRigPreset,
-            CustomRigRace = actor.CustomRigRace,
-            CustomRigSex = actor.CustomRigSex,
-            CustomRigTribe = actor.CustomRigTribe,
         };
     }
 
@@ -3152,11 +2788,6 @@ public sealed class RealNpcSpawnService
             PenumbraMode = snapshot.PenumbraMode,
             PenumbraCollectionId = snapshot.PenumbraCollectionId,
             PenumbraCollectionNameCache = snapshot.PenumbraCollectionNameCache,
-            AnimationRigMode = snapshot.AnimationRigMode,
-            AnimationRigPreset = snapshot.AnimationRigPreset,
-            CustomRigRace = snapshot.CustomRigRace,
-            CustomRigSex = snapshot.CustomRigSex,
-            CustomRigTribe = snapshot.CustomRigTribe,
             CloneRetryAttempt = cloneRetryAttempt,
         };
 
@@ -3175,11 +2806,6 @@ public sealed class RealNpcSpawnService
         actor.PenumbraMode = snapshot.PenumbraMode;
         actor.PenumbraCollectionId = snapshot.PenumbraCollectionId;
         actor.PenumbraCollectionNameCache = snapshot.PenumbraCollectionNameCache;
-        actor.AnimationRigMode = snapshot.AnimationRigMode;
-        actor.AnimationRigPreset = snapshot.AnimationRigPreset;
-        actor.CustomRigRace = snapshot.CustomRigRace;
-        actor.CustomRigSex = snapshot.CustomRigSex;
-        actor.CustomRigTribe = snapshot.CustomRigTribe;
         actor.VisibilityRuntimeState = ActorVisibilityRuntimeState.SequenceHidden;
         actor.LookAtPausedByActionSequence = false;
         actor.SpawnPosition = snapshot.Position;
@@ -3426,16 +3052,6 @@ public sealed class RealNpcSpawnService
         public Guid? PenumbraCollectionId { get; init; }
 
         public string PenumbraCollectionNameCache { get; init; } = string.Empty;
-
-        public ActorAnimationRigMode AnimationRigMode { get; init; }
-
-        public ActorAnimationRigPreset AnimationRigPreset { get; init; }
-
-        public byte CustomRigRace { get; init; }
-
-        public byte CustomRigSex { get; init; }
-
-        public byte CustomRigTribe { get; init; }
 
         public int CloneRetryAttempt { get; init; }
     }

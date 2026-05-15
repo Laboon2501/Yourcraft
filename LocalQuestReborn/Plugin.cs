@@ -39,7 +39,6 @@ public sealed class Plugin : IDalamudPlugin
     private readonly ActorAnimationService actorAnimation;
     private readonly ActorAnimationCatalogService actorAnimationCatalog;
     private readonly ActorAnimationPickerService actorAnimationPicker;
-    private readonly ActorAnimationRigService actorAnimationRig;
     private readonly ActorNativeBubbleService actorBubble;
     private readonly ActorActionSequenceService actorActionSequence;
     private readonly ActorLookAtService actorLookAt;
@@ -127,7 +126,6 @@ public sealed class Plugin : IDalamudPlugin
         this.actorAnimation = new ActorAnimationService(this.brioAssemblyBridge, log);
         this.actorAnimationCatalog = new ActorAnimationCatalogService(dataManager, log);
         this.actorAnimationPicker = new ActorAnimationPickerService(this.database, this.runtimeActorRegistry, this.actorAnimationCatalog, log);
-        this.actorAnimationRig = new ActorAnimationRigService(this.actorAnimation, log);
         this.actorBubble = new ActorNativeBubbleService(this.brioAssemblyBridge, log);
         this.actorActionSequence = new ActorActionSequenceService(this.actorAnimation, this.actorBubble, this.brioCapabilityBridge);
         this.actorLookAt = new ActorLookAtService(objectTable, this.brioAssemblyBridge, log);
@@ -141,7 +139,7 @@ public sealed class Plugin : IDalamudPlugin
         this.experimentalEventNpcService = new ExperimentalEventNpcService(this.brioAssemblyBridge, this.nativeGameObjectDump, log);
         this.nativeTalkProbe = new NativeTalkProbeService(targetManager);
         this.eventNpcHost = new EventNpcHostService(targetManager, clientState, this.database);
-        this.realNpcSpawn = new RealNpcSpawnService(clientState, targetManager, this.database, this.runtimeActorRegistry, this.brioNpcBridge, this.brioAssemblyBridge, this.brioCapabilityBridge, this.appearanceApply, this.appearanceApplyQueue, this.actorAnimation, this.actorAnimationRig, this.actorActionSequence, this.actorLookAt, this.playerLookAtActor, this.actorValidityMonitor, this.actorNameplate, this.actorTargetability, this.targetProbe, this.nativeNpcProbe, this.nativeGameObjectDump, this.experimentalEventNpcService, this.nativeTalkProbe, this.glamourerIpcProbe, this.glamourerIpcBridge, this.penumbraIpc, log);
+        this.realNpcSpawn = new RealNpcSpawnService(clientState, targetManager, this.database, this.runtimeActorRegistry, this.brioNpcBridge, this.brioAssemblyBridge, this.brioCapabilityBridge, this.appearanceApply, this.appearanceApplyQueue, this.actorAnimation, this.actorActionSequence, this.actorLookAt, this.playerLookAtActor, this.actorValidityMonitor, this.actorNameplate, this.actorTargetability, this.targetProbe, this.nativeNpcProbe, this.nativeGameObjectDump, this.experimentalEventNpcService, this.nativeTalkProbe, this.glamourerIpcProbe, this.glamourerIpcBridge, this.penumbraIpc, log);
         this.realNpcSpawn.SetEventNpcHostService(this.eventNpcHost);
         this.brioPropBridge = new BrioPropBridgeService(this.brioAssemblyBridge, log);
         this.propModel = new PropModelService(this.brioAssemblyBridge, log);

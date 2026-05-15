@@ -1,4 +1,4 @@
-﻿using Dalamud.Bindings.ImGui;
+using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Windowing;
 using LocalQuestReborn.Models;
 using LocalQuestReborn.Services;
@@ -31,7 +31,6 @@ public sealed class MainWindow : Window
 
     private string selectedNpcId = string.Empty;
     private string selectedActorRuntimeId = string.Empty;
-    private string animationRigCompareActorRuntimeId = string.Empty;
     private string selectedLocalLayoutObjectId = string.Empty;
     private string lastWorldTransformReadLocalLayoutObjectId = string.Empty;
     private string selectedLocalLightId = string.Empty;
@@ -137,7 +136,7 @@ public sealed class MainWindow : Window
         if (inGpose)
         {
             ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "GPose 只读诊断模式");
-            ImGui.TextWrapped("插件 UI 已在 GPose 中保持显示。当前仅开放 Actor AnimationDataPathProbe / Anamnesis Diff 等只读诊断；创建、删除、外观重绘、Transform 写入等危险操作请退出 GPose 后执行。");
+            ImGui.TextWrapped("插件 UI 已在 GPose 中保持显示。创建、删除、外观重绘、Transform 写入等危险操作请退出 GPose 后执行。");
             ImGui.Separator();
         }
 
@@ -264,15 +263,7 @@ public sealed class MainWindow : Window
     }
 
     private void DrawGposeBlockedMessage(string actionName)
-        => ImGui.TextDisabled($"GPose 中已禁用：{actionName}。当前只开放 AnimationDataPathProbe / Anamnesis Diff 只读诊断。");
-
-    private bool CanRunReadOnlyAnimationProbe(RuntimeActorInstance actor)
-    {
-        if (actor.CharacterObject == null)
-            return false;
-
-        return actor.IsValid || this.IsInGpose();
-    }
+        => ImGui.TextDisabled($"GPose 中已禁用：{actionName}。请退出 GPose 后执行该操作。");
 
     private void DrawNpcManagement()
     {
@@ -844,19 +835,6 @@ public sealed class MainWindow : Window
         ImGui.SameLine();
         this.DrawAnimationPickerButton("##ActorCurrentAnimationPicker", ActorAnimationPickerRequest.ForActorCurrent(actor.RuntimeId, ActorAnimationPickerMode.EmoteActionsOnly));
 
-        this.DrawActorRigControls(actor);
-        ImGui.TextWrapped("动画骨架 / Animation Rig（只读定位）：点击应用只注册 selectedRig debug context，并运行 Anamnesis 源码追踪后的 DataPath 候选扫描；不会重播 Timeline、不会写 Race/Gender/Customize、不会调用 Penumbra redraw。");
-        ImGui.TextWrapped($"Rig 状态：{actor.AnimationRigStatus}");
-        if (!string.IsNullOrWhiteSpace(actor.AnimationRigDebugReport))
-        {
-            if (ImGui.Button("Copy Rig Debug Report"))
-                ImGui.SetClipboardText(actor.AnimationRigDebugReport);
-            ImGui.SameLine();
-            if (ImGui.Button("Dump Reflection Details To Log"))
-                this.realNpcSpawn.DumpActorAnimationRigDebugReport(actor.RuntimeId);
-        }
-        this.DrawActorAnimationPathResolverDebug(actor);
-
         ImGui.TextWrapped($"动画状态：enabled={actor.AnimationEnabled}, current={actor.CurrentAnimationId}, error={(string.IsNullOrWhiteSpace(actor.LastAnimationError) ? "无" : actor.LastAnimationError)}");
         ImGui.TextWrapped($"看向状态：enabled={actor.LookAtPlayerEnabled}, registered={actor.LookAtRegistered}, target={actor.LookAtTargetDebug}, looking={actor.IsLookingAtPlayer}, error={(string.IsNullOrWhiteSpace(actor.LastLookAtError) ? "无" : actor.LastLookAtError)}");
 
@@ -1097,236 +1075,6 @@ public sealed class MainWindow : Window
             var selected = step.Kind == kind;
             if (ImGui.Selectable(kind.ToString(), selected))
                 step.Kind = kind;
-            if (selected)
-                ImGui.SetItemDefaultFocus();
-        }
-
-        ImGui.EndCombo();
-    }
-
-    private void DrawActorAnimationPathResolverDebug(RuntimeActorInstance actor)
-    {
-        if (!ImGui.TreeNode("Animation Path Resolver / Anamnesis Diff"))
-            return;
-
-        ImGui.TextWrapped("当前阶段只做只读定位：主路线已改为 Anamnesis 源码追踪 + DataPath 候选字段扫描；不会重播 Timeline，也不会修改 Actor。");
-        ImGui.TextWrapped("旧的 Anamnesis live diff 仍保留为可选调试，但不再是主流程。候选重点：ActorModelMemory.DataPath(+0xAA0) / DataHead(+0xAA4)。");
-        if (!string.IsNullOrWhiteSpace(actor.AnimationPathResolverStatus))
-            ImGui.TextWrapped($"Path resolver：{actor.AnimationPathResolverStatus}");
-
-        var canProbe = this.CanRunReadOnlyAnimationProbe(actor);
-        ImGui.BeginDisabled(!canProbe);
-        if (ImGui.Button("Dump Rig State Before External Change"))
-            this.realNpcSpawn.DumpActorAnimationPathBeforeExternalChange(actor.RuntimeId);
-        ImGui.SameLine();
-        if (ImGui.Button("Dump Rig State After External Change"))
-            this.realNpcSpawn.DumpActorAnimationPathAfterExternalChange(actor.RuntimeId);
-        ImGui.SameLine();
-        if (ImGui.Button("Compare Rig Dumps"))
-            this.realNpcSpawn.CompareActorAnimationPathExternalDumps(actor.RuntimeId);
-        ImGui.EndDisabled();
-
-        var actors = this.realNpcSpawn.Actors
-            .Where(candidate => !string.Equals(candidate.RuntimeId, actor.RuntimeId, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        if (actors.Count > 0)
-        {
-            if (string.IsNullOrWhiteSpace(this.animationRigCompareActorRuntimeId) ||
-                actors.All(candidate => !string.Equals(candidate.RuntimeId, this.animationRigCompareActorRuntimeId, StringComparison.OrdinalIgnoreCase)))
-            {
-                this.animationRigCompareActorRuntimeId = actors[0].RuntimeId;
-            }
-
-            var selected = actors.FirstOrDefault(candidate => string.Equals(candidate.RuntimeId, this.animationRigCompareActorRuntimeId, StringComparison.OrdinalIgnoreCase));
-            var selectedLabel = selected == null
-                ? "Select actor"
-                : $"{selected.DisplayName} / {ShortId(selected.RuntimeId)}";
-            if (ImGui.BeginCombo("Compare target actor", selectedLabel))
-            {
-                foreach (var candidate in actors)
-                {
-                    var label = $"{candidate.DisplayName} / {ShortId(candidate.RuntimeId)}";
-                    var isSelected = string.Equals(candidate.RuntimeId, this.animationRigCompareActorRuntimeId, StringComparison.OrdinalIgnoreCase);
-                    if (ImGui.Selectable(label, isSelected))
-                        this.animationRigCompareActorRuntimeId = candidate.RuntimeId;
-                    if (isSelected)
-                        ImGui.SetItemDefaultFocus();
-                }
-
-                ImGui.EndCombo();
-            }
-
-            ImGui.BeginDisabled(!canProbe || selected == null || !this.CanRunReadOnlyAnimationProbe(selected));
-            if (ImGui.Button("Compare Same Timeline With Target Actor"))
-                this.realNpcSpawn.CompareActorAnimationPathWithActor(actor.RuntimeId, this.animationRigCompareActorRuntimeId);
-            ImGui.EndDisabled();
-        }
-        else
-        {
-            ImGui.TextDisabled("Need another live Actor for dual-actor same Timeline comparison.");
-        }
-
-        if (ImGui.TreeNode("Experimental DataPath Override"))
-        {
-            ImGui.TextWrapped("实验写入：只写 DrawObject+0xAA0(DataPath short) / +0xAA4(DataHead byte)。不写 Race/Gender/Customize，不调用 Penumbra redraw，不重建 Actor。建议先 Dump，再 Apply Once + Restore，确认安全后再 Apply + Replay。");
-
-            var enableExperimental = actor.EnableExperimentalDataPathOverride;
-            if (ImGui.Checkbox("Enable experimental DataPath override", ref enableExperimental))
-                actor.EnableExperimentalDataPathOverride = enableExperimental;
-
-            var restoreAfterTest = actor.ExperimentalDataPathRestoreAfterTest;
-            if (ImGui.Checkbox("RestoreAfterTest", ref restoreAfterTest))
-                actor.ExperimentalDataPathRestoreAfterTest = restoreAfterTest;
-            ImGui.SameLine();
-            var keepUntilRestore = actor.ExperimentalDataPathKeepOverrideUntilRestore;
-            if (ImGui.Checkbox("KeepOverrideUntilRestore", ref keepUntilRestore))
-                actor.ExperimentalDataPathKeepOverrideUntilRestore = keepUntilRestore;
-
-            var targetRig = actor.ExperimentalDataPathTargetRig;
-            if (targetRig == ActorAnimationRigPreset.Current && actor.AnimationRigPreset != ActorAnimationRigPreset.Current)
-                targetRig = actor.AnimationRigPreset;
-            if (ImGui.BeginCombo("Target Rig", targetRig.ToString()))
-            {
-                foreach (var value in Enum.GetValues<ActorAnimationRigPreset>())
-                {
-                    var isSelected = targetRig == value;
-                    if (ImGui.Selectable(value.ToString(), isSelected))
-                        actor.ExperimentalDataPathTargetRig = value;
-                    if (isSelected)
-                        ImGui.SetItemDefaultFocus();
-                }
-
-                ImGui.EndCombo();
-            }
-
-            ImGui.TextWrapped($"Current DataPath：{FormatNullableDataPath(actor.CurrentDataPath)}");
-            ImGui.TextWrapped($"Current DataHead：{FormatNullableDataHead(actor.CurrentDataHead)}");
-            ImGui.TextWrapped($"Target DataPath：{FormatNullableDataPath(actor.TargetDataPath)}");
-            ImGui.TextWrapped($"Target DataHead：{FormatNullableDataHead(actor.TargetDataHead)}");
-            ImGui.TextWrapped($"Mapping：{(string.IsNullOrWhiteSpace(actor.ExperimentalDataPathMappingStatus) ? "未计算；请先 Dump Current DataPath" : actor.ExperimentalDataPathMappingStatus)}");
-            ImGui.TextWrapped($"Last Result：{(string.IsNullOrWhiteSpace(actor.ExperimentalDataPathLastResult) ? "无" : actor.ExperimentalDataPathLastResult)}");
-            ImGui.TextWrapped($"Appearance Changed：{actor.ExperimentalDataPathAppearanceChanged} | Transform Changed：{actor.ExperimentalDataPathTransformChanged} | Binding Changed：{actor.ExperimentalDataPathBindingChanged} | Restored：{actor.ExperimentalDataPathRestored}");
-
-            ImGui.BeginDisabled(!canProbe);
-            if (ImGui.Button("Dump Current DataPath"))
-                this.realNpcSpawn.DumpActorExperimentalDataPath(actor.RuntimeId);
-            ImGui.EndDisabled();
-
-            var actorReadyForDataPathWrite = actor.IsValid && actor.CharacterObject != null && !this.IsInGpose();
-            var canWriteExperiment = actor.EnableExperimentalDataPathOverride && actorReadyForDataPathWrite;
-            ImGui.BeginDisabled(!canWriteExperiment);
-            if (ImGui.Button("Apply Experimental DataPath Once"))
-                this.realNpcSpawn.ApplyActorExperimentalDataPathOnce(actor.RuntimeId);
-            ImGui.SameLine();
-            ImGui.EndDisabled();
-            ImGui.BeginDisabled(!actorReadyForDataPathWrite);
-            if (ImGui.Button("Restore Original DataPath"))
-                this.realNpcSpawn.RestoreActorExperimentalDataPath(actor.RuntimeId);
-            ImGui.SameLine();
-            ImGui.EndDisabled();
-            ImGui.BeginDisabled(!canWriteExperiment);
-            if (ImGui.Button("Apply + Replay Current Timeline"))
-                this.realNpcSpawn.ApplyActorExperimentalDataPathAndReplay(actor.RuntimeId);
-            ImGui.EndDisabled();
-            if (!canWriteExperiment)
-                ImGui.TextDisabled(this.IsInGpose()
-                    ? "GPose 中禁用实验写入。"
-                    : "实验写入需要勾选 Enable experimental DataPath override，并且 Actor 必须 Ready。");
-
-            if (!string.IsNullOrWhiteSpace(actor.ExperimentalDataPathTestReport))
-            {
-                if (ImGui.Button("Copy DataPath Test Report"))
-                    ImGui.SetClipboardText(actor.ExperimentalDataPathTestReport);
-            }
-
-            ImGui.TreePop();
-        }
-
-        ImGui.TreePop();
-    }
-
-    private void DrawActorRigControls(RuntimeActorInstance actor)
-    {
-        var mode = actor.AnimationRigMode;
-        if (ImGui.BeginCombo("动画骨架模式", mode.ToString()))
-        {
-            foreach (var value in Enum.GetValues<ActorAnimationRigMode>())
-            {
-                var selected = mode == value;
-                if (ImGui.Selectable(value.ToString(), selected))
-                {
-                    actor.AnimationRigMode = value;
-                    if (value == ActorAnimationRigMode.Current)
-                    {
-                        actor.AnimationRigPreset = ActorAnimationRigPreset.Current;
-                        actor.AnimationRigStatus = "Current: using the actor's own animation data path.";
-                    }
-                    else
-                    {
-                        actor.AnimationRigStatus = "Override selected. 点击应用只注册 debug context 并运行 DataPath 候选扫描；不重播、不写外观字段。";
-                    }
-                }
-
-                if (selected)
-                    ImGui.SetItemDefaultFocus();
-            }
-
-            ImGui.EndCombo();
-        }
-
-        DrawActorRigPresetCombo(actor);
-        if (actor.AnimationRigPreset == ActorAnimationRigPreset.Custom)
-        {
-            var customRace = (int)actor.CustomRigRace;
-            if (ImGui.InputInt("Custom Rig Race", ref customRace))
-                actor.CustomRigRace = (byte)Math.Clamp(customRace, 0, byte.MaxValue);
-            var customSex = (int)actor.CustomRigSex;
-            if (ImGui.InputInt("Custom Rig Sex", ref customSex))
-                actor.CustomRigSex = (byte)Math.Clamp(customSex, 0, byte.MaxValue);
-            var customTribe = (int)actor.CustomRigTribe;
-            if (ImGui.InputInt("Custom Rig Tribe/SubRace", ref customTribe))
-                actor.CustomRigTribe = (byte)Math.Clamp(customTribe, 0, byte.MaxValue);
-        }
-
-        var canApplyRig = actor.IsValid && actor.CharacterObject != null && !this.IsInGpose();
-        ImGui.BeginDisabled(!canApplyRig);
-        if (ImGui.Button("应用动画骨架"))
-            this.realNpcSpawn.ApplyActorAnimationRig(actor.RuntimeId);
-        if (!canApplyRig && ImGui.IsItemHovered())
-            ImGui.SetTooltip(this.IsInGpose() ? "GPose 中禁用 Rig Apply；请使用下方 Dump Before / Dump After / Compare 只读 probe。" : "当前 Actor 无效或已删除。");
-        ImGui.EndDisabled();
-        ImGui.SameLine();
-        ImGui.BeginDisabled(!actor.IsValid || actor.CharacterObject == null || this.IsInGpose());
-        if (ImGui.Button("恢复当前 Actor 原始骨架"))
-            this.realNpcSpawn.RestoreActorAnimationRig(actor.RuntimeId);
-        ImGui.SameLine();
-        if (ImGui.Button("重新播放当前动画"))
-            this.realNpcSpawn.ReapplyActorCurrentAnimation(actor.RuntimeId);
-        ImGui.EndDisabled();
-        if (this.IsInGpose())
-            ImGui.TextDisabled("GPose 中 Rig Apply / Restore / Replay 已禁用；AnimationDataPathProbe 的 Dump/Compare 仍可用。");
-    }
-
-    private static void DrawActorRigPresetCombo(RuntimeActorInstance actor)
-    {
-        var preset = actor.AnimationRigPreset;
-        if (!ImGui.BeginCombo("动画骨架 / Rig", preset.ToString()))
-            return;
-
-        foreach (var value in Enum.GetValues<ActorAnimationRigPreset>())
-        {
-            var selected = preset == value;
-            if (ImGui.Selectable(value.ToString(), selected))
-            {
-                actor.AnimationRigPreset = value;
-                actor.AnimationRigMode = value == ActorAnimationRigPreset.Current
-                    ? ActorAnimationRigMode.Current
-                    : ActorAnimationRigMode.Override;
-                actor.AnimationRigStatus = value == ActorAnimationRigPreset.Current
-                    ? "Current: using the actor's own animation data path."
-                    : "Override selected. 点击应用只注册 debug context 并运行 DataPath 候选扫描；不重播、不写外观字段。";
-            }
-
             if (selected)
                 ImGui.SetItemDefaultFocus();
         }
@@ -3361,12 +3109,6 @@ public sealed class MainWindow : Window
 
     private static string FormatVector(Vector3 vector)
         => $"X {vector.X:F2}, Y {vector.Y:F2}, Z {vector.Z:F2}";
-
-    private static string FormatNullableDataPath(short? value)
-        => value.HasValue ? $"{value.Value} (0x{unchecked((ushort)value.Value):X4})" : "不可用";
-
-    private static string FormatNullableDataHead(byte? value)
-        => value.HasValue ? $"{value.Value} (0x{value.Value:X2})" : "不可用";
 
     private static string FirstNonEmpty(params string[] values)
         => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
