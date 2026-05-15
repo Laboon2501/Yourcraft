@@ -52,6 +52,8 @@ public sealed class RuntimeActorInstance
 
     public Vector3 TransformEditScale { get; set; } = Vector3.One;
 
+    public bool HasSavedTransform { get; set; }
+
     public string LastTransformReadback { get; set; } = string.Empty;
 
     public string LastTransformError { get; set; } = string.Empty;

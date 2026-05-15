@@ -154,6 +154,16 @@ public sealed class BrioAssemblyBridgeService
             }
 
             var character = args[0]!;
+            if (IsLocalPlayerCharacter(character, localPlayer, out var localPlayerReason))
+            {
+                reason = $"CreateCharacter returned LocalPlayer instead of a new runtime actor; refusing to bind/apply. {localPlayerReason}";
+                instance.LastError = reason;
+                this.LastReflectionError = reason;
+                this.LastMessage = reason;
+                this.log.Error("[ActorSpawn] rejected LocalPlayer fallback. runtime={RuntimeId}, npc={NpcId}, reason={Reason}", runtimeId, npc.Id, reason);
+                return false;
+            }
+
             var nativeName = this.nameService.TryReadNativeName(character);
             var positionMessage = "安全模式：Spawn 后未设置位置、名称或外观。";
 
@@ -920,12 +930,7 @@ public sealed class BrioAssemblyBridgeService
 
     private Vector3 NormalizeMoveTarget(Vector3 requested)
     {
-        var target = requested;
-        var localPlayer = this.objectTable.LocalPlayer;
-        if (localPlayer != null)
-            target.Y = localPlayer.Position.Y;
-
-        return target;
+        return requested;
     }
 
     private static bool IsReasonableMoveResult(Vector3 after, Vector3 target)
@@ -960,6 +965,75 @@ public sealed class BrioAssemblyBridgeService
             ulong.TryParse(raw[2..], System.Globalization.NumberStyles.HexNumber, null, out var hexValue))
         {
             address = (nint)hexValue;
+            return true;
+        }
+
+        if (ulong.TryParse(raw, out var value))
+        {
+            address = (nint)value;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsLocalPlayerCharacter(object character, object localPlayer, out string reason)
+    {
+        if (ReferenceEquals(character, localPlayer))
+        {
+            reason = "returned object reference equals LocalPlayer";
+            return true;
+        }
+
+        var characterIndex = ReadProperty(character, "ObjectIndex");
+        var localIndex = ReadProperty(localPlayer, "ObjectIndex");
+        if (ObjectIndexMatches(characterIndex, localIndex))
+        {
+            reason = $"returned object index equals LocalPlayer index={localIndex}";
+            return true;
+        }
+
+        var characterAddress = ReadProperty(character, "Address");
+        var localAddress = ReadProperty(localPlayer, "Address");
+        if (AddressMatches(characterAddress, localAddress))
+        {
+            reason = $"returned object address equals LocalPlayer address={localAddress}";
+            return true;
+        }
+
+        reason = $"spawnedIndex={characterIndex}, localIndex={localIndex}, spawnedAddress={characterAddress}, localAddress={localAddress}";
+        return false;
+    }
+
+    private static bool ObjectIndexMatches(string left, string right)
+    {
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+            return false;
+
+        if (string.Equals(left, right, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return int.TryParse(left, out var leftIndex) &&
+               int.TryParse(right, out var rightIndex) &&
+               leftIndex == rightIndex;
+    }
+
+    private static bool AddressMatches(string left, string right)
+    {
+        return TryParseAddress(left, out var leftAddress) &&
+               TryParseAddress(right, out var rightAddress) &&
+               leftAddress != 0 &&
+               leftAddress == rightAddress;
+    }
+
+    private static bool TryParseAddress(string rawAddress, out nint address)
+    {
+        address = 0;
+        var raw = rawAddress.Trim();
+        if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
+            ulong.TryParse(raw[2..], System.Globalization.NumberStyles.HexNumber, null, out var hex))
+        {
+            address = (nint)hex;
             return true;
         }
 

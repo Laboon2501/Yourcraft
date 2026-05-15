@@ -1054,14 +1054,12 @@ public sealed class MainWindow : Window
                 actor.CustomRigTribe = (byte)Math.Clamp(customTribe, 0, byte.MaxValue);
         }
 
-        var canApplyRig = actor.IsValid &&
-            actor.CharacterObject != null &&
-            (actor.AnimationRigMode == ActorAnimationRigMode.Current || actor.AnimationRigPreset == ActorAnimationRigPreset.Current || this.realNpcSpawn.IsAnimationRigOverrideSupported);
+        var canApplyRig = actor.IsValid && actor.CharacterObject != null;
         ImGui.BeginDisabled(!canApplyRig);
         if (ImGui.Button("应用动画骨架"))
             this.realNpcSpawn.ApplyActorAnimationRig(actor.RuntimeId);
         if (!canApplyRig && ImGui.IsItemHovered())
-            ImGui.SetTooltip(this.realNpcSpawn.AnimationRigUnsupportedReason);
+            ImGui.SetTooltip("当前 Actor 无效或已删除。");
         ImGui.EndDisabled();
         ImGui.SameLine();
         ImGui.BeginDisabled(!actor.IsValid || actor.CharacterObject == null);
@@ -1218,23 +1216,7 @@ public sealed class MainWindow : Window
     private void SpawnMultipleActors(CustomNpc npc)
     {
         var basePosition = this.GetActorBatchBasePosition(npc);
-        RuntimeActorInstance? lastActor = null;
-        var spawned = 0;
-        for (var index = 0; index < this.actorBatchCount; index++)
-        {
-            var actor = this.realNpcSpawn.SpawnNew(npc);
-            if (actor == null)
-                continue;
-
-            var targetPosition = basePosition + this.actorBatchOffset * index;
-            this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, targetPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
-            lastActor = actor;
-            spawned++;
-        }
-
-        if (lastActor != null)
-            this.selectedActorRuntimeId = lastActor.RuntimeId;
-        this.realNpcSpawn.SetMessage($"批量生成完成：请求 {this.actorBatchCount}，成功 {spawned}。");
+        this.realNpcSpawn.QueueSpawnMany(npc, this.actorBatchCount, basePosition, this.actorBatchOffset);
     }
 
     private void DeleteSelectedActor(RuntimeActorInstance actor)
