@@ -8,26 +8,26 @@ public sealed class ActorAnimationRigService
 {
     private readonly ActorAnimationService animationService;
     private readonly IPluginLog log;
-    private readonly ActorAnimationRigResolverProbe resolverProbe;
-    private readonly ActorAnimationPathResolverProbe pathResolverProbe;
+    private readonly AnimationDataPathProbeService dataPathProbe;
+    private readonly ActorDataPathOverrideService dataPathOverride;
     private readonly Dictionary<nint, ActorAnimationRigPreset> activeRigByActorPtr = new();
     private readonly Dictionary<string, ActorAnimationRigPreset> activeRigByActorInstanceId = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, RigHookProbeState> hookProbeByActorInstanceId = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, ActorAnimationPathDump> pathBeforeDumpByActorInstanceId = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, ActorAnimationPathDump> pathAfterDumpByActorInstanceId = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, AnimationDataPathDump> pathBeforeDumpByActorInstanceId = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, AnimationDataPathDump> pathAfterDumpByActorInstanceId = new(StringComparer.OrdinalIgnoreCase);
 
     public ActorAnimationRigService(ActorAnimationService animationService, IPluginLog log)
     {
         this.animationService = animationService;
         this.log = log;
-        this.resolverProbe = new ActorAnimationRigResolverProbe(log);
-        this.pathResolverProbe = new ActorAnimationPathResolverProbe(log);
+        this.dataPathProbe = new AnimationDataPathProbeService(log);
+        this.dataPathOverride = new ActorDataPathOverrideService(log);
         this.animationService.TimelinePlayRequested += this.OnTimelinePlayRequested;
     }
 
     public bool IsSupported => false;
 
-    public string UnsupportedReason => "No verified animation-only data path override is available in this build. The apply button runs the rig-context probe and never writes appearance Race/Gender/Customize or calls Penumbra redraw.";
+    public string UnsupportedReason => "No verified animation-only data path override is available in this build. Apply is read-only: it registers selectedRig as debug context and runs the Anamnesis-derived DataPath candidate scanner.";
 
     public bool ApplyAnimationRigOverride(RuntimeActorInstance actor, out string reason)
     {
@@ -35,69 +35,30 @@ public sealed class ActorAnimationRigService
             return this.RestoreAnimationRig(actor, out reason);
 
         var actorPtr = TryReadAddress(actor.Address, out var parsedPtr) ? parsedPtr : 0;
-        var beforeHash = BuildAppearanceHash(actor.CharacterObject);
-        var animationId = actor.CurrentAnimationId != 0 ? actor.CurrentAnimationId : actor.DefaultAnimationId;
+        var animationId = GetCurrentAnimationId(actor);
         var probe = this.BeginProbe(actor, actorPtr, animationId);
-        var beforeSnapshot = this.resolverProbe.CaptureSnapshot(actor, animationId, actor.AnimationRigPreset, "BeforeReplay");
-        var beforePathDump = this.pathResolverProbe.Capture(actor, "BeforeRigReplay", animationId);
-
-        var replaySuccess = this.ReapplyCurrentAnimationWithRig(actor, out var replayReason);
-        var afterSnapshot = this.resolverProbe.CaptureSnapshot(actor, animationId, actor.AnimationRigPreset, "AfterReplay");
-        var afterPathDump = this.pathResolverProbe.Capture(actor, "AfterRigReplay", animationId);
-        var pathDiff = this.pathResolverProbe.Compare(beforePathDump, afterPathDump, "RigReplay");
-        var afterHash = BuildAppearanceHash(actor.CharacterObject);
-        var appearanceChanged = !string.Equals(beforeHash, afterHash, StringComparison.Ordinal);
-        probe.AppearanceHashBefore = beforeHash;
-        probe.AppearanceHashAfter = afterHash;
-        probe.ReplaySuccess = replaySuccess;
-        probe.ReplayReason = replayReason;
-        var resolverReport = this.resolverProbe.Probe(
-            actor,
-            beforeSnapshot,
-            afterSnapshot,
-            probe.HookInstalled,
-            probe.HookHitCount,
-            probe.OwnerActorPointer != 0 && probe.OwnerActorPointer == probe.ActorPointer,
-            replaySuccess,
-            appearanceChanged);
-        probe.ResolverResult = resolverReport.Result;
-        probe.ResolverReason = resolverReport.Reason;
-        probe.ResolverNextProbeTarget = resolverReport.NextProbeTarget;
-        probe.ChangedAnimationDataPath = resolverReport.AnimationDataPathChanged;
-        probe.AnimationBindingChanged = resolverReport.AnimationBindingChanged;
-        actor.AnimationRigDebugReport = resolverReport.DetailedReport;
-        actor.AnimationPathResolverStatus = $"bindingChanged={pathDiff.AnimationBindingChanged}; candidateChanged={pathDiff.CandidateFieldChanged}; appearanceChanged={pathDiff.AppearanceHashChanged}";
-
-        if (appearanceChanged)
-        {
-            this.ClearActiveRigContext(actor, actorPtr);
-            actor.HasAnimationRigNativeOverride = false;
-            actor.AnimationRigStatus = $"Reverted: ActionTimeline replay changed appearance hash unexpectedly. {probe.ToStatus()}";
-            reason = actor.AnimationRigStatus;
-            this.log.Error("[AnimationRig] appearance changed during rig context probe. actor={Actor} rig={Rig} before={Before} after={After} summary={Summary} details={Details}",
-                actor.RuntimeId,
-                actor.AnimationRigPreset,
-                beforeHash,
-                afterHash,
-                probe.ToStatus(),
-                actor.AnimationRigDebugReport);
-            return false;
-        }
+        var dump = this.dataPathProbe.DumpCurrentActorAnimationState(actor, animationId, actor.AnimationRigPreset, "RigApplyReadOnly");
+        this.UpdateExperimentalDataPathState(actor, dump);
 
         actor.HasAnimationRigNativeOverride = false;
-        var resultKind = "NoEffect";
-        var missing = probe.HookHitCount > 0
-            ? "已命中当前 Actor 的动画播放链，并成功重播动画，但尚未找到安全的动画骨架/数据路径字段，所以骨架没有生效"
-            : "current replay did not pass through the managed ActionTimeline hook";
-        missing = probe.HookHitCount > 0
-            ? "ActionTimeline replay succeeded, but the actor animation resource/data-path resolver did not use the selected rig. Use Anamnesis Diff or dual-actor comparison to locate the resolver input."
-            : missing;
-        actor.AnimationRigStatus = $"{resultKind}: selected={actor.AnimationRigPreset}; {missing}. {probe.ToStatus()}";
+        probe.ResolverResult = "ProbeOnly";
+        probe.ResolverReason = "Read-only定位阶段：已注册 selectedRig debug context，并 dump 当前 Actor 的动画路径状态；未重播 Timeline，未写 native，未调用 Penumbra redraw。";
+        probe.ResolverNextProbeTarget = "Use Anamnesis Diff or dual-actor same-timeline comparison to locate animation resource resolver fields.";
+        actor.AnimationPathResolverStatus = $"ProbeOnly: timeline={animationId}; selectedRig={actor.AnimationRigPreset}; bindingHash={dump.AnimationBindingHash}; candidateCount={dump.CandidateCount}; appearanceHash={dump.AppearanceHash}";
+        actor.AnimationRigStatus = $"ProbeOnly: selected={actor.AnimationRigPreset}; 当前阶段只读定位，不应用骨架。ActionTimeline replay 没有执行；animation resource/data-path resolver 仍未知。 {probe.ToStatus()}";
+        probe.ResolverReason = "Read-only source-trace/candidate-scan stage. selectedRig is recorded as debug context; no timeline replay, native write, Race/Gender/Customize write, actor redraw, or Penumbra redraw is performed.";
+        probe.ResolverNextProbeTarget = "Validate Anamnesis ActorModelMemory.DataPath(+0xAA0)/DataHead(+0xAA4) candidates with guarded experimental mode only after read-only evidence is sufficient.";
+        actor.AnimationPathResolverStatus = $"ProbeOnly: timeline={animationId}; selectedRig={actor.AnimationRigPreset}; bindingHash={dump.AnimationBindingHash}; dataPathCandidates={dump.DataPathCandidateCount}; appearanceHash={dump.AppearanceHash}";
+        actor.AnimationRigStatus = $"ProbeOnly: selected={actor.AnimationRigPreset}; Anamnesis source trace points to ActorModelMemory.DataPath/DataHead, but this apply path is read-only and does not change rig yet. {probe.ToStatus()}";
+        actor.AnimationRigDebugReport = string.Join(Environment.NewLine, new[]
+        {
+            actor.AnimationRigStatus,
+            dump.Report,
+        });
         reason = actor.AnimationRigStatus;
-        this.log.Information("[AnimationRig] rig resolver probe completed. actor={Actor} rig={Rig} result={Result} summary={Summary} details={Details}",
+        this.log.Information("[AnimationRig] read-only rig context registered. actor={Actor} rig={Rig} summary={Summary} details={Details}",
             actor.RuntimeId,
             actor.AnimationRigPreset,
-            resultKind,
             probe.ToStatus(),
             actor.AnimationRigDebugReport);
         return false;
@@ -111,23 +72,22 @@ public sealed class ActorAnimationRigService
         actor.HasAnimationRigNativeOverride = false;
         actor.AnimationRigMode = ActorAnimationRigMode.Current;
         actor.AnimationRigPreset = ActorAnimationRigPreset.Current;
-        this.ReapplyCurrentAnimationWithRig(actor, out var replayReason);
         var afterHash = BuildAppearanceHash(actor.CharacterObject);
-        actor.AnimationRigStatus = $"Current: rig context cleared. appearanceHashBefore={beforeHash}; appearanceHashAfter={afterHash}; replay={replayReason}";
+        actor.AnimationRigStatus = $"Current: rig debug context cleared. No timeline replay or native write was performed. appearanceHashBefore={beforeHash}; appearanceHashAfter={afterHash}";
+        actor.AnimationPathResolverStatus = "Rig context cleared; AnimationDataPathProbe remains read-only.";
         actor.AnimationRigDebugReport = actor.AnimationRigStatus;
         reason = actor.AnimationRigStatus;
-        this.log.Information("[AnimationRig] restore current actor={Actor} ptr={Pointer} before={Before} after={After} replay={Replay}",
+        this.log.Information("[AnimationRig] restore current actor={Actor} ptr={Pointer} before={Before} after={After}; no replay/native write",
             actor.RuntimeId,
             FormatPointer(actorPtr),
             beforeHash,
-            afterHash,
-            replayReason);
+            afterHash);
         return string.Equals(beforeHash, afterHash, StringComparison.Ordinal);
     }
 
     public bool ReapplyCurrentAnimationWithRig(RuntimeActorInstance actor, out string reason)
     {
-        var animationId = actor.CurrentAnimationId != 0 ? actor.CurrentAnimationId : actor.DefaultAnimationId;
+        var animationId = GetCurrentAnimationId(actor);
         if (animationId == 0)
         {
             reason = "No current/default animation to replay.";
@@ -145,12 +105,51 @@ public sealed class ActorAnimationRigService
         this.log.Information("[AnimationRig] manual debug report dump actor={Actor} report={Report}", actor.RuntimeId, report);
     }
 
+    public void DumpExperimentalDataPathState(RuntimeActorInstance actor)
+    {
+        var animationId = GetCurrentAnimationId(actor);
+        var dump = this.dataPathProbe.DumpCurrentActorAnimationState(actor, animationId, this.ResolveExperimentalTargetRig(actor), "ExperimentalDataPathDump");
+        this.UpdateExperimentalDataPathState(actor, dump);
+        actor.ExperimentalDataPathLastResult = $"DumpCurrentDataPath: {dump.DataPathReadSummary}; target={FormatNullableDataPath(actor.TargetDataPath)}/{FormatNullableDataHead(actor.TargetDataHead)}; mapping={actor.ExperimentalDataPathMappingStatus}";
+        actor.ExperimentalDataPathTestReport = string.Join(Environment.NewLine, new[]
+        {
+            actor.ExperimentalDataPathLastResult,
+            dump.Report,
+        });
+        this.log.Information("[DataPathOverrideTest] dump actor={Actor} report={Report}", actor.RuntimeId, actor.ExperimentalDataPathTestReport);
+    }
+
+    public bool ApplyExperimentalDataPathOnce(RuntimeActorInstance actor, out string reason)
+        => this.ApplyExperimentalDataPath(actor, replayTimeline: false, out reason);
+
+    public bool ApplyExperimentalDataPathAndReplay(RuntimeActorInstance actor, out string reason)
+        => this.ApplyExperimentalDataPath(actor, replayTimeline: true, out reason);
+
+    public bool RestoreOriginalDataPath(RuntimeActorInstance actor, out string reason)
+    {
+        var restored = this.dataPathOverride.TryRestore(actor, out reason);
+        var dump = this.dataPathProbe.DumpCurrentActorAnimationState(actor, GetCurrentAnimationId(actor), this.ResolveExperimentalTargetRig(actor), "RestoreOriginalDataPath");
+        this.UpdateExperimentalDataPathState(actor, dump);
+        actor.ExperimentalDataPathRestored = restored;
+        actor.ExperimentalDataPathLastResult = restored ? $"RestoreOriginalDataPath: {reason}" : $"RestoreOriginalDataPath failed/skipped: {reason}";
+        actor.ExperimentalDataPathTestReport = string.Join(Environment.NewLine, new[]
+        {
+            "[DataPathOverrideTest]",
+            $"actor={actor.RuntimeId}",
+            $"result={actor.ExperimentalDataPathLastResult}",
+            dump.Report,
+        });
+        this.log.Information("[DataPathOverrideTest] restore actor={Actor} result={Result} report={Report}", actor.RuntimeId, reason, actor.ExperimentalDataPathTestReport);
+        return restored;
+    }
+
     public void DumpAnimationPathBeforeExternalChange(RuntimeActorInstance actor)
     {
         var animationId = GetCurrentAnimationId(actor);
-        var dump = this.pathResolverProbe.Capture(actor, "BeforeExternalRigChange", animationId);
+        var dump = this.dataPathProbe.DumpBeforeExternalChange(actor, animationId, actor.AnimationRigPreset);
+        this.UpdateExperimentalDataPathState(actor, dump);
         this.pathBeforeDumpByActorInstanceId[actor.RuntimeId] = dump;
-        actor.AnimationPathResolverStatus = $"Before dump captured: timeline={animationId}; bindingHash={dump.AnimationBindingHash}; appearanceHash={dump.AppearanceHash}";
+        actor.AnimationPathResolverStatus = $"Before dump captured: timeline={animationId}; bindingHash={dump.AnimationBindingHash}; appearanceHash={dump.AppearanceHash}; candidateCount={dump.CandidateCount}";
         actor.AnimationRigDebugReport = dump.Report;
         this.log.Information("[AnimationRig] Animation path before-external-change dump actor={Actor} report={Report}", actor.RuntimeId, dump.Report);
     }
@@ -158,9 +157,10 @@ public sealed class ActorAnimationRigService
     public void DumpAnimationPathAfterExternalChange(RuntimeActorInstance actor)
     {
         var animationId = GetCurrentAnimationId(actor);
-        var dump = this.pathResolverProbe.Capture(actor, "AfterExternalRigChange", animationId);
+        var dump = this.dataPathProbe.DumpAfterExternalChange(actor, animationId, actor.AnimationRigPreset);
+        this.UpdateExperimentalDataPathState(actor, dump);
         this.pathAfterDumpByActorInstanceId[actor.RuntimeId] = dump;
-        actor.AnimationPathResolverStatus = $"After dump captured: timeline={animationId}; bindingHash={dump.AnimationBindingHash}; appearanceHash={dump.AppearanceHash}";
+        actor.AnimationPathResolverStatus = $"After dump captured: timeline={animationId}; bindingHash={dump.AnimationBindingHash}; appearanceHash={dump.AppearanceHash}; candidateCount={dump.CandidateCount}";
         actor.AnimationRigDebugReport = dump.Report;
         this.log.Information("[AnimationRig] Animation path after-external-change dump actor={Actor} report={Report}", actor.RuntimeId, dump.Report);
     }
@@ -181,8 +181,8 @@ public sealed class ActorAnimationRigService
             return false;
         }
 
-        var diff = this.pathResolverProbe.Compare(before, after, "ExternalAnamnesisChange");
-        actor.AnimationPathResolverStatus = $"External diff: bindingChanged={diff.AnimationBindingChanged}; candidateChanged={diff.CandidateFieldChanged}; appearanceChanged={diff.AppearanceHashChanged}";
+        var diff = this.dataPathProbe.CompareRigDumps(before, after, "ExternalAnamnesisChange");
+        actor.AnimationPathResolverStatus = $"External diff: result={diff.Result}; bindingChanged={diff.AnimationBindingChanged}; skeletonChanged={diff.SkeletonPointerChanged || diff.SkeletonResourceChanged}; animationResourceChanged={diff.AnimationResourceChanged}; candidateChanged={diff.CandidateFieldsChanged}; appearanceChanged={diff.AppearanceChanged}; transformChanged={diff.TransformChanged}";
         actor.AnimationRigDebugReport = diff.Report;
         reason = actor.AnimationPathResolverStatus;
         return true;
@@ -198,22 +198,230 @@ public sealed class ActorAnimationRigService
             return false;
         }
 
-        var actorReplay = this.animationService.PlayTransientTimeline(actor, animationId, out var actorReplayReason);
-        var otherReplay = this.animationService.PlayTransientTimeline(otherActor, animationId, out var otherReplayReason);
-        var actorDump = this.pathResolverProbe.Capture(actor, $"CompareA-{ShortId(actor.RuntimeId)}", animationId);
-        var otherDump = this.pathResolverProbe.Capture(otherActor, $"CompareB-{ShortId(otherActor.RuntimeId)}", animationId);
-        var diff = this.pathResolverProbe.Compare(actorDump, otherDump, "DualActorSameTimeline");
-        actor.AnimationPathResolverStatus = $"Dual actor compare: timeline={animationId}; A replay={actorReplay}; B replay={otherReplay}; bindingChanged={diff.AnimationBindingChanged}; candidateChanged={diff.CandidateFieldChanged}; appearanceChanged={diff.AppearanceHashChanged}";
+        var diff = this.dataPathProbe.CompareTwoActorsSameTimeline(actor, otherActor, animationId, out var actorDump, out var otherDump);
+        actor.AnimationPathResolverStatus = $"Dual actor compare read-only: timeline={animationId}; bindingChanged={diff.AnimationBindingChanged}; skeletonChanged={diff.SkeletonPointerChanged || diff.SkeletonResourceChanged}; animationResourceChanged={diff.AnimationResourceChanged}; candidateChanged={diff.CandidateFieldsChanged}; appearanceChanged={diff.AppearanceChanged}; transformChanged={diff.TransformChanged}";
         actor.AnimationRigDebugReport = string.Join(Environment.NewLine, new[]
         {
             actor.AnimationPathResolverStatus,
-            $"actorReplay={actorReplayReason}",
-            $"otherReplay={otherReplayReason}",
+            "No timeline replay was performed by this comparison. Play the same timeline on both actors manually first if you need live binding changes.",
+            actorDump.Report,
+            otherDump.Report,
             diff.Report,
         });
         reason = actor.AnimationPathResolverStatus;
         return true;
     }
+
+    private bool ApplyExperimentalDataPath(RuntimeActorInstance actor, bool replayTimeline, out string reason)
+    {
+        actor.ExperimentalDataPathRestored = false;
+        actor.ExperimentalDataPathAppearanceChanged = false;
+        actor.ExperimentalDataPathTransformChanged = false;
+        actor.ExperimentalDataPathBindingChanged = false;
+
+        if (!actor.EnableExperimentalDataPathOverride)
+        {
+            reason = "Experimental DataPath override is disabled. Enable the checkbox before applying.";
+            actor.ExperimentalDataPathLastResult = reason;
+            return false;
+        }
+
+        var timelineId = GetCurrentAnimationId(actor);
+        if (replayTimeline && timelineId == 0)
+        {
+            reason = "No current/default timeline to replay.";
+            actor.ExperimentalDataPathLastResult = reason;
+            return false;
+        }
+
+        var targetRig = this.ResolveExperimentalTargetRig(actor);
+        var before = this.dataPathProbe.DumpCurrentActorAnimationState(actor, timelineId, targetRig, replayTimeline ? "DataPathReplayBefore" : "DataPathApplyBefore");
+        this.UpdateExperimentalDataPathState(actor, before);
+        if (!this.dataPathOverride.TryResolveTarget(actor, targetRig, out var targetDataPath, out var targetDataHead, out var mappingReason))
+        {
+            reason = mappingReason;
+            actor.ExperimentalDataPathMappingStatus = mappingReason;
+            actor.ExperimentalDataPathLastResult = reason;
+            return false;
+        }
+
+        actor.TargetDataPath = targetDataPath;
+        actor.TargetDataHead = targetDataHead;
+        actor.ExperimentalDataPathMappingStatus = mappingReason;
+
+        if (!this.dataPathOverride.TryCreateSnapshot(actor, before, out _, out var snapshotReason))
+        {
+            reason = snapshotReason;
+            actor.ExperimentalDataPathLastResult = reason;
+            return false;
+        }
+
+        if (!this.dataPathOverride.TryWrite(actor, targetDataPath, targetDataHead, out var writeReason))
+        {
+            reason = writeReason;
+            actor.ExperimentalDataPathLastResult = reason;
+            return false;
+        }
+
+        string replayReason = "not requested";
+        var replaySuccess = true;
+        if (replayTimeline)
+            replaySuccess = this.animationService.PlayTransientTimeline(actor, timelineId, out replayReason);
+
+        var after = this.dataPathProbe.DumpCurrentActorAnimationState(actor, timelineId, targetRig, replayTimeline ? "DataPathReplayAfter" : "DataPathApplyAfter");
+        this.UpdateExperimentalDataPathState(actor, after);
+
+        var appearanceChanged = !StringEquals(before.AppearanceHash, after.AppearanceHash);
+        var transformChanged = !StringEquals(before.TransformHash, after.TransformHash);
+        var bindingChanged = !StringEquals(before.AnimationBindingHash, after.AnimationBindingHash);
+        var dataPathHitTarget = after.CurrentDataPath == targetDataPath && after.CurrentDataHead == targetDataHead;
+
+        actor.ExperimentalDataPathAppearanceChanged = appearanceChanged;
+        actor.ExperimentalDataPathTransformChanged = transformChanged;
+        actor.ExperimentalDataPathBindingChanged = bindingChanged;
+
+        var result = DetermineDataPathResult(
+            dataPathHitTarget,
+            appearanceChanged,
+            transformChanged,
+            bindingChanged,
+            replayTimeline,
+            replaySuccess);
+
+        var shouldRestore = appearanceChanged ||
+            transformChanged ||
+            (actor.ExperimentalDataPathRestoreAfterTest && !actor.ExperimentalDataPathKeepOverrideUntilRestore);
+        var restoreReason = "not requested";
+        if (shouldRestore)
+            actor.ExperimentalDataPathRestored = this.dataPathOverride.TryRestore(actor, out restoreReason);
+
+        reason = result;
+        actor.ExperimentalDataPathLastResult = result;
+        actor.ExperimentalDataPathTestReport = BuildDataPathTestReport(
+            actor,
+            targetRig,
+            targetDataPath,
+            targetDataHead,
+            before,
+            after,
+            writeReason,
+            replayTimeline,
+            replaySuccess,
+            replayReason,
+            restoreReason,
+            actor.ExperimentalDataPathRestored,
+            result);
+        actor.AnimationRigDebugReport = actor.ExperimentalDataPathTestReport;
+        this.log.Information("{Report}", actor.ExperimentalDataPathTestReport);
+        return result is "WriteSuccess" or "SuccessCandidate" or "NoEffect";
+    }
+
+    private void UpdateExperimentalDataPathState(RuntimeActorInstance actor, AnimationDataPathDump dump)
+    {
+        actor.CurrentDataPath = dump.CurrentDataPath;
+        actor.CurrentDataHead = dump.CurrentDataHead;
+        var targetRig = this.ResolveExperimentalTargetRig(actor);
+        if (this.dataPathOverride.TryResolveTarget(actor, targetRig, out var targetDataPath, out var targetDataHead, out var mappingReason))
+        {
+            actor.TargetDataPath = targetDataPath;
+            actor.TargetDataHead = targetDataHead;
+            actor.ExperimentalDataPathMappingStatus = mappingReason;
+        }
+        else
+        {
+            actor.TargetDataPath = null;
+            actor.TargetDataHead = null;
+            actor.ExperimentalDataPathMappingStatus = mappingReason;
+        }
+    }
+
+    private ActorAnimationRigPreset ResolveExperimentalTargetRig(RuntimeActorInstance actor)
+    {
+        if (actor.ExperimentalDataPathTargetRig != ActorAnimationRigPreset.Current)
+            return actor.ExperimentalDataPathTargetRig;
+
+        return actor.AnimationRigPreset != ActorAnimationRigPreset.Current
+            ? actor.AnimationRigPreset
+            : ActorAnimationRigPreset.Current;
+    }
+
+    private static string DetermineDataPathResult(
+        bool dataPathHitTarget,
+        bool appearanceChanged,
+        bool transformChanged,
+        bool bindingChanged,
+        bool replayTimeline,
+        bool replaySuccess)
+    {
+        if (appearanceChanged)
+            return "UnsafeAppearanceChanged";
+        if (transformChanged)
+            return "UnsafeTransformChanged";
+        if (!dataPathHitTarget)
+            return "WriteReadbackMismatch";
+        if (replayTimeline && !replaySuccess)
+            return "ReplayFailed";
+        if (replayTimeline && bindingChanged)
+            return "SuccessCandidate";
+        if (replayTimeline)
+            return "NoEffect";
+
+        return "WriteSuccess";
+    }
+
+    private static string BuildDataPathTestReport(
+        RuntimeActorInstance actor,
+        ActorAnimationRigPreset targetRig,
+        short targetDataPath,
+        byte targetDataHead,
+        AnimationDataPathDump before,
+        AnimationDataPathDump after,
+        string writeReason,
+        bool replayTimeline,
+        bool replaySuccess,
+        string replayReason,
+        string restoreReason,
+        bool restored,
+        string result)
+        => string.Join(Environment.NewLine, new[]
+        {
+            "[DataPathOverrideTest]",
+            $"actor={actor.RuntimeId}",
+            $"drawObject={FormatPointer(before.DrawObjectPtr)}",
+            $"selectedRig={targetRig}",
+            $"timelineId={before.TimelineId}",
+            $"originalDataPath={FormatNullableDataPath(before.CurrentDataPath)}",
+            $"originalDataHead={FormatNullableDataHead(before.CurrentDataHead)}",
+            $"targetDataPath={FormatNullableDataPath(targetDataPath)}",
+            $"targetDataHead={FormatNullableDataHead(targetDataHead)}",
+            $"afterDataPath={FormatNullableDataPath(after.CurrentDataPath)}",
+            $"afterDataHead={FormatNullableDataHead(after.CurrentDataHead)}",
+            $"appearanceHashBefore={before.AppearanceHash}",
+            $"appearanceHashAfter={after.AppearanceHash}",
+            $"transformHashBefore={before.TransformHash}",
+            $"transformHashAfter={after.TransformHash}",
+            $"bindingHashBefore={before.AnimationBindingHash}",
+            $"bindingHashAfter={after.AnimationBindingHash}",
+            $"appearanceChanged={!StringEquals(before.AppearanceHash, after.AppearanceHash)}",
+            $"transformChanged={!StringEquals(before.TransformHash, after.TransformHash)}",
+            $"bindingChanged={!StringEquals(before.AnimationBindingHash, after.AnimationBindingHash)}",
+            $"writeReason={writeReason}",
+            $"replayTimeline={replayTimeline}",
+            $"replaySuccess={replaySuccess}",
+            $"replayReason={replayReason}",
+            $"result={result}",
+            $"restored={restored}",
+            $"restoreReason={restoreReason}",
+        });
+
+    private static bool StringEquals(string? left, string? right)
+        => string.Equals(left ?? string.Empty, right ?? string.Empty, StringComparison.Ordinal);
+
+    private static string FormatNullableDataPath(short? value)
+        => value.HasValue ? $"{value.Value} (0x{unchecked((ushort)value.Value):X4})" : "unavailable";
+
+    private static string FormatNullableDataHead(byte? value)
+        => value.HasValue ? $"{value.Value} (0x{value.Value:X2})" : "unavailable";
 
     private RigHookProbeState BeginProbe(RuntimeActorInstance actor, nint actorPtr, uint animationId)
     {
@@ -223,7 +431,7 @@ public sealed class ActorAnimationRigService
             ActorPointer = actorPtr,
             ActorRuntimeId = actor.RuntimeId,
             TimelineId = animationId,
-            Method = "ActionTimelineManagedHookProbe",
+            Method = "AnimationDataPathReadOnlyProbe",
             HookInstalled = true,
             HookHitCount = 0,
             ChangedAnimationDataPath = false,
@@ -261,12 +469,17 @@ public sealed class ActorAnimationRigService
             this.hookProbeByActorInstanceId[actor.RuntimeId] = probe;
         }
 
+        probe.Method = "ActionTimelineManagedHookProbe";
         probe.HookHitCount++;
         probe.OwnerActorPointer = TryReadAddress(actor.Address, out var actorPtr) ? actorPtr : 0;
         probe.Slot = route;
         probe.TimelineId = timelineId;
         probe.ResolvedRigBefore = "Actor current animation data path (native field unknown)";
         probe.ResolvedRigAfter = preset.ToString();
+        probe.ResolverResult = "ProbeOnly";
+        probe.ResolverReason = "ActionTimeline hook hit, but no animation data-path resolver override is registered.";
+        probe.ResolverNextProbeTarget = "Use DataPath candidate scanner report; do not treat ActionTimeline replay as rig success.";
+        actor.AnimationRigStatus = $"ProbeOnly: ActionTimeline hook hit for timeline={timelineId}, but selected rig was not applied to resource resolver. {probe.ToStatus()}";
         this.log.Information("[AnimationRig] managed ActionTimeline hook hit actor={Actor} ptr={Pointer} route={Route} timeline={Timeline} rig={Rig}",
             actor.RuntimeId,
             FormatPointer(probe.OwnerActorPointer),
@@ -277,9 +490,6 @@ public sealed class ActorAnimationRigService
 
     private static uint GetCurrentAnimationId(RuntimeActorInstance actor)
         => actor.CurrentAnimationId != 0 ? actor.CurrentAnimationId : actor.DefaultAnimationId;
-
-    private static string ShortId(string runtimeId)
-        => runtimeId[..Math.Min(8, runtimeId.Length)];
 
     private static bool TryReadAddress(string? rawAddress, out nint address)
     {
@@ -315,7 +525,7 @@ public sealed class ActorAnimationRigService
                 if (member.MemberType is not (MemberTypes.Property or MemberTypes.Field) || !LooksLikeAppearanceMember(member.Name))
                     continue;
 
-                object? value = null;
+                object? value;
                 try
                 {
                     value = member switch
@@ -403,7 +613,7 @@ public sealed class ActorAnimationRigService
 
     private sealed class RigHookProbeState
     {
-        public string Method { get; init; } = "ActionTimelineManagedHookProbe";
+        public string Method { get; set; } = "AnimationDataPathReadOnlyProbe";
 
         public string ActorRuntimeId { get; init; } = string.Empty;
 
@@ -429,7 +639,7 @@ public sealed class ActorAnimationRigService
 
         public bool ReplaySuccess { get; set; }
 
-        public string ReplayReason { get; set; } = string.Empty;
+        public string ReplayReason { get; set; } = "No replay in read-only apply.";
 
         public string AppearanceHashBefore { get; set; } = string.Empty;
 
@@ -437,7 +647,7 @@ public sealed class ActorAnimationRigService
 
         public bool AnimationBindingChanged { get; set; }
 
-        public string ResolverResult { get; set; } = "Unknown";
+        public string ResolverResult { get; set; } = "ProbeOnly";
 
         public string ResolverReason { get; set; } = string.Empty;
 
@@ -446,5 +656,4 @@ public sealed class ActorAnimationRigService
         public string ToStatus()
             => $"method={this.Method}; hookInstalled={this.HookInstalled}; hookHitCount={this.HookHitCount}; hookOwnerMatched={this.OwnerActorPointer != 0 && this.OwnerActorPointer == this.ActorPointer}; timelineId={this.TimelineId}; selectedRig={this.SelectedPreset}; animationDataPathChanged={this.ChangedAnimationDataPath}; animationBindingChanged={this.AnimationBindingChanged}; appearanceChanged={this.AppearanceHashBefore != this.AppearanceHashAfter}; replaySuccess={this.ReplaySuccess}; result={this.ResolverResult}; nextProbeTarget={this.ResolverNextProbeTarget}; reason={this.ResolverReason}";
     }
-
 }

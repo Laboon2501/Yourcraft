@@ -216,6 +216,36 @@ public sealed class RuntimeActorInstance
 
     public string AnimationPathResolverStatus { get; set; } = string.Empty;
 
+    public bool EnableExperimentalDataPathOverride { get; set; }
+
+    public bool ExperimentalDataPathRestoreAfterTest { get; set; } = true;
+
+    public bool ExperimentalDataPathKeepOverrideUntilRestore { get; set; }
+
+    public ActorAnimationRigPreset ExperimentalDataPathTargetRig { get; set; } = ActorAnimationRigPreset.Current;
+
+    public short? CurrentDataPath { get; set; }
+
+    public byte? CurrentDataHead { get; set; }
+
+    public short? TargetDataPath { get; set; }
+
+    public byte? TargetDataHead { get; set; }
+
+    public string ExperimentalDataPathMappingStatus { get; set; } = string.Empty;
+
+    public string ExperimentalDataPathLastResult { get; set; } = string.Empty;
+
+    public string ExperimentalDataPathTestReport { get; set; } = string.Empty;
+
+    public bool ExperimentalDataPathAppearanceChanged { get; set; }
+
+    public bool ExperimentalDataPathTransformChanged { get; set; }
+
+    public bool ExperimentalDataPathBindingChanged { get; set; }
+
+    public bool ExperimentalDataPathRestored { get; set; }
+
     public bool LookAtPlayerEnabled { get; set; }
 
     public float LookAtRadius { get; set; } = 8f;

@@ -2131,6 +2131,92 @@ public sealed class RealNpcSpawnService
         return success;
     }
 
+    public void DumpActorExperimentalDataPath(string runtimeId)
+    {
+        var instance = this.registry.GetByRuntimeId(runtimeId);
+        if (instance == null)
+        {
+            this.LastMessage = $"Runtime Actor not found: {runtimeId}";
+            return;
+        }
+
+        if (!this.TryValidateReadOnlyAnimationProbeAllowed(instance, out var blockReason))
+        {
+            this.LastMessage = blockReason;
+            instance.ExperimentalDataPathLastResult = $"DataPath dump skipped: {blockReason}";
+            return;
+        }
+
+        this.animationRigService.DumpExperimentalDataPathState(instance);
+        this.LastMessage = instance.ExperimentalDataPathLastResult;
+    }
+
+    public bool ApplyActorExperimentalDataPathOnce(string runtimeId)
+    {
+        var instance = this.registry.GetByRuntimeId(runtimeId);
+        if (instance == null)
+        {
+            this.LastMessage = $"Runtime Actor not found: {runtimeId}";
+            return false;
+        }
+
+        if (!this.TryValidateRigProbeAllowed(instance, out var blockReason))
+        {
+            this.LastMessage = blockReason;
+            instance.ExperimentalDataPathLastResult = $"DataPath apply skipped: {blockReason}";
+            return false;
+        }
+
+        var success = this.animationRigService.ApplyExperimentalDataPathOnce(instance, out var reason);
+        this.VerifyNoUnexpectedTransformChange(instance, "After ApplyExperimentalDataPathOnce");
+        this.LastMessage = reason;
+        return success;
+    }
+
+    public bool ApplyActorExperimentalDataPathAndReplay(string runtimeId)
+    {
+        var instance = this.registry.GetByRuntimeId(runtimeId);
+        if (instance == null)
+        {
+            this.LastMessage = $"Runtime Actor not found: {runtimeId}";
+            return false;
+        }
+
+        if (!this.TryValidateRigProbeAllowed(instance, out var blockReason))
+        {
+            this.LastMessage = blockReason;
+            instance.ExperimentalDataPathLastResult = $"DataPath replay skipped: {blockReason}";
+            return false;
+        }
+
+        var success = this.animationRigService.ApplyExperimentalDataPathAndReplay(instance, out var reason);
+        this.VerifyNoUnexpectedTransformChange(instance, "After ApplyExperimentalDataPathAndReplay");
+        this.LastMessage = reason;
+        return success;
+    }
+
+    public bool RestoreActorExperimentalDataPath(string runtimeId)
+    {
+        var instance = this.registry.GetByRuntimeId(runtimeId);
+        if (instance == null)
+        {
+            this.LastMessage = $"Runtime Actor not found: {runtimeId}";
+            return false;
+        }
+
+        if (!this.TryValidateRigProbeAllowed(instance, out var blockReason))
+        {
+            this.LastMessage = blockReason;
+            instance.ExperimentalDataPathLastResult = $"DataPath restore skipped: {blockReason}";
+            return false;
+        }
+
+        var success = this.animationRigService.RestoreOriginalDataPath(instance, out var reason);
+        this.VerifyNoUnexpectedTransformChange(instance, "After RestoreExperimentalDataPath");
+        this.LastMessage = reason;
+        return success;
+    }
+
     public void DumpActorAnimationRigDebugReport(string runtimeId)
     {
         var instance = this.registry.GetByRuntimeId(runtimeId);
@@ -2153,7 +2239,7 @@ public sealed class RealNpcSpawnService
             return;
         }
 
-        if (!this.TryValidateRigProbeAllowed(instance, out var blockReason))
+        if (!this.TryValidateReadOnlyAnimationProbeAllowed(instance, out var blockReason))
         {
             this.LastMessage = blockReason;
             instance.AnimationPathResolverStatus = $"RigProbe skipped: {blockReason}";
@@ -2173,7 +2259,7 @@ public sealed class RealNpcSpawnService
             return;
         }
 
-        if (!this.TryValidateRigProbeAllowed(instance, out var blockReason))
+        if (!this.TryValidateReadOnlyAnimationProbeAllowed(instance, out var blockReason))
         {
             this.LastMessage = blockReason;
             instance.AnimationPathResolverStatus = $"RigProbe skipped: {blockReason}";
@@ -2193,7 +2279,7 @@ public sealed class RealNpcSpawnService
             return false;
         }
 
-        if (!this.TryValidateRigProbeAllowed(instance, out var blockReason))
+        if (!this.TryValidateReadOnlyAnimationProbeAllowed(instance, out var blockReason))
         {
             this.LastMessage = blockReason;
             instance.AnimationPathResolverStatus = $"RigProbe skipped: {blockReason}";
@@ -2221,14 +2307,14 @@ public sealed class RealNpcSpawnService
             return false;
         }
 
-        if (!this.TryValidateRigProbeAllowed(instance, out var blockReason))
+        if (!this.TryValidateReadOnlyAnimationProbeAllowed(instance, out var blockReason))
         {
             this.LastMessage = blockReason;
             instance.AnimationPathResolverStatus = $"RigProbe skipped: {blockReason}";
             return false;
         }
 
-        if (!this.TryValidateRigProbeAllowed(other, out blockReason))
+        if (!this.TryValidateReadOnlyAnimationProbeAllowed(other, out blockReason))
         {
             this.LastMessage = blockReason;
             other.AnimationPathResolverStatus = $"RigProbe skipped: {blockReason}";
@@ -2244,6 +2330,12 @@ public sealed class RealNpcSpawnService
 
     private bool TryValidateRigProbeAllowed(RuntimeActorInstance instance, out string reason)
     {
+        if (this.validityMonitorService.CurrentIsGposing)
+        {
+            reason = "GPose 中当前仅开放 AnimationDataPathProbe 只读 Dump/Compare；Rig Apply/Restore/Replay 已禁用。";
+            return false;
+        }
+
         if (this.spawnWarmupInProgress)
         {
             reason = "Actor not ready; rig probe skipped because spawn prewarm is running.";
@@ -2282,6 +2374,41 @@ public sealed class RealNpcSpawnService
 
         reason = string.Empty;
         return true;
+    }
+
+    private bool TryValidateReadOnlyAnimationProbeAllowed(RuntimeActorInstance instance, out string reason)
+    {
+        if (this.spawnWarmupInProgress)
+        {
+            reason = "Actor not ready; read-only animation probe skipped because spawn prewarm is running.";
+            return false;
+        }
+
+        if (this.pendingActorSpawns.Count > 0 ||
+            this.activePostSpawnApply != null ||
+            this.postSpawnApplyQueue.Count > 0 ||
+            this.pendingGposeRebuilds.Count > 0 ||
+            this.activeGposeRebuildSnapshot != null ||
+            !string.IsNullOrWhiteSpace(this.activeGposeRebuildRuntimeId))
+        {
+            reason = "Actor rebuild running; probe skipped.";
+            return false;
+        }
+
+        if (this.validityMonitorService.CurrentIsGposing)
+        {
+            if (instance.CharacterObject == null || string.IsNullOrWhiteSpace(instance.Address))
+            {
+                reason = "GPose readonly probe skipped: actor runtime pointer is unavailable.";
+                return false;
+            }
+
+            reason = string.Empty;
+            this.log.Information("[AnimationRig] GPose readonly probe allowed actor={Actor} ptr={Pointer}", instance.RuntimeId, instance.Address);
+            return true;
+        }
+
+        return this.TryValidateRigProbeAllowed(instance, out reason);
     }
 
     public void ResetActionSequence(string runtimeId)

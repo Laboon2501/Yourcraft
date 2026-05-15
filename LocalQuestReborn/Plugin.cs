@@ -83,6 +83,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly ActionTimelinePickerWindow actionTimelinePickerWindow;
     private readonly MainWindow mainWindow;
     private uint lastLayoutObjectTerritoryType;
+    private bool lastPluginUiGposeState;
     private bool lastLocalLightGposeState;
     private bool lastLocalLightPlayerAvailable;
 
@@ -166,11 +167,13 @@ public sealed class Plugin : IDalamudPlugin
         this.meddleSceneProbe = new MeddleStyleSceneProbeService(objectTable, log);
         this.glamourerDesignCatalog = new GlamourerDesignCatalogService(pluginInterface, log);
         this.lastLayoutObjectTerritoryType = clientState.TerritoryType;
+        this.lastPluginUiGposeState = clientState.IsGPosing;
         this.lastLocalLightGposeState = clientState.IsGPosing;
         this.lastLocalLightPlayerAvailable = this.runtime.PlayerPosition.HasValue;
+        this.ApplyGposeUiVisibilityPolicy();
 
         this.actionTimelinePickerWindow = new ActionTimelinePickerWindow(this.actorAnimationPicker);
-        this.mainWindow = new MainWindow(this.configuration, this.database, this.runtime, this.experimentalNpc, this.realNpcSpawn, this.propRuntime, this.layoutProbe, this.layoutTransform, this.layoutClone, this.layerDump, this.localLayoutObjects, this.localLights, this.bgPartVisualProbe, this.rotationMatrixExperiment, this.bgPartVisualRescue, this.visualOnlyRotationDeepProbe, this.drawObjectUpdateDirtyProbe, this.graphicsSceneObjectTransform, this.bgPartCollisionSourceProbe, this.animatedBgPartControllerProbe, this.standaloneBgObjectProbe, this.standaloneRenderListProbe, this.meddleSceneProbe, this.gameNpcCatalog, this.gameNpcAppearanceResolver, this.glamourerDesignCatalog, this.actorAnimationPicker, this.actionTimelinePickerWindow, this.penumbraIpc, this.Reload);
+        this.mainWindow = new MainWindow(this.configuration, this.database, this.runtime, this.experimentalNpc, this.realNpcSpawn, this.propRuntime, this.layoutProbe, this.layoutTransform, this.layoutClone, this.layerDump, this.localLayoutObjects, this.localLights, this.bgPartVisualProbe, this.rotationMatrixExperiment, this.bgPartVisualRescue, this.visualOnlyRotationDeepProbe, this.drawObjectUpdateDirtyProbe, this.graphicsSceneObjectTransform, this.bgPartCollisionSourceProbe, this.animatedBgPartControllerProbe, this.standaloneBgObjectProbe, this.standaloneRenderListProbe, this.meddleSceneProbe, this.gameNpcCatalog, this.gameNpcAppearanceResolver, this.glamourerDesignCatalog, this.actorAnimationPicker, this.actionTimelinePickerWindow, this.penumbraIpc, this.Reload, () => this.pluginInterface.SavePluginConfig(this.configuration), () => this.clientState.IsGPosing);
 
         this.windowSystem.AddWindow(this.mainWindow);
         this.windowSystem.AddWindow(this.actionTimelinePickerWindow);
@@ -259,6 +262,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnFrameworkUpdate(IFramework framework)
     {
+        this.ApplyGposeUiVisibilityPolicy();
         this.runtime.Update();
         this.penumbraIpc.Update();
         if (this.penumbraIpc.ConsumeReapplyRequested())
@@ -272,6 +276,12 @@ public sealed class Plugin : IDalamudPlugin
         {
             this.localLights.DestroyAllNative("GPose enter/exit，销毁 native light 并等待重建", keepInstances: true);
             this.lastLocalLightGposeState = this.clientState.IsGPosing;
+        }
+
+        if (this.clientState.IsGPosing != this.lastPluginUiGposeState)
+        {
+            this.log.Information("[UI] GPose {State}: keep plugin UI visible={Visible}", this.clientState.IsGPosing ? "entered" : "exited", this.configuration.ShowPluginUiInGpose);
+            this.lastPluginUiGposeState = this.clientState.IsGPosing;
         }
 
         var playerAvailable = this.runtime.PlayerPosition.HasValue;
@@ -289,12 +299,18 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     private void DrawUi()
-        => this.windowSystem.Draw();
+    {
+        this.ApplyGposeUiVisibilityPolicy();
+        this.windowSystem.Draw();
+    }
 
     private void OpenMainUi()
         => this.mainWindow.IsOpen = true;
 
     private void OpenConfigUi()
         => this.mainWindow.IsOpen = true;
+
+    private void ApplyGposeUiVisibilityPolicy()
+        => this.pluginInterface.UiBuilder.DisableGposeUiHide = this.configuration.ShowPluginUiInGpose;
 
 }

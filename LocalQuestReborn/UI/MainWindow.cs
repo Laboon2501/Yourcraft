@@ -26,6 +26,8 @@ public sealed class MainWindow : Window
     private readonly ActionTimelinePickerWindow actionTimelinePickerWindow;
     private readonly PenumbraIpcService penumbraIpc;
     private readonly Action reloadAction;
+    private readonly Action saveConfiguration;
+    private readonly Func<bool> isGposing;
 
     private string selectedNpcId = string.Empty;
     private string selectedActorRuntimeId = string.Empty;
@@ -97,7 +99,9 @@ public sealed class MainWindow : Window
         ActorAnimationPickerService actorAnimationPicker,
         ActionTimelinePickerWindow actionTimelinePickerWindow,
         PenumbraIpcService penumbraIpc,
-        Action reloadAction)
+        Action reloadAction,
+        Action saveConfiguration,
+        Func<bool> isGposing)
         : base("任务编辑器##LocalQuestRebornMain")
     {
         this.configuration = configuration;
@@ -118,6 +122,8 @@ public sealed class MainWindow : Window
         this.actionTimelinePickerWindow = actionTimelinePickerWindow;
         this.penumbraIpc = penumbraIpc;
         this.reloadAction = reloadAction;
+        this.saveConfiguration = saveConfiguration;
+        this.isGposing = isGposing;
         this.SizeConstraints = new WindowSizeConstraints
         {
             MinimumSize = new Vector2(860, 680),
@@ -127,6 +133,14 @@ public sealed class MainWindow : Window
 
     public override void Draw()
     {
+        var inGpose = this.IsInGpose();
+        if (inGpose)
+        {
+            ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "GPose 只读诊断模式");
+            ImGui.TextWrapped("插件 UI 已在 GPose 中保持显示。当前仅开放 Actor AnimationDataPathProbe / Anamnesis Diff 等只读诊断；创建、删除、外观重绘、Transform 写入等危险操作请退出 GPose 后执行。");
+            ImGui.Separator();
+        }
+
         if (ImGui.Button("重新读取配置"))
             this.reloadAction();
         ImGui.SameLine();
@@ -203,6 +217,13 @@ public sealed class MainWindow : Window
     private void DrawRuntimeDebug()
     {
         ImGui.TextWrapped($"配置版本：{this.configuration.Version}");
+        var showUiInGpose = this.configuration.ShowPluginUiInGpose;
+        if (ImGui.Checkbox("GPose 中显示插件窗口", ref showUiInGpose))
+        {
+            this.configuration.ShowPluginUiInGpose = showUiInGpose;
+            this.saveConfiguration();
+        }
+        ImGui.TextWrapped($"GPose 状态：{(this.IsInGpose() ? "当前在 GPose；只读诊断可用" : "普通状态")}");
         ImGui.TextWrapped($"NPC/数据文件：{this.database.QuestFilePath}");
         ImGui.TextWrapped($"使用开发路径：{this.database.IsUsingDevelopmentQuestPath}");
         ImGui.TextWrapped($"当前地图 territory：{this.runtime.TerritoryType}");
@@ -219,6 +240,38 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"本地场景物体：{this.localLayoutObjects.LastStatus}");
         ImGui.TextWrapped($"模型 override：{this.localLayoutObjects.LastModelOverrideStatus}");
         ImGui.TextWrapped($"本地灯光：{this.localLights.LastStatus} | pending={this.localLights.PendingOperationCount}");
+    }
+
+    private bool IsInGpose()
+    {
+        try
+        {
+            return this.isGposing();
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private bool BeginDisabledInGpose(string actionName)
+    {
+        var disabled = this.IsInGpose();
+        ImGui.BeginDisabled(disabled);
+        if (disabled && ImGui.IsItemHovered())
+            ImGui.SetTooltip($"GPose 中当前仅开放只读诊断；请退出 GPose 后执行：{actionName}");
+        return disabled;
+    }
+
+    private void DrawGposeBlockedMessage(string actionName)
+        => ImGui.TextDisabled($"GPose 中已禁用：{actionName}。当前只开放 AnimationDataPathProbe / Anamnesis Diff 只读诊断。");
+
+    private bool CanRunReadOnlyAnimationProbe(RuntimeActorInstance actor)
+    {
+        if (actor.CharacterObject == null)
+            return false;
+
+        return actor.IsValid || this.IsInGpose();
     }
 
     private void DrawNpcManagement()
@@ -554,6 +607,7 @@ public sealed class MainWindow : Window
     private void DrawActorSpawnAndListPanel()
     {
         var selectedNpc = this.GetSelectedNpc();
+        var inGpose = this.IsInGpose();
         if (ImGui.BeginCombo("选中 NPC 模板", this.SelectedNpcLabel()))
         {
             foreach (var optionNpc in this.database.Npcs)
@@ -571,7 +625,7 @@ public sealed class MainWindow : Window
         if (ImGui.Button("刷新有效性"))
             this.realNpcSpawn.RefreshActors();
         ImGui.SameLine();
-        ImGui.BeginDisabled(selectedNpc == null || !this.realNpcSpawn.CanSpawnRealActor);
+        ImGui.BeginDisabled(inGpose || selectedNpc == null || !this.realNpcSpawn.CanSpawnRealActor);
         if (ImGui.Button("从模板生成唯一 Actor") && selectedNpc != null)
         {
             var actor = this.realNpcSpawn.SpawnUnique(selectedNpc);
@@ -587,15 +641,19 @@ public sealed class MainWindow : Window
         }
         ImGui.EndDisabled();
         ImGui.SameLine();
-        ImGui.BeginDisabled(selectedNpc == null);
+        ImGui.BeginDisabled(inGpose || selectedNpc == null);
         if (ImGui.Button("删除此模板的全部 Actor") && selectedNpc != null)
             this.realNpcSpawn.DespawnAllForNpc(selectedNpc.Id);
         ImGui.EndDisabled();
         ImGui.SameLine();
+        ImGui.BeginDisabled(inGpose);
         if (ImGui.Button("删除全部 Actor"))
             this.realNpcSpawn.DespawnAll();
+        ImGui.EndDisabled();
 
-        if (selectedNpc != null)
+        if (inGpose)
+            this.DrawGposeBlockedMessage("Actor 创建 / 删除 / 批量生成");
+        else if (selectedNpc != null)
             this.DrawActorBatchSpawnControls(selectedNpc);
 
         ImGui.TextWrapped($"Actor 数量：{this.realNpcSpawn.Actors.Count} | 队列长度：{this.realNpcSpawn.AppearanceQueueLength} | {this.realNpcSpawn.AppearanceQueueStatus}");
@@ -657,12 +715,15 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"Post-spawn pipeline：{selectedActor.PostSpawnPipelineState} / {selectedActor.PostSpawnPipelineStatus}");
         ImGui.TextWrapped($"最后外观：{selectedActor.LastAppearanceApplyResult}");
         ImGui.TextWrapped($"错误：{selectedActor.LastError}");
+        ImGui.BeginDisabled(this.IsInGpose());
         if (ImGui.Button("删除此 Actor"))
         {
             this.DeleteSelectedActor(selectedActor);
+            ImGui.EndDisabled();
             ImGui.PopID();
             return;
         }
+        ImGui.EndDisabled();
 
         this.DrawSelectedActorTransformEditor(selectedActor, npc);
         this.DrawSelectedActorBehaviorEditor(selectedActor, npc);
@@ -713,7 +774,7 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"last transform readback：{(string.IsNullOrWhiteSpace(actor.LastTransformReadback) ? "未读取" : actor.LastTransformReadback)}");
         ImGui.TextWrapped($"last transform error：{(string.IsNullOrWhiteSpace(actor.LastTransformError) ? "无" : actor.LastTransformError)}");
 
-        ImGui.BeginDisabled(!actor.IsValid);
+        ImGui.BeginDisabled(!actor.IsValid || this.IsInGpose());
         if (ImGui.Button("应用 World Transform"))
             this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
         ImGui.SameLine();
@@ -772,8 +833,10 @@ public sealed class MainWindow : Window
         actor.LookAtMode = NpcLookAtMode.NativeLookAt;
         ImGui.TextDisabled("看向方式：NativeLookAt（固定）");
 
-        if (lookAtChanged)
+        if (lookAtChanged && !this.IsInGpose())
             this.realNpcSpawn.UpdateActorLookAtSettings(actor.RuntimeId, actor.LookAtPlayerEnabled, actor.LookAtRadius);
+        else if (lookAtChanged)
+            ImGui.TextDisabled("GPose 中不写入 LookAt 设置；配置值已保留，退出 GPose 后再应用。");
 
         var animationId = (int)Math.Min(actor.CurrentAnimationId == 0 ? actor.DefaultAnimationId : actor.CurrentAnimationId, int.MaxValue);
         if (ImGui.InputInt("此 Actor 动画 ID", ref animationId))
@@ -782,7 +845,7 @@ public sealed class MainWindow : Window
         this.DrawAnimationPickerButton("##ActorCurrentAnimationPicker", ActorAnimationPickerRequest.ForActorCurrent(actor.RuntimeId, ActorAnimationPickerMode.EmoteActionsOnly));
 
         this.DrawActorRigControls(actor);
-        ImGui.TextWrapped("动画骨架 / Animation Rig（实验）：点击应用会注册 ActionTimeline rig context、重播当前动画并输出 hook/probe 诊断；不会写 Race/Gender/Customize、不会调用 Penumbra redraw、不会改变外观。");
+        ImGui.TextWrapped("动画骨架 / Animation Rig（只读定位）：点击应用只注册 selectedRig debug context，并运行 Anamnesis 源码追踪后的 DataPath 候选扫描；不会重播 Timeline、不会写 Race/Gender/Customize、不会调用 Penumbra redraw。");
         ImGui.TextWrapped($"Rig 状态：{actor.AnimationRigStatus}");
         if (!string.IsNullOrWhiteSpace(actor.AnimationRigDebugReport))
         {
@@ -797,7 +860,7 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"动画状态：enabled={actor.AnimationEnabled}, current={actor.CurrentAnimationId}, error={(string.IsNullOrWhiteSpace(actor.LastAnimationError) ? "无" : actor.LastAnimationError)}");
         ImGui.TextWrapped($"看向状态：enabled={actor.LookAtPlayerEnabled}, registered={actor.LookAtRegistered}, target={actor.LookAtTargetDebug}, looking={actor.IsLookingAtPlayer}, error={(string.IsNullOrWhiteSpace(actor.LastLookAtError) ? "无" : actor.LastLookAtError)}");
 
-        ImGui.BeginDisabled(!actor.IsValid || actor.CharacterObject == null);
+        ImGui.BeginDisabled(!actor.IsValid || actor.CharacterObject == null || this.IsInGpose());
         if (ImGui.Button("播放动画"))
             this.realNpcSpawn.PlayAnimation(actor.RuntimeId, actor.CurrentAnimationId);
         ImGui.SameLine();
@@ -819,6 +882,8 @@ public sealed class MainWindow : Window
             this.realNpcSpawn.SetMessage($"已把 Actor {ShortId(actor.RuntimeId)} 的行为/旋转/缩放保存为模板默认值。");
         }
         ImGui.EndDisabled();
+        if (this.IsInGpose())
+            this.DrawGposeBlockedMessage("Actor World Transform 写入");
     }
 
     private void DrawSelectedActorActionSequenceEditor(RuntimeActorInstance actor)
@@ -844,6 +909,13 @@ public sealed class MainWindow : Window
 
         ImGui.TextWrapped($"状态：{actor.ActionSequenceStatus}");
         ImGui.TextWrapped($"错误：{(string.IsNullOrWhiteSpace(actor.LastActionSequenceError) ? "无" : actor.LastActionSequenceError)}");
+
+        if (this.IsInGpose())
+        {
+            this.DrawGposeBlockedMessage("动作序列编辑 / 测试");
+            ImGui.TreePop();
+            return;
+        }
 
         if (ImGui.Button("添加步骤"))
             actor.ActionSequence.Add(new ActorActionSequenceStep { Name = $"Step {actor.ActionSequence.Count + 1}", DurationSeconds = 3f });
@@ -989,7 +1061,7 @@ public sealed class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(actor.LastAppearanceAfterSummary))
             ImGui.TextWrapped($"Apply 后：{actor.LastAppearanceAfterSummary}");
 
-        ImGui.BeginDisabled(!actor.IsValid || actor.CharacterObject == null);
+        ImGui.BeginDisabled(!actor.IsValid || actor.CharacterObject == null || this.IsInGpose());
         if (ImGui.Button("应用 NPC 模板外观"))
             this.realNpcSpawn.EnqueueNpcAppearance(actor.RuntimeId);
         ImGui.SameLine();
@@ -1011,6 +1083,8 @@ public sealed class MainWindow : Window
         if (ImGui.Button("Debug：Penumbra redraw + 重新套外观"))
             this.realNpcSpawn.ForceTargetedRedrawAndReapplyAppearance(actor.RuntimeId);
         ImGui.EndDisabled();
+        if (this.IsInGpose())
+            this.DrawGposeBlockedMessage("Actor 外观应用 / Penumbra redraw / Clear 装备");
     }
 
     private static void DrawActorActionStepKindCombo(ActorActionSequenceStep step)
@@ -1035,11 +1109,13 @@ public sealed class MainWindow : Window
         if (!ImGui.TreeNode("Animation Path Resolver / Anamnesis Diff"))
             return;
 
-        ImGui.TextWrapped("NoEffect means ActionTimeline replay worked, but the animation resource/data-path resolver did not use the selected rig. Use these read-only probes to compare external Anamnesis changes or two different actors with the same TimelineId.");
+        ImGui.TextWrapped("当前阶段只做只读定位：主路线已改为 Anamnesis 源码追踪 + DataPath 候选字段扫描；不会重播 Timeline，也不会修改 Actor。");
+        ImGui.TextWrapped("旧的 Anamnesis live diff 仍保留为可选调试，但不再是主流程。候选重点：ActorModelMemory.DataPath(+0xAA0) / DataHead(+0xAA4)。");
         if (!string.IsNullOrWhiteSpace(actor.AnimationPathResolverStatus))
             ImGui.TextWrapped($"Path resolver：{actor.AnimationPathResolverStatus}");
 
-        ImGui.BeginDisabled(!actor.IsValid || actor.CharacterObject == null);
+        var canProbe = this.CanRunReadOnlyAnimationProbe(actor);
+        ImGui.BeginDisabled(!canProbe);
         if (ImGui.Button("Dump Rig State Before External Change"))
             this.realNpcSpawn.DumpActorAnimationPathBeforeExternalChange(actor.RuntimeId);
         ImGui.SameLine();
@@ -1080,7 +1156,7 @@ public sealed class MainWindow : Window
                 ImGui.EndCombo();
             }
 
-            ImGui.BeginDisabled(!actor.IsValid || actor.CharacterObject == null || selected == null || !selected.IsValid || selected.CharacterObject == null);
+            ImGui.BeginDisabled(!canProbe || selected == null || !this.CanRunReadOnlyAnimationProbe(selected));
             if (ImGui.Button("Compare Same Timeline With Target Actor"))
                 this.realNpcSpawn.CompareActorAnimationPathWithActor(actor.RuntimeId, this.animationRigCompareActorRuntimeId);
             ImGui.EndDisabled();
@@ -1088,6 +1164,82 @@ public sealed class MainWindow : Window
         else
         {
             ImGui.TextDisabled("Need another live Actor for dual-actor same Timeline comparison.");
+        }
+
+        if (ImGui.TreeNode("Experimental DataPath Override"))
+        {
+            ImGui.TextWrapped("实验写入：只写 DrawObject+0xAA0(DataPath short) / +0xAA4(DataHead byte)。不写 Race/Gender/Customize，不调用 Penumbra redraw，不重建 Actor。建议先 Dump，再 Apply Once + Restore，确认安全后再 Apply + Replay。");
+
+            var enableExperimental = actor.EnableExperimentalDataPathOverride;
+            if (ImGui.Checkbox("Enable experimental DataPath override", ref enableExperimental))
+                actor.EnableExperimentalDataPathOverride = enableExperimental;
+
+            var restoreAfterTest = actor.ExperimentalDataPathRestoreAfterTest;
+            if (ImGui.Checkbox("RestoreAfterTest", ref restoreAfterTest))
+                actor.ExperimentalDataPathRestoreAfterTest = restoreAfterTest;
+            ImGui.SameLine();
+            var keepUntilRestore = actor.ExperimentalDataPathKeepOverrideUntilRestore;
+            if (ImGui.Checkbox("KeepOverrideUntilRestore", ref keepUntilRestore))
+                actor.ExperimentalDataPathKeepOverrideUntilRestore = keepUntilRestore;
+
+            var targetRig = actor.ExperimentalDataPathTargetRig;
+            if (targetRig == ActorAnimationRigPreset.Current && actor.AnimationRigPreset != ActorAnimationRigPreset.Current)
+                targetRig = actor.AnimationRigPreset;
+            if (ImGui.BeginCombo("Target Rig", targetRig.ToString()))
+            {
+                foreach (var value in Enum.GetValues<ActorAnimationRigPreset>())
+                {
+                    var isSelected = targetRig == value;
+                    if (ImGui.Selectable(value.ToString(), isSelected))
+                        actor.ExperimentalDataPathTargetRig = value;
+                    if (isSelected)
+                        ImGui.SetItemDefaultFocus();
+                }
+
+                ImGui.EndCombo();
+            }
+
+            ImGui.TextWrapped($"Current DataPath：{FormatNullableDataPath(actor.CurrentDataPath)}");
+            ImGui.TextWrapped($"Current DataHead：{FormatNullableDataHead(actor.CurrentDataHead)}");
+            ImGui.TextWrapped($"Target DataPath：{FormatNullableDataPath(actor.TargetDataPath)}");
+            ImGui.TextWrapped($"Target DataHead：{FormatNullableDataHead(actor.TargetDataHead)}");
+            ImGui.TextWrapped($"Mapping：{(string.IsNullOrWhiteSpace(actor.ExperimentalDataPathMappingStatus) ? "未计算；请先 Dump Current DataPath" : actor.ExperimentalDataPathMappingStatus)}");
+            ImGui.TextWrapped($"Last Result：{(string.IsNullOrWhiteSpace(actor.ExperimentalDataPathLastResult) ? "无" : actor.ExperimentalDataPathLastResult)}");
+            ImGui.TextWrapped($"Appearance Changed：{actor.ExperimentalDataPathAppearanceChanged} | Transform Changed：{actor.ExperimentalDataPathTransformChanged} | Binding Changed：{actor.ExperimentalDataPathBindingChanged} | Restored：{actor.ExperimentalDataPathRestored}");
+
+            ImGui.BeginDisabled(!canProbe);
+            if (ImGui.Button("Dump Current DataPath"))
+                this.realNpcSpawn.DumpActorExperimentalDataPath(actor.RuntimeId);
+            ImGui.EndDisabled();
+
+            var actorReadyForDataPathWrite = actor.IsValid && actor.CharacterObject != null && !this.IsInGpose();
+            var canWriteExperiment = actor.EnableExperimentalDataPathOverride && actorReadyForDataPathWrite;
+            ImGui.BeginDisabled(!canWriteExperiment);
+            if (ImGui.Button("Apply Experimental DataPath Once"))
+                this.realNpcSpawn.ApplyActorExperimentalDataPathOnce(actor.RuntimeId);
+            ImGui.SameLine();
+            ImGui.EndDisabled();
+            ImGui.BeginDisabled(!actorReadyForDataPathWrite);
+            if (ImGui.Button("Restore Original DataPath"))
+                this.realNpcSpawn.RestoreActorExperimentalDataPath(actor.RuntimeId);
+            ImGui.SameLine();
+            ImGui.EndDisabled();
+            ImGui.BeginDisabled(!canWriteExperiment);
+            if (ImGui.Button("Apply + Replay Current Timeline"))
+                this.realNpcSpawn.ApplyActorExperimentalDataPathAndReplay(actor.RuntimeId);
+            ImGui.EndDisabled();
+            if (!canWriteExperiment)
+                ImGui.TextDisabled(this.IsInGpose()
+                    ? "GPose 中禁用实验写入。"
+                    : "实验写入需要勾选 Enable experimental DataPath override，并且 Actor 必须 Ready。");
+
+            if (!string.IsNullOrWhiteSpace(actor.ExperimentalDataPathTestReport))
+            {
+                if (ImGui.Button("Copy DataPath Test Report"))
+                    ImGui.SetClipboardText(actor.ExperimentalDataPathTestReport);
+            }
+
+            ImGui.TreePop();
         }
 
         ImGui.TreePop();
@@ -1111,7 +1263,7 @@ public sealed class MainWindow : Window
                     }
                     else
                     {
-                        actor.AnimationRigStatus = "Override selected. 点击应用会运行 ActionTimeline hook + AnimationRigResolverProbe；未找到安全 resolver 字段时只输出诊断，不写外观字段。";
+                        actor.AnimationRigStatus = "Override selected. 点击应用只注册 debug context 并运行 DataPath 候选扫描；不重播、不写外观字段。";
                     }
                 }
 
@@ -1136,21 +1288,23 @@ public sealed class MainWindow : Window
                 actor.CustomRigTribe = (byte)Math.Clamp(customTribe, 0, byte.MaxValue);
         }
 
-        var canApplyRig = actor.IsValid && actor.CharacterObject != null;
+        var canApplyRig = actor.IsValid && actor.CharacterObject != null && !this.IsInGpose();
         ImGui.BeginDisabled(!canApplyRig);
         if (ImGui.Button("应用动画骨架"))
             this.realNpcSpawn.ApplyActorAnimationRig(actor.RuntimeId);
         if (!canApplyRig && ImGui.IsItemHovered())
-            ImGui.SetTooltip("当前 Actor 无效或已删除。");
+            ImGui.SetTooltip(this.IsInGpose() ? "GPose 中禁用 Rig Apply；请使用下方 Dump Before / Dump After / Compare 只读 probe。" : "当前 Actor 无效或已删除。");
         ImGui.EndDisabled();
         ImGui.SameLine();
-        ImGui.BeginDisabled(!actor.IsValid || actor.CharacterObject == null);
+        ImGui.BeginDisabled(!actor.IsValid || actor.CharacterObject == null || this.IsInGpose());
         if (ImGui.Button("恢复当前 Actor 原始骨架"))
             this.realNpcSpawn.RestoreActorAnimationRig(actor.RuntimeId);
         ImGui.SameLine();
         if (ImGui.Button("重新播放当前动画"))
             this.realNpcSpawn.ReapplyActorCurrentAnimation(actor.RuntimeId);
         ImGui.EndDisabled();
+        if (this.IsInGpose())
+            ImGui.TextDisabled("GPose 中 Rig Apply / Restore / Replay 已禁用；AnimationDataPathProbe 的 Dump/Compare 仍可用。");
     }
 
     private static void DrawActorRigPresetCombo(RuntimeActorInstance actor)
@@ -1170,7 +1324,7 @@ public sealed class MainWindow : Window
                     : ActorAnimationRigMode.Override;
                 actor.AnimationRigStatus = value == ActorAnimationRigPreset.Current
                     ? "Current: using the actor's own animation data path."
-                    : "Override selected. 点击应用会运行 ActionTimeline hook + AnimationRigResolverProbe；未找到安全 resolver 字段时只输出诊断，不写外观字段。";
+                    : "Override selected. 点击应用只注册 debug context 并运行 DataPath 候选扫描；不重播、不写外观字段。";
             }
 
             if (selected)
@@ -1389,6 +1543,12 @@ public sealed class MainWindow : Window
             ImGui.TextWrapped($"当前创建 job：state={this.localLayoutObjects.CreateQueueCurrentState}; slot={this.localLayoutObjects.CreateQueueCurrentSlot}");
         if (!string.IsNullOrWhiteSpace(this.localLayoutObjects.CreateQueueLastError))
             ImGui.TextWrapped($"批量创建最后错误：{this.localLayoutObjects.CreateQueueLastError}");
+
+        if (this.IsInGpose())
+        {
+            this.DrawGposeBlockedMessage("本地场景物体创建 / 修改 / Restore");
+            return;
+        }
 
         var unsafeEnabled = this.realNpcSpawn.EnableUnsafeNativeWrites;
         if (ImGui.Checkbox("启用 Unsafe/native 写入", ref unsafeEnabled))
@@ -3201,6 +3361,12 @@ public sealed class MainWindow : Window
 
     private static string FormatVector(Vector3 vector)
         => $"X {vector.X:F2}, Y {vector.Y:F2}, Z {vector.Z:F2}";
+
+    private static string FormatNullableDataPath(short? value)
+        => value.HasValue ? $"{value.Value} (0x{unchecked((ushort)value.Value):X4})" : "不可用";
+
+    private static string FormatNullableDataHead(byte? value)
+        => value.HasValue ? $"{value.Value} (0x{value.Value:X2})" : "不可用";
 
     private static string FirstNonEmpty(params string[] values)
         => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
