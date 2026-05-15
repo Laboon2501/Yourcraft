@@ -128,7 +128,7 @@ public sealed class Plugin : IDalamudPlugin
         this.actorAnimationPicker = new ActorAnimationPickerService(this.database, this.runtimeActorRegistry, this.actorAnimationCatalog, log);
         this.actorAnimationRig = new ActorAnimationRigService(this.actorAnimation, log);
         this.actorBubble = new ActorNativeBubbleService(this.brioAssemblyBridge, log);
-        this.actorActionSequence = new ActorActionSequenceService(this.actorAnimation, this.actorBubble);
+        this.actorActionSequence = new ActorActionSequenceService(this.actorAnimation, this.actorBubble, this.brioCapabilityBridge);
         this.actorLookAt = new ActorLookAtService(objectTable, this.brioAssemblyBridge, log);
         this.playerLookAtActor = new PlayerLookAtActorService(objectTable, this.brioAssemblyBridge, log);
         this.actorValidityMonitor = new ActorValidityMonitorService(clientState, objectTable);

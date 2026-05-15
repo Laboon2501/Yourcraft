@@ -796,13 +796,16 @@ public sealed class RealNpcSpawnService
         instance.SpawnRotationEuler = rotationEuler;
         instance.SpawnScale = NormalizeScale(scale);
         instance.HasSavedTransform = true;
-        instance.SavedTransformSnapshot = $"position={position}; rotationEuler={rotationEuler}; scale={scale}";
-        this.LastMessage = $"已保存当前 Transform 到运行态缓存：{instance.SavedTransformSnapshot}";
+        instance.SavedTransformSnapshot = $"worldPosition={position}; worldEulerRadians={rotationEuler}; worldScale={NormalizeScale(scale)}";
+        this.LastMessage = $"已保存当前 World Transform：{instance.SavedTransformSnapshot}";
     }
 
     private bool RestoreTransformExact(RuntimeActorInstance actor, string stage)
     {
-        var (position, rotationEuler, scale) = this.GetAuthoritativeTransform(actor);
+        var world = this.GetAuthoritativeWorldTransform(actor);
+        var position = world.WorldPosition;
+        var rotationEuler = world.WorldEulerRadians;
+        var scale = world.WorldScale;
         actor.TransformEditPosition = position;
         actor.TransformEditRotationEuler = rotationEuler;
         actor.TransformEditScale = scale;
@@ -812,7 +815,7 @@ public sealed class RealNpcSpawnService
         actor.HasSavedTransform = true;
 
         var success = this.ApplyActorTransform(actor.RuntimeId, position, rotationEuler, scale);
-        this.log.Information("[ActorTransform] Restore {Stage} actor={Actor} expectedPos={Position} expectedRot={Rotation} expectedScale={Scale} success={Success} result={Result}",
+        this.log.Information("[ActorTransform] RestoreWorld {Stage} actor={Actor} expectedWorldPos={Position} expectedWorldEuler={Rotation} expectedWorldScale={Scale} success={Success} result={Result}",
             stage,
             actor.RuntimeId,
             position,
@@ -825,7 +828,10 @@ public sealed class RealNpcSpawnService
 
     private void VerifyNoUnexpectedTransformChange(RuntimeActorInstance actor, string stage)
     {
-        var (expectedPosition, expectedRotation, expectedScale) = this.GetAuthoritativeTransform(actor);
+        var expectedWorld = this.GetAuthoritativeWorldTransform(actor);
+        var expectedPosition = expectedWorld.WorldPosition;
+        var expectedRotation = expectedWorld.WorldEulerRadians;
+        var expectedScale = expectedWorld.WorldScale;
         var preservedReadback = actor.LastTransformReadback;
         if (!actor.IsValid || actor.CharacterObject == null)
             return;
@@ -839,7 +845,7 @@ public sealed class RealNpcSpawnService
             actor.SpawnRotationEuler = expectedRotation;
             actor.SpawnScale = expectedScale;
             actor.LastTransformReadback = preservedReadback;
-            this.log.Warning("[ActorTransform] Verify {Stage} read failed actor={Actor} reason={Reason}", stage, actor.RuntimeId, readReason);
+            this.log.Warning("[ActorTransform] VerifyWorld {Stage} read failed actor={Actor} reason={Reason}", stage, actor.RuntimeId, readReason);
             return;
         }
 
@@ -859,18 +865,24 @@ public sealed class RealNpcSpawnService
         actor.HasSavedTransform = true;
 
         var changed = positionDelta > 0.01f || rotationDelta > 0.01f || scaleDelta > 0.01f;
-        actor.LastTransformReadback = $"stage={stage}; expected pos={expectedPosition}, rot={expectedRotation}, scale={expectedScale}; actual pos={actualPosition}, rot={actualRotation}, scale={actualScale}; delta pos={positionDelta:F4}, rot={rotationDelta:F4}, scale={scaleDelta:F4}";
+        actor.LastTransformReadback = $"stage={stage}; expected world pos={expectedPosition}, world euler={expectedRotation}, world scale={expectedScale}; actual world pos={actualPosition}, world euler={actualRotation}, world scale={actualScale}; delta pos={positionDelta:F4}, rot={rotationDelta:F4}, scale={scaleDelta:F4}";
         if (!changed)
         {
-            this.log.Information("[ActorTransform] Verify {Stage} result=ok actor={Actor} {Readback}", stage, actor.RuntimeId, actor.LastTransformReadback);
+            this.log.Information("[ActorTransform] VerifyWorld {Stage} result=ok actor={Actor} {Readback}", stage, actor.RuntimeId, actor.LastTransformReadback);
             return;
         }
 
-        this.log.Warning("[ActorTransform] Verify {Stage} result=changed actor={Actor}; restoring. {Readback}", stage, actor.RuntimeId, actor.LastTransformReadback);
+        this.log.Warning("[ActorTransform] VerifyWorld {Stage} result=changed actor={Actor}; restoring world transform. {Readback}", stage, actor.RuntimeId, actor.LastTransformReadback);
         this.RestoreTransformExact(actor, $"{stage} guard restore");
     }
 
     private (Vector3 Position, Vector3 RotationEuler, Vector3 Scale) GetAuthoritativeTransform(RuntimeActorInstance actor)
+    {
+        var world = this.GetAuthoritativeWorldTransform(actor);
+        return (world.WorldPosition, world.WorldEulerRadians, world.WorldScale);
+    }
+
+    private WorldTransform GetAuthoritativeWorldTransform(RuntimeActorInstance actor)
     {
         var position = actor.HasSavedTransform ? actor.TransformEditPosition : actor.SpawnPosition;
         var rotation = actor.HasSavedTransform ? actor.TransformEditRotationEuler : actor.SpawnRotationEuler;
@@ -878,7 +890,7 @@ public sealed class RealNpcSpawnService
         if (scale == Vector3.Zero)
             scale = Vector3.One;
 
-        return (position, rotation, NormalizeScale(scale));
+        return WorldTransform.FromEuler(position, rotation, scale);
     }
 
     public void MoveAllForNpc(string npcId, Vector3 position)
@@ -1934,12 +1946,14 @@ public sealed class RealNpcSpawnService
 
     private void ApplyPostSpawnBehavior(RuntimeActorInstance actor)
     {
+        this.RestoreTransformExact(actor, "Before post-spawn behavior");
         if (actor.AnimationRigMode == ActorAnimationRigMode.Override && actor.AnimationRigPreset != ActorAnimationRigPreset.Current)
             this.animationRigService.ApplyAnimationRigOverride(actor, out _);
 
         this.actionSequenceService.Reset(actor);
         if (!actor.EnableActionSequence && actor.CurrentAnimationId > 0)
             this.animationService.PlayTransientTimeline(actor, actor.CurrentAnimationId, out _);
+        this.VerifyNoUnexpectedTransformChange(actor, "After post-spawn behavior");
     }
 
     public void ApplyNpcAppearanceForNpc(string npcId)
@@ -1992,6 +2006,7 @@ public sealed class RealNpcSpawnService
         }
 
         var success = this.animationService.Play(instance, animationId, out var reason);
+        this.VerifyNoUnexpectedTransformChange(instance, "After PlayAnimation");
         this.LastMessage = success ? $"已播放动画：{animationId}" : $"播放动画失败：{reason}";
         return success;
     }
@@ -2006,6 +2021,7 @@ public sealed class RealNpcSpawnService
         }
 
         var success = this.animationService.Stop(instance, out var reason);
+        this.VerifyNoUnexpectedTransformChange(instance, "After StopAnimation");
         this.LastMessage = success ? "已停止动画并尝试恢复 idle。" : $"停止动画失败：{reason}";
         return success;
     }
@@ -2020,6 +2036,7 @@ public sealed class RealNpcSpawnService
         }
 
         var success = this.animationRigService.ApplyAnimationRigOverride(instance, out var reason);
+        this.VerifyNoUnexpectedTransformChange(instance, "After ApplyAnimationRig");
         this.LastMessage = reason;
         return success;
     }
@@ -2034,6 +2051,7 @@ public sealed class RealNpcSpawnService
         }
 
         var success = this.animationRigService.RestoreAnimationRig(instance, out var reason);
+        this.VerifyNoUnexpectedTransformChange(instance, "After RestoreAnimationRig");
         this.LastMessage = reason;
         return success;
     }
@@ -2048,6 +2066,7 @@ public sealed class RealNpcSpawnService
         }
 
         var success = this.animationRigService.ReapplyCurrentAnimationWithRig(instance, out var reason);
+        this.VerifyNoUnexpectedTransformChange(instance, "After ReapplyCurrentAnimation");
         this.LastMessage = reason;
         return success;
     }
@@ -2728,7 +2747,7 @@ public sealed class RealNpcSpawnService
     {
         if (!actor.IsValid || actor.CharacterObject == null)
         {
-            this.log.Warning("[ActorTransform] Snapshot skipped actor={Actor} reason={Reason} invalid; preserving config pos={Position} rot={Rotation} scale={Scale}",
+            this.log.Warning("[ActorTransform] SnapshotWorld skipped actor={Actor} reason={Reason} invalid; preserving config worldPos={Position} worldEuler={Rotation} worldScale={Scale}",
                 actor.RuntimeId,
                 reason,
                 actor.TransformEditPosition,
@@ -2746,7 +2765,7 @@ public sealed class RealNpcSpawnService
             actor.SpawnPosition = previous.Position;
             actor.SpawnRotationEuler = previous.RotationEuler;
             actor.SpawnScale = previous.Scale;
-            this.log.Warning("[ActorTransform] Snapshot read failed actor={Actor} reason={Reason} readReason={ReadReason}; preserving expected pos={Position} rot={Rotation} scale={Scale}",
+            this.log.Warning("[ActorTransform] SnapshotWorld read failed actor={Actor} reason={Reason} readReason={ReadReason}; preserving expected worldPos={Position} worldEuler={Rotation} worldScale={Scale}",
                 actor.RuntimeId,
                 reason,
                 readReason,
@@ -2763,7 +2782,7 @@ public sealed class RealNpcSpawnService
         actor.TransformEditPosition = actor.SpawnPosition;
         actor.TransformEditRotationEuler = actor.SpawnRotationEuler;
         actor.TransformEditScale = actor.SpawnScale;
-        this.log.Information("[ActorTransform] Snapshot before rebuild actor={Actor} reason={Reason} pos={Position} rot={Rotation} scale={Scale}",
+        this.log.Information("[ActorTransform] SnapshotWorld before rebuild actor={Actor} reason={Reason} worldPos={Position} worldEuler={Rotation} worldScale={Scale}",
             actor.RuntimeId,
             reason,
             actor.TransformEditPosition,

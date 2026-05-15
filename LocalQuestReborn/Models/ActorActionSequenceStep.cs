@@ -1,3 +1,5 @@
+using System.Numerics;
+
 namespace LocalQuestReborn.Models;
 
 public sealed class ActorActionSequenceStep
@@ -43,6 +45,30 @@ public sealed class ActorActionSequenceStep
     public bool HideBubbleOnDespawn { get; set; } = true;
 
     public bool AllowLookAtDuringStep { get; set; } = true;
+
+    public Vector3 MoveStartWorldOffset { get; set; }
+
+    public Vector3 MoveEndWorldOffset { get; set; }
+
+    public bool MoveUseAbsoluteWorldTarget { get; set; }
+
+    public Vector3 MoveWorldTarget { get; set; }
+
+    public float MoveDurationSeconds { get; set; } = 3f;
+
+    public ActorMoveInterpolation MoveInterpolation { get; set; } = ActorMoveInterpolation.Linear;
+
+    public bool MoveFaceDirection { get; set; }
+
+    public bool MoveRestoreAtStepEnd { get; set; }
+
+    public bool MoveAffectsRotation { get; set; }
+
+    public float MoveYawDegrees { get; set; }
+
+    public ushort MoveAnimationId { get; set; }
+
+    public bool PlayMoveAnimationOnEnter { get; set; }
 
     [Obsolete("Use AnimationId.")]
     public ushort EmoteId

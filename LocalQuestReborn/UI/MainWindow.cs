@@ -30,6 +30,7 @@ public sealed class MainWindow : Window
     private string selectedNpcId = string.Empty;
     private string selectedActorRuntimeId = string.Empty;
     private string selectedLocalLayoutObjectId = string.Empty;
+    private string lastWorldTransformReadLocalLayoutObjectId = string.Empty;
     private string selectedLocalLightId = string.Empty;
     private string selectedBgPartAddress = string.Empty;
     private string templateBgPartAddress = string.Empty;
@@ -671,7 +672,7 @@ public sealed class MainWindow : Window
     private void DrawSelectedActorTransformEditor(RuntimeActorInstance actor, CustomNpc? npc)
     {
         ImGui.Separator();
-        ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "Actor Transform 编辑");
+        ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "Actor World Transform 编辑");
         if (!actor.IsValid || actor.CharacterObject == null)
         {
             ImGui.TextColored(new Vector4(1f, 0.35f, 0.25f, 1f), "当前 Actor 无效或已删除。");
@@ -684,34 +685,34 @@ public sealed class MainWindow : Window
             actor.TransformEditPosition = actor.LastKnownPosition;
 
         var editPosition = actor.TransformEditPosition;
-        if (ImGui.InputFloat("Actor Position X", ref editPosition.X)) actor.TransformEditPosition = editPosition;
-        if (ImGui.InputFloat("Actor Position Y", ref editPosition.Y)) actor.TransformEditPosition = editPosition;
-        if (ImGui.InputFloat("Actor Position Z", ref editPosition.Z)) actor.TransformEditPosition = editPosition;
+        if (ImGui.InputFloat("World Position X", ref editPosition.X)) actor.TransformEditPosition = editPosition;
+        if (ImGui.InputFloat("World Position Y", ref editPosition.Y)) actor.TransformEditPosition = editPosition;
+        if (ImGui.InputFloat("World Position Z", ref editPosition.Z)) actor.TransformEditPosition = editPosition;
 
         var rotationDegrees = new Vector3(
             RadiansToDegrees(actor.TransformEditRotationEuler.X),
             RadiansToDegrees(actor.TransformEditRotationEuler.Y),
             RadiansToDegrees(actor.TransformEditRotationEuler.Z));
-        if (ImGui.InputFloat("Actor Pitch X (deg)", ref rotationDegrees.X))
+        if (ImGui.InputFloat("World Pitch X (deg)", ref rotationDegrees.X))
             actor.TransformEditRotationEuler = new Vector3(DegreesToRadians(rotationDegrees.X), actor.TransformEditRotationEuler.Y, actor.TransformEditRotationEuler.Z);
-        if (ImGui.InputFloat("Actor Yaw Y (deg)", ref rotationDegrees.Y))
+        if (ImGui.InputFloat("World Yaw Y (deg)", ref rotationDegrees.Y))
             actor.TransformEditRotationEuler = new Vector3(actor.TransformEditRotationEuler.X, DegreesToRadians(rotationDegrees.Y), actor.TransformEditRotationEuler.Z);
-        if (ImGui.InputFloat("Actor Roll Z (deg)", ref rotationDegrees.Z))
+        if (ImGui.InputFloat("World Roll Z (deg)", ref rotationDegrees.Z))
             actor.TransformEditRotationEuler = new Vector3(actor.TransformEditRotationEuler.X, actor.TransformEditRotationEuler.Y, DegreesToRadians(rotationDegrees.Z));
 
         var editScale = actor.TransformEditScale;
-        if (ImGui.InputFloat("Actor Scale X", ref editScale.X)) actor.TransformEditScale = Vector3.Max(editScale, new Vector3(0.01f));
-        if (ImGui.InputFloat("Actor Scale Y", ref editScale.Y)) actor.TransformEditScale = Vector3.Max(editScale, new Vector3(0.01f));
-        if (ImGui.InputFloat("Actor Scale Z", ref editScale.Z)) actor.TransformEditScale = Vector3.Max(editScale, new Vector3(0.01f));
+        if (ImGui.InputFloat("World Scale X", ref editScale.X)) actor.TransformEditScale = Vector3.Max(editScale, new Vector3(0.01f));
+        if (ImGui.InputFloat("World Scale Y", ref editScale.Y)) actor.TransformEditScale = Vector3.Max(editScale, new Vector3(0.01f));
+        if (ImGui.InputFloat("World Scale Z", ref editScale.Z)) actor.TransformEditScale = Vector3.Max(editScale, new Vector3(0.01f));
 
-        ImGui.TextWrapped($"readback position：{FormatVector(actor.LastKnownPosition)}");
-        ImGui.TextWrapped($"readback rotation：pitch {RadiansToDegrees(actor.LastKnownRotationEuler.X):F1}, yaw {RadiansToDegrees(actor.LastKnownRotationEuler.Y):F1}, roll {RadiansToDegrees(actor.LastKnownRotationEuler.Z):F1}");
-        ImGui.TextWrapped($"readback scale：{FormatVector(actor.LastKnownScale)}");
+        ImGui.TextWrapped($"world readback position：{FormatVector(actor.LastKnownPosition)}");
+        ImGui.TextWrapped($"world readback rotation：pitch {RadiansToDegrees(actor.LastKnownRotationEuler.X):F1}, yaw {RadiansToDegrees(actor.LastKnownRotationEuler.Y):F1}, roll {RadiansToDegrees(actor.LastKnownRotationEuler.Z):F1}");
+        ImGui.TextWrapped($"world readback scale：{FormatVector(actor.LastKnownScale)}");
         ImGui.TextWrapped($"last transform readback：{(string.IsNullOrWhiteSpace(actor.LastTransformReadback) ? "未读取" : actor.LastTransformReadback)}");
         ImGui.TextWrapped($"last transform error：{(string.IsNullOrWhiteSpace(actor.LastTransformError) ? "无" : actor.LastTransformError)}");
 
         ImGui.BeginDisabled(!actor.IsValid);
-        if (ImGui.Button("应用 Transform"))
+        if (ImGui.Button("应用 World Transform"))
             this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
         ImGui.SameLine();
         if (ImGui.Button("移动到玩家当前位置") && this.runtime.PlayerPosition.HasValue)
@@ -738,10 +739,10 @@ public sealed class MainWindow : Window
             this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
         }
         ImGui.SameLine();
-        if (ImGui.Button("保存当前 Transform"))
+        if (ImGui.Button("保存当前 World Transform"))
             this.realNpcSpawn.SaveActorTransformSnapshot(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
 
-        if (ImGui.Button("从当前 Actor 读取 Transform"))
+        if (ImGui.Button("从当前 Actor 读取 World Transform"))
             this.realNpcSpawn.RefreshActorTransform(actor.RuntimeId);
         ImGui.EndDisabled();
     }
@@ -779,7 +780,7 @@ public sealed class MainWindow : Window
         this.DrawAnimationPickerButton("##ActorCurrentAnimationPicker", ActorAnimationPickerRequest.ForActorCurrent(actor.RuntimeId, ActorAnimationPickerMode.EmoteActionsOnly));
 
         this.DrawActorRigControls(actor);
-        ImGui.TextWrapped("动画骨架 / Animation Rig（实验）：当前不会写 Race/Gender/Customize、不会调用 Penumbra redraw、不会改变外观。未找到安全动画-only 数据路径前会显示 Unsupported。");
+        ImGui.TextWrapped("动画骨架 / Animation Rig（实验）：点击应用会注册 ActionTimeline rig context、重播当前动画并输出 hook/probe 诊断；不会写 Race/Gender/Customize、不会调用 Penumbra redraw、不会改变外观。");
         ImGui.TextWrapped($"Rig 状态：{actor.AnimationRigStatus}");
 
         ImGui.TextWrapped($"动画状态：enabled={actor.AnimationEnabled}, current={actor.CurrentAnimationId}, error={(string.IsNullOrWhiteSpace(actor.LastAnimationError) ? "无" : actor.LastAnimationError)}");
@@ -842,6 +843,9 @@ public sealed class MainWindow : Window
         if (ImGui.Button("添加 Despawn"))
             actor.ActionSequence.Add(new ActorActionSequenceStep { Name = "Despawn", Kind = ActorActionStepKind.Despawn, DurationSeconds = 1f, HideBubbleOnDespawn = true });
         ImGui.SameLine();
+        if (ImGui.Button("添加 Move"))
+            actor.ActionSequence.Add(new ActorActionSequenceStep { Name = "Move", Kind = ActorActionStepKind.Move, DurationSeconds = 3f, MoveDurationSeconds = 3f, MoveEndWorldOffset = new Vector3(2f, 0f, 0f) });
+        ImGui.SameLine();
         if (ImGui.Button("从当前默认动作创建步骤"))
         {
             actor.ActionSequence.Add(new ActorActionSequenceStep
@@ -883,6 +887,10 @@ public sealed class MainWindow : Window
                 else if (step.Kind == ActorActionStepKind.Spawn)
                 {
                     ImGui.TextDisabled("Spawn 只恢复已有 Actor 的显示，不创建新 Actor。");
+                }
+                else if (step.Kind == ActorActionStepKind.Move)
+                {
+                    this.DrawActorActionStepMoveOptions(actor, step);
                 }
 
                 var duration = step.DurationSeconds;
@@ -1029,7 +1037,7 @@ public sealed class MainWindow : Window
                     }
                     else
                     {
-                        actor.AnimationRigStatus = "Override selected. 当前仅保存配置；点击应用会检查安全 animation-only 路径，未支持时不会写 native。";
+                        actor.AnimationRigStatus = "Override selected. 点击应用会运行 ActionTimeline rig context probe；未找到安全 data-path 字段时只输出诊断，不写外观字段。";
                     }
                 }
 
@@ -1088,7 +1096,7 @@ public sealed class MainWindow : Window
                     : ActorAnimationRigMode.Override;
                 actor.AnimationRigStatus = value == ActorAnimationRigPreset.Current
                     ? "Current: using the actor's own animation data path."
-                    : "Override selected. 当前仅保存配置；点击应用会检查安全 animation-only 路径，未支持时不会写 native。";
+                    : "Override selected. 点击应用会运行 ActionTimeline rig context probe；未找到安全 data-path 字段时只输出诊断，不写外观字段。";
             }
 
             if (selected)
@@ -1139,6 +1147,61 @@ public sealed class MainWindow : Window
             step.ExpressionWeight = Math.Clamp(expressionWeight, 0f, 1f);
 
         ImGui.TextDisabled("提示：表情会交给游戏 ActionTimeline slot 自动归位；不是所有 ID 都能与基础动作叠加。");
+    }
+
+    private void DrawActorActionStepMoveOptions(RuntimeActorInstance actor, ActorActionSequenceStep step)
+    {
+        ImGui.TextWrapped("移动仅在动作序列运行时生效，不会修改 Actor 原始生成位置。关闭序列或循环重开时会回到原始位置。");
+        var moveDuration = step.MoveDurationSeconds <= 0f ? step.DurationSeconds : step.MoveDurationSeconds;
+        if (ImGui.InputFloat("Move DurationSeconds", ref moveDuration))
+            step.MoveDurationSeconds = Math.Max(0.01f, moveDuration);
+
+        var absolute = step.MoveUseAbsoluteWorldTarget;
+        if (ImGui.Checkbox("使用绝对世界目标", ref absolute))
+            step.MoveUseAbsoluteWorldTarget = absolute;
+
+        if (step.MoveUseAbsoluteWorldTarget)
+        {
+            var target = step.MoveWorldTarget;
+            if (InputVector3("World Target", ref target))
+                step.MoveWorldTarget = target;
+        }
+        else
+        {
+            var start = step.MoveStartWorldOffset;
+            if (InputVector3("Start Offset from Origin", ref start))
+                step.MoveStartWorldOffset = start;
+            var end = step.MoveEndWorldOffset;
+            if (InputVector3("End Offset from Origin", ref end))
+                step.MoveEndWorldOffset = end;
+        }
+
+        DrawEnumCombo("Move Interpolation", step.MoveInterpolation, value => step.MoveInterpolation = value);
+        var restore = step.MoveRestoreAtStepEnd;
+        if (ImGui.Checkbox("Move step 结束后立即回到 Origin", ref restore))
+            step.MoveRestoreAtStepEnd = restore;
+        var face = step.MoveFaceDirection;
+        if (ImGui.Checkbox("移动时朝向移动方向（LookAt 开启时自动跳过）", ref face))
+            step.MoveFaceDirection = face;
+        var affectsRotation = step.MoveAffectsRotation;
+        if (ImGui.Checkbox("移动时使用指定 World Yaw", ref affectsRotation))
+            step.MoveAffectsRotation = affectsRotation;
+        if (step.MoveAffectsRotation)
+        {
+            var yaw = step.MoveYawDegrees;
+            if (ImGui.InputFloat("Move World Yaw (deg)", ref yaw))
+                step.MoveYawDegrees = yaw;
+        }
+
+        var playMoveAnimation = step.PlayMoveAnimationOnEnter;
+        if (ImGui.Checkbox("进入 Move 时播放动画", ref playMoveAnimation))
+            step.PlayMoveAnimationOnEnter = playMoveAnimation;
+        if (step.PlayMoveAnimationOnEnter)
+        {
+            var moveAnimationId = (int)step.MoveAnimationId;
+            if (ImGui.InputInt("Move AnimationId", ref moveAnimationId))
+                step.MoveAnimationId = (ushort)Math.Clamp(moveAnimationId, 0, ushort.MaxValue);
+        }
     }
 
     private static void DrawExpressionLayerCombo(ActorActionSequenceStep step)
@@ -2012,6 +2075,11 @@ public sealed class MainWindow : Window
             : this.localLayoutObjects.GetById(this.selectedLocalLayoutObjectId);
         if (selected == null)
             return;
+        if (!string.Equals(this.lastWorldTransformReadLocalLayoutObjectId, selected.Id, StringComparison.Ordinal))
+        {
+            this.localLayoutObjects.RefreshWorldTransform(selected.Id);
+            this.lastWorldTransformReadLocalLayoutObjectId = selected.Id;
+        }
 
         ImGui.Separator();
         ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), $"选中实例：{selected.Id}");
@@ -2073,18 +2141,19 @@ public sealed class MainWindow : Window
         if (fullLayoutNeedsConfirmation)
             ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "危险模式需要二次确认。");
 
+        ImGui.TextWrapped("World Transform：普通本体场景物体的 Position / Rotation / Scale 均为场景绝对值，不叠加 carrier/local rotation。");
         var editPosition = selected.CurrentPosition;
-        if (ImGui.InputFloat("Position X", ref editPosition.X)) selected.CurrentPosition = editPosition;
-        if (ImGui.InputFloat("Position Y", ref editPosition.Y)) selected.CurrentPosition = editPosition;
-        if (ImGui.InputFloat("Position Z", ref editPosition.Z)) selected.CurrentPosition = editPosition;
+        if (ImGui.InputFloat("World Position X", ref editPosition.X)) selected.CurrentPosition = editPosition;
+        if (ImGui.InputFloat("World Position Y", ref editPosition.Y)) selected.CurrentPosition = editPosition;
+        if (ImGui.InputFloat("World Position Z", ref editPosition.Z)) selected.CurrentPosition = editPosition;
         var rotationDegrees = new Vector3(RadiansToDegrees(selected.CurrentRotationEuler.X), RadiansToDegrees(selected.CurrentRotationEuler.Y), RadiansToDegrees(selected.CurrentRotationEuler.Z));
-        if (ImGui.InputFloat("Pitch X (deg)", ref rotationDegrees.X)) selected.CurrentRotationEuler = new Vector3(DegreesToRadians(rotationDegrees.X), selected.CurrentRotationEuler.Y, selected.CurrentRotationEuler.Z);
-        if (ImGui.InputFloat("Yaw Y (deg)", ref rotationDegrees.Y)) selected.CurrentRotationEuler = new Vector3(selected.CurrentRotationEuler.X, DegreesToRadians(rotationDegrees.Y), selected.CurrentRotationEuler.Z);
-        if (ImGui.InputFloat("Roll Z (deg)", ref rotationDegrees.Z)) selected.CurrentRotationEuler = new Vector3(selected.CurrentRotationEuler.X, selected.CurrentRotationEuler.Y, DegreesToRadians(rotationDegrees.Z));
+        if (ImGui.InputFloat("World Pitch X (deg)", ref rotationDegrees.X)) selected.CurrentRotationEuler = new Vector3(DegreesToRadians(rotationDegrees.X), selected.CurrentRotationEuler.Y, selected.CurrentRotationEuler.Z);
+        if (ImGui.InputFloat("World Yaw Y (deg)", ref rotationDegrees.Y)) selected.CurrentRotationEuler = new Vector3(selected.CurrentRotationEuler.X, DegreesToRadians(rotationDegrees.Y), selected.CurrentRotationEuler.Z);
+        if (ImGui.InputFloat("World Roll Z (deg)", ref rotationDegrees.Z)) selected.CurrentRotationEuler = new Vector3(selected.CurrentRotationEuler.X, selected.CurrentRotationEuler.Y, DegreesToRadians(rotationDegrees.Z));
         var editScale = selected.CurrentScale;
-        if (ImGui.InputFloat("Scale X", ref editScale.X)) selected.CurrentScale = Vector3.Max(editScale, new Vector3(0.01f));
-        if (ImGui.InputFloat("Scale Y", ref editScale.Y)) selected.CurrentScale = Vector3.Max(editScale, new Vector3(0.01f));
-        if (ImGui.InputFloat("Scale Z", ref editScale.Z)) selected.CurrentScale = Vector3.Max(editScale, new Vector3(0.01f));
+        if (ImGui.InputFloat("World Scale X", ref editScale.X)) selected.CurrentScale = Vector3.Max(editScale, new Vector3(0.01f));
+        if (ImGui.InputFloat("World Scale Y", ref editScale.Y)) selected.CurrentScale = Vector3.Max(editScale, new Vector3(0.01f));
+        if (ImGui.InputFloat("World Scale Z", ref editScale.Z)) selected.CurrentScale = Vector3.Max(editScale, new Vector3(0.01f));
         EditString("custom mdl path", selected.CustomModelPath, 512, value => selected.CustomModelPath = value);
         ImGui.TextWrapped($"render invalid：{selected.IsRenderInvalid}");
         ImGui.TextWrapped($"transform disabled reason：{selected.TransformWriteDisabledReason}");
@@ -2109,7 +2178,7 @@ public sealed class MainWindow : Window
         if (selected.IsRenderInvalid)
             ImGui.TextColored(new Vector4(1f, 0.35f, 0.25f, 1f), "当前实例 render 已失效，不能再写 Graphics.Scene.Object transform。");
         ImGui.BeginDisabled(disabled);
-        if (ImGui.Button("应用 transform")) this.localLayoutObjects.ApplyVisualTransform(selected.Id, selected.CurrentPosition, selected.CurrentRotationEuler, selected.CurrentScale);
+        if (ImGui.Button("应用 World Transform")) this.localLayoutObjects.ApplyVisualTransform(selected.Id, selected.CurrentPosition, selected.CurrentRotationEuler, selected.CurrentScale);
         ImGui.SameLine();
         if (ImGui.Button("移动到玩家当前位置") && this.runtime.PlayerPosition.HasValue) this.localLayoutObjects.MoveToPlayer(selected.Id, this.runtime.PlayerPosition.Value);
         ImGui.SameLine();
@@ -2133,6 +2202,8 @@ public sealed class MainWindow : Window
         if (ImGui.Button("Z+1")) this.localLayoutObjects.MoveZ(selected.Id, 1f);
         ImGui.SameLine();
         if (ImGui.Button("Z-1")) this.localLayoutObjects.MoveZ(selected.Id, -1f);
+        if (ImGui.Button("读取当前 World Transform")) this.localLayoutObjects.RefreshWorldTransform(selected.Id);
+        ImGui.SameLine();
         if (ImGui.Button("重置 rotation")) this.localLayoutObjects.ResetRotation(selected.Id);
         ImGui.SameLine();
         if (ImGui.Button("重置 scale")) this.localLayoutObjects.ResetScale(selected.Id);
@@ -2981,6 +3052,23 @@ public sealed class MainWindow : Window
         if (ImGui.InputFloat($"{label} X", ref x)) data.X = x;
         if (ImGui.InputFloat($"{label} Y", ref y)) data.Y = y;
         if (ImGui.InputFloat($"{label} Z", ref z)) data.Z = z;
+    }
+
+    private static bool InputVector3(string label, ref Vector3 vector)
+    {
+        var changed = false;
+        var x = vector.X;
+        var y = vector.Y;
+        var z = vector.Z;
+        if (ImGui.InputFloat($"{label} X", ref x))
+            changed = true;
+        if (ImGui.InputFloat($"{label} Y", ref y))
+            changed = true;
+        if (ImGui.InputFloat($"{label} Z", ref z))
+            changed = true;
+        if (changed)
+            vector = new Vector3(x, y, z);
+        return changed;
     }
 
     private static void EditVector3DataDegrees(string label, Vector3Data data)

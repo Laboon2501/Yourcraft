@@ -1759,6 +1759,69 @@ public sealed unsafe class LocalLayoutObjectService
         return success;
     }
 
+    public bool RefreshWorldTransform(string id)
+    {
+        var instance = this.GetById(id);
+        if (instance == null)
+        {
+            this.LastStatus = "未选中有效实例。";
+            return false;
+        }
+
+        try
+        {
+            if (instance.TransformMode == LocalLayoutTransformMode.VisualOnly)
+            {
+                if (!TryParseAddress(instance.GraphicsObjectAddress, out var graphicsAddress) || graphicsAddress == 0)
+                {
+                    this.LastStatus = $"GraphicsObject 地址无效：{instance.GraphicsObjectAddress}";
+                    return false;
+                }
+
+                var scene = ReadSceneObjectTransform(graphicsAddress);
+                if (scene == null)
+                {
+                    this.LastStatus = "读取 Graphics.Scene.Object World transform 失败。";
+                    return false;
+                }
+
+                instance.CurrentPosition = scene.Value.Position;
+                instance.CurrentRotation = scene.Value.Rotation;
+                instance.CurrentRotationEuler = WorldTransformUtil.QuaternionToWorldEulerRadians(scene.Value.Rotation);
+                instance.CurrentScale = scene.Value.Scale;
+                instance.LastReadback = FormatSceneSnapshot(scene.Value);
+                this.LastStatus = $"[SceneObjectTransform] ReadWorld object={instance.Id}; {instance.LastReadback}";
+                return true;
+            }
+
+            if (!TryGetPointer(instance.OccupiedSlotAddress, out var pointer))
+            {
+                this.LastStatus = $"slot 地址解析失败：{instance.OccupiedSlotAddress}";
+                return false;
+            }
+
+            var layout = ReadLayoutTransform(pointer);
+            if (layout == null)
+            {
+                this.LastStatus = "读取 LayoutInstance World transform 失败。";
+                return false;
+            }
+
+            instance.CurrentPosition = layout.Value.Position;
+            instance.CurrentRotation = layout.Value.Rotation;
+            instance.CurrentRotationEuler = WorldTransformUtil.QuaternionToWorldEulerRadians(layout.Value.Rotation);
+            instance.CurrentScale = layout.Value.Scale;
+            instance.LastReadback = FormatSnapshot(layout.Value);
+            this.LastStatus = $"[SceneObjectTransform] ReadWorld object={instance.Id}; {instance.LastReadback}";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            this.LastStatus = $"读取 World transform 失败：{ex.Message}";
+            return false;
+        }
+    }
+
     public bool ExecuteModelRefreshStep(string id, string stepName)
     {
         var instance = this.GetById(id);
@@ -3071,6 +3134,7 @@ public sealed unsafe class LocalLayoutObjectService
             instance.CurrentVisualTranslation = sceneReadback.Position;
             instance.CurrentPosition = sceneReadback.Position;
             instance.CurrentRotation = sceneReadback.Rotation;
+            instance.CurrentRotationEuler = WorldTransformUtil.QuaternionToWorldEulerRadians(sceneReadback.Rotation);
             instance.CurrentScale = sceneReadback.Scale;
             instance.LastReadback = FormatSceneSnapshot(sceneReadback);
             instance.LastError = string.Empty;
@@ -3107,7 +3171,7 @@ public sealed unsafe class LocalLayoutObjectService
             instance.CurrentVisualTranslation = sceneReadback.Position;
             instance.CurrentPosition = sceneReadback.Position;
             instance.CurrentRotation = sceneReadback.Rotation;
-            instance.CurrentRotationEuler = Vector3.Zero;
+            instance.CurrentRotationEuler = WorldTransformUtil.QuaternionToWorldEulerRadians(sceneReadback.Rotation);
             instance.CurrentScale = sceneReadback.Scale;
             instance.LastReadback = FormatSceneSnapshot(sceneReadback);
             instance.LastError = string.Empty;
@@ -3155,6 +3219,7 @@ public sealed unsafe class LocalLayoutObjectService
 
         instance.CurrentPosition = after.Value.Position;
         instance.CurrentRotation = after.Value.Rotation;
+        instance.CurrentRotationEuler = WorldTransformUtil.QuaternionToWorldEulerRadians(after.Value.Rotation);
         instance.CurrentScale = after.Value.Scale;
         instance.LastReadback = FormatSnapshot(after.Value);
         instance.LastError = string.Empty;

@@ -1,4 +1,5 @@
 using LocalQuestReborn.Models;
+using System.Numerics;
 
 namespace LocalQuestReborn.Services;
 
@@ -9,13 +10,15 @@ public sealed class ActorActionSequenceService
 
     private readonly ActorAnimationService animationService;
     private readonly ActorNativeBubbleService bubbleService;
+    private readonly BrioCapabilityBridgeService transformBridge;
     private readonly Dictionary<string, ActorActionSequenceRuntime> runtimes = new(StringComparer.OrdinalIgnoreCase);
     private DateTime lastUpdateAt = DateTime.UtcNow;
 
-    public ActorActionSequenceService(ActorAnimationService animationService, ActorNativeBubbleService bubbleService)
+    public ActorActionSequenceService(ActorAnimationService animationService, ActorNativeBubbleService bubbleService, BrioCapabilityBridgeService transformBridge)
     {
         this.animationService = animationService;
         this.bubbleService = bubbleService;
+        this.transformBridge = transformBridge;
     }
 
     public void Update(IEnumerable<RuntimeActorInstance> actors)
@@ -100,6 +103,7 @@ public sealed class ActorActionSequenceService
         {
             if (!actor.ActionSequenceLoop)
             {
+                this.RestoreSequenceOrigin(actor, runtime, "sequence finished");
                 runtime.CurrentStepIndex = Math.Max(0, actor.ActionSequence.Count - 1);
                 runtime.Running = false;
                 actor.ActionSequenceStatus = "Sequence finished.";
@@ -114,6 +118,7 @@ public sealed class ActorActionSequenceService
             }
 
             runtime.CurrentStepIndex = 0;
+            this.RestoreSequenceOrigin(actor, runtime, "loop restart");
             runtime.CurrentStepElapsed = 0f;
             runtime.StepEntered = false;
             runtime.BubbleShown = false;
@@ -185,6 +190,23 @@ public sealed class ActorActionSequenceService
                 if (!this.animationService.PlayTransientTimeline(actor, step.AnimationId, out reason))
                     return false;
                 break;
+            case ActorActionStepKind.Move:
+                this.EnsureSequenceOrigin(actor, runtime);
+                runtime.IsSequenceMoving = true;
+                if (step.MoveUseAbsoluteWorldTarget)
+                {
+                    runtime.MoveStartWorldPosition = runtime.SequenceOriginTransform.WorldPosition + runtime.CurrentSequenceMoveOffset;
+                    runtime.MoveEndWorldPosition = step.MoveWorldTarget;
+                }
+                else
+                {
+                    runtime.MoveStartWorldPosition = runtime.SequenceOriginTransform.WorldPosition + step.MoveStartWorldOffset;
+                    runtime.MoveEndWorldPosition = runtime.SequenceOriginTransform.WorldPosition + step.MoveEndWorldOffset;
+                }
+
+                if (step.PlayMoveAnimationOnEnter && step.MoveAnimationId != 0 && actor.VisibilityRuntimeState != ActorVisibilityRuntimeState.SequenceHidden)
+                    this.animationService.PlayTransientTimeline(actor, step.MoveAnimationId, out _);
+                break;
             case ActorActionStepKind.ResetToDefaultAction:
                 if (actor.VisibilityRuntimeState == ActorVisibilityRuntimeState.SequenceHidden)
                     break;
@@ -235,6 +257,12 @@ public sealed class ActorActionSequenceService
 
     private void UpdateStep(RuntimeActorInstance actor, ActorActionSequenceStep step, ActorActionSequenceRuntime runtime)
     {
+        if (step.Kind == ActorActionStepKind.Move)
+        {
+            this.UpdateMoveStep(actor, step, runtime);
+            return;
+        }
+
         if (step.Kind != ActorActionStepKind.Action || actor.VisibilityRuntimeState == ActorVisibilityRuntimeState.SequenceHidden)
             return;
 
@@ -268,6 +296,15 @@ public sealed class ActorActionSequenceService
         if (!step.AllowLookAtDuringStep && actor.VisibilityRuntimeState != ActorVisibilityRuntimeState.SequenceHidden)
             actor.LookAtPausedByActionSequence = false;
 
+        if (step.Kind == ActorActionStepKind.Move)
+        {
+            if (step.MoveRestoreAtStepEnd)
+                this.RestoreSequenceOrigin(actor, this.GetRuntime(actor), "move step end");
+            else
+                this.GetRuntime(actor).IsSequenceMoving = false;
+            return;
+        }
+
         if (step.StayInPose || step.Kind != ActorActionStepKind.Action || actor.VisibilityRuntimeState == ActorVisibilityRuntimeState.SequenceHidden)
             return;
 
@@ -293,11 +330,14 @@ public sealed class ActorActionSequenceService
 
     private void StopActorIfNeeded(RuntimeActorInstance actor, bool clearBubble, bool restoreVisibility)
     {
-        var hadRuntime = this.runtimes.Remove(actor.RuntimeId);
+        var hadRuntime = this.runtimes.TryGetValue(actor.RuntimeId, out var runtime);
         if (clearBubble)
             this.bubbleService.Clear(actor);
 
         actor.LookAtPausedByActionSequence = false;
+        if (hadRuntime && runtime != null)
+            this.RestoreSequenceOrigin(actor, runtime, "sequence stop");
+        this.runtimes.Remove(actor.RuntimeId);
         if (restoreVisibility && actor.VisibilityRuntimeState == ActorVisibilityRuntimeState.SequenceHidden && actor.IsValid && actor.CharacterObject != null)
             this.animationService.SetSequenceVisibility(actor, true, out _);
 
@@ -312,6 +352,81 @@ public sealed class ActorActionSequenceService
             this.bubbleService.Clear(runtimeId);
     }
 
+    private void EnsureSequenceOrigin(RuntimeActorInstance actor, ActorActionSequenceRuntime runtime)
+    {
+        if (runtime.HasSequenceOrigin)
+            return;
+
+        var scale = actor.TransformEditScale == Vector3.Zero ? Vector3.One : actor.TransformEditScale;
+        runtime.SequenceOriginTransform = WorldTransform.FromEuler(actor.TransformEditPosition, actor.TransformEditRotationEuler, scale);
+        runtime.HasSequenceOrigin = true;
+    }
+
+    private void UpdateMoveStep(RuntimeActorInstance actor, ActorActionSequenceStep step, ActorActionSequenceRuntime runtime)
+    {
+        this.EnsureSequenceOrigin(actor, runtime);
+        if (actor.VisibilityRuntimeState == ActorVisibilityRuntimeState.SequenceHidden)
+            return;
+
+        var duration = Math.Max(0.01f, MoveDuration(step));
+        var t = Math.Clamp(runtime.CurrentStepElapsed / duration, 0f, 1f);
+        if (step.MoveInterpolation == ActorMoveInterpolation.SmoothStep)
+            t = t * t * (3f - 2f * t);
+
+        var position = Vector3.Lerp(runtime.MoveStartWorldPosition, runtime.MoveEndWorldPosition, t);
+        runtime.CurrentSequenceMoveOffset = position - runtime.SequenceOriginTransform.WorldPosition;
+        var rotationEuler = runtime.SequenceOriginTransform.WorldEulerRadians;
+        if (step.MoveAffectsRotation)
+            rotationEuler = new Vector3(rotationEuler.X, DegreesToRadians(step.MoveYawDegrees), rotationEuler.Z);
+        else if (step.MoveFaceDirection && !actor.LookAtPlayerEnabled)
+        {
+            var direction = runtime.MoveEndWorldPosition - runtime.MoveStartWorldPosition;
+            if (direction.LengthSquared() > 0.0001f)
+                rotationEuler = new Vector3(rotationEuler.X, MathF.Atan2(direction.X, direction.Z), rotationEuler.Z);
+        }
+
+        this.ApplyRuntimeSequenceTransform(actor, position, rotationEuler, runtime.SequenceOriginTransform.WorldScale, out var reason);
+        actor.ActionSequenceStatus = $"Move runtime world position={position}; {reason}";
+    }
+
+    private void RestoreSequenceOrigin(RuntimeActorInstance actor, ActorActionSequenceRuntime runtime, string reason)
+    {
+        if (!runtime.HasSequenceOrigin)
+            return;
+
+        this.ApplyRuntimeSequenceTransform(
+            actor,
+            runtime.SequenceOriginTransform.WorldPosition,
+            runtime.SequenceOriginTransform.WorldEulerRadians,
+            runtime.SequenceOriginTransform.WorldScale,
+            out _);
+        runtime.CurrentSequenceMoveOffset = Vector3.Zero;
+        runtime.IsSequenceMoving = false;
+        actor.ActionSequenceStatus = $"Sequence origin restored: {reason}";
+    }
+
+    private bool ApplyRuntimeSequenceTransform(RuntimeActorInstance actor, Vector3 position, Vector3 rotationEuler, Vector3 scale, out string reason)
+    {
+        var configPosition = actor.TransformEditPosition;
+        var configRotation = actor.TransformEditRotationEuler;
+        var configScale = actor.TransformEditScale == Vector3.Zero ? Vector3.One : actor.TransformEditScale;
+        var spawnPosition = actor.SpawnPosition;
+        var spawnRotation = actor.SpawnRotationEuler;
+        var spawnScale = actor.SpawnScale;
+        var hasSaved = actor.HasSavedTransform;
+
+        var success = this.transformBridge.TryApplyModelTransform(actor, position, rotationEuler, scale, out reason);
+
+        actor.TransformEditPosition = configPosition;
+        actor.TransformEditRotationEuler = configRotation;
+        actor.TransformEditScale = configScale;
+        actor.SpawnPosition = spawnPosition;
+        actor.SpawnRotationEuler = spawnRotation;
+        actor.SpawnScale = spawnScale;
+        actor.HasSavedTransform = hasSaved;
+        return success;
+    }
+
     private static void MoveNext(ActorActionSequenceRuntime runtime)
     {
         runtime.CurrentStepIndex++;
@@ -324,5 +439,13 @@ public sealed class ActorActionSequenceService
     }
 
     private static float StepDuration(ActorActionSequenceStep step)
-        => step.DurationSeconds > 0f ? step.DurationSeconds : DefaultStepDurationSeconds;
+        => step.Kind == ActorActionStepKind.Move
+            ? MoveDuration(step)
+            : step.DurationSeconds > 0f ? step.DurationSeconds : DefaultStepDurationSeconds;
+
+    private static float MoveDuration(ActorActionSequenceStep step)
+        => step.MoveDurationSeconds > 0f ? step.MoveDurationSeconds : step.DurationSeconds > 0f ? step.DurationSeconds : DefaultStepDurationSeconds;
+
+    private static float DegreesToRadians(float degrees)
+        => degrees * (MathF.PI / 180f);
 }

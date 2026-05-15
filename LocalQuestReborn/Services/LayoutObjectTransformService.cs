@@ -135,7 +135,7 @@ public sealed unsafe class LayoutObjectTransformService
 
         try
         {
-            var rotation = Quaternion.Normalize(Quaternion.CreateFromYawPitchRoll(instance.CurrentRotationEuler.Y, instance.CurrentRotationEuler.X, instance.CurrentRotationEuler.Z) * instance.OriginalVisualRotation);
+            var rotation = WorldTransformUtil.WorldEulerRadiansToQuaternion(instance.CurrentRotationEuler);
             var target = new SceneTransformSnapshot(instance.CurrentPosition, rotation, instance.CurrentScale, false);
             WriteSceneObjectTransform(graphicsAddress, target);
             var readback = ReadSceneObjectTransform(graphicsAddress);
@@ -144,6 +144,7 @@ public sealed unsafe class LayoutObjectTransformService
 
             instance.CurrentPosition = readback.Value.Position;
             instance.CurrentRotation = readback.Value.Rotation;
+            instance.CurrentRotationEuler = WorldTransformUtil.QuaternionToWorldEulerRadians(readback.Value.Rotation);
             instance.CurrentScale = readback.Value.Scale;
             instance.CurrentVisualTranslation = readback.Value.Position;
             instance.LastReadback = FormatSceneSnapshot(readback.Value);
@@ -169,7 +170,7 @@ public sealed unsafe class LayoutObjectTransformService
 
         try
         {
-            var rotation = Quaternion.Normalize(Quaternion.CreateFromYawPitchRoll(instance.CurrentRotationEuler.Y, instance.CurrentRotationEuler.X, instance.CurrentRotationEuler.Z) * instance.OriginalLayoutRotation);
+            var rotation = WorldTransformUtil.WorldEulerRadiansToQuaternion(instance.CurrentRotationEuler);
             var transform = new Transform
             {
                 Translation = instance.CurrentPosition,
@@ -184,6 +185,7 @@ public sealed unsafe class LayoutObjectTransformService
 
             instance.CurrentPosition = readback.Value.Position;
             instance.CurrentRotation = readback.Value.Rotation;
+            instance.CurrentRotationEuler = WorldTransformUtil.QuaternionToWorldEulerRadians(readback.Value.Rotation);
             instance.CurrentScale = readback.Value.Scale;
             instance.LastReadback = FormatLayoutSnapshot(readback.Value);
             instance.LastError = string.Empty;
@@ -213,7 +215,7 @@ public sealed unsafe class LayoutObjectTransformService
             var readback = ReadSceneObjectTransform(graphicsAddress) ?? original;
             instance.CurrentPosition = readback.Position;
             instance.CurrentRotation = readback.Rotation;
-            instance.CurrentRotationEuler = Vector3.Zero;
+            instance.CurrentRotationEuler = WorldTransformUtil.QuaternionToWorldEulerRadians(readback.Rotation);
             instance.CurrentScale = readback.Scale;
             instance.CurrentVisualTranslation = readback.Position;
             instance.LastReadback = FormatSceneSnapshot(readback);
@@ -249,7 +251,7 @@ public sealed unsafe class LayoutObjectTransformService
 
             instance.CurrentPosition = readback.Value.Position;
             instance.CurrentRotation = readback.Value.Rotation;
-            instance.CurrentRotationEuler = Vector3.Zero;
+            instance.CurrentRotationEuler = WorldTransformUtil.QuaternionToWorldEulerRadians(readback.Value.Rotation);
             instance.CurrentScale = readback.Value.Scale;
             instance.LastReadback = FormatLayoutSnapshot(readback.Value);
             instance.LastError = string.Empty;

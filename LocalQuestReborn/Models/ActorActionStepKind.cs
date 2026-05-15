@@ -6,6 +6,7 @@ public enum ActorActionStepKind
     Spawn,
     Despawn,
     Wait,
+    Move,
     ResetToDefaultAction,
     Idle,
 }

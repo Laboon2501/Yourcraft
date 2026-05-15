@@ -1,3 +1,5 @@
+using System.Numerics;
+
 namespace LocalQuestReborn.Models;
 
 public sealed class ActorActionSequenceRuntime
@@ -23,4 +25,16 @@ public sealed class ActorActionSequenceRuntime
     public uint Generation { get; set; }
 
     public bool Running { get; set; }
+
+    public WorldTransform SequenceOriginTransform { get; set; }
+
+    public bool HasSequenceOrigin { get; set; }
+
+    public Vector3 MoveStartWorldPosition { get; set; }
+
+    public Vector3 MoveEndWorldPosition { get; set; }
+
+    public Vector3 CurrentSequenceMoveOffset { get; set; }
+
+    public bool IsSequenceMoving { get; set; }
 }

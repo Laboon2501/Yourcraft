@@ -14,6 +14,8 @@ public sealed class ActorAnimationService
         this.log = log;
     }
 
+    public event Action<RuntimeActorInstance, uint, string>? TimelinePlayRequested;
+
     public bool Play(RuntimeActorInstance actor, uint animationId, out string reason)
         => this.PlayTimeline(actor, animationId, out reason);
 
@@ -146,6 +148,7 @@ public sealed class ActorAnimationService
 
         try
         {
+            this.TimelinePlayRequested?.Invoke(actor, animationId, updateDefaultAnimation ? "BaseDefault" : "BaseTransient");
             unsafe
             {
                 var character = (FFXIVClientStructs.FFXIV.Client.Game.Character.Character*)address;
