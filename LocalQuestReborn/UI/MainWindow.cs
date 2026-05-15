@@ -453,7 +453,9 @@ public sealed class MainWindow : Window
         this.SyncSceneEditorBgPartCopyMode();
         var records = this.sceneEditor.NativeModificationRecords.ToList();
         ImGui.TextWrapped($"Hidden/native modification records: {records.Count}");
+        ImGui.TextColored(new Vector4(1f, 0.72f, 0.25f, 1f), "未恢复的记录不能删除，防止原生对象被移动或隐藏后无法找回。请先恢复，再清理 Restored/Missing 记录。");
         ImGui.TextDisabled(this.sceneEditor.LastStatus);
+        ImGui.TextDisabled(this.sceneEditor.RestoreStatus);
 
         var selected = this.sceneEditor.GetSelectedEditable();
         var selectedRecord = selected == null ? null : this.sceneEditor.GetNativeModificationRecord(selected);
@@ -462,21 +464,21 @@ public sealed class MainWindow : Window
             this.sceneEditor.RestoreNativeModification(selectedRecord!.RecordId);
         ImGui.EndDisabled();
         ImGui.SameLine();
-        if (ImGui.Button("恢复全部隐藏对象"))
-            this.sceneEditor.RestoreAllHiddenNativeObjects();
+        if (ImGui.Button("恢复当前地图全部隐藏对象"))
+            this.sceneEditor.RestoreCurrentTerritoryHiddenObjects();
         ImGui.SameLine();
-        if (ImGui.Button("恢复全部游戏原生修改"))
-            this.sceneEditor.RestoreAllNativeModifications();
+        if (ImGui.Button("恢复当前地图全部游戏原生修改"))
+            this.sceneEditor.RestoreCurrentTerritoryNativeModifications();
         ImGui.SameLine();
-        if (ImGui.Button("恢复全部原生 NPC / EventNPC 修改"))
-            this.RestoreSceneEditorRecords(records.Where(item => item.IsModified && item.Kind is SceneEditableKind.NativeActor or SceneEditableKind.EventNpc));
-        if (ImGui.Button("恢复全部原生 BgPart 修改"))
-            this.RestoreSceneEditorRecords(records.Where(item => item.IsModified && item.Kind == SceneEditableKind.NativeBgPart));
+        if (ImGui.Button("恢复当前地图 NPC / EventNPC 修改"))
+            this.sceneEditor.RestoreCurrentTerritoryNativeActors();
+        if (ImGui.Button("恢复当前地图 BgPart 修改"))
+            this.sceneEditor.RestoreCurrentTerritoryNativeBgParts();
         ImGui.SameLine();
-        if (ImGui.Button("恢复全部原生 Light 修改"))
-            this.RestoreSceneEditorRecords(records.Where(item => item.IsModified && item.Kind == SceneEditableKind.NativeLight));
+        if (ImGui.Button("恢复当前地图 Light 修改"))
+            this.sceneEditor.RestoreCurrentTerritoryNativeLights();
         ImGui.SameLine();
-        if (ImGui.Button("清理失效记录"))
+        if (ImGui.Button("清理 Restored/Missing 记录"))
             this.sceneEditor.CleanupInactiveNativeModificationRecords();
 
         ImGui.Separator();
@@ -524,7 +526,7 @@ public sealed class MainWindow : Window
         ImGui.TableHeadersRow();
 
         string? restoreId = null;
-        string? deleteId = null;
+        string? cleanupId = null;
         foreach (var record in rows)
         {
             ImGui.TableNextRow();
@@ -552,8 +554,14 @@ public sealed class MainWindow : Window
             ImGui.TableSetColumnIndex(9);
             if (ImGui.Button("Restore"))
                 restoreId = record.RecordId;
-            if (ImGui.Button("Delete record"))
-                deleteId = record.RecordId;
+            var canCleanup = string.Equals(record.Status, "Restored", StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(record.Status, "Missing", StringComparison.OrdinalIgnoreCase);
+            ImGui.BeginDisabled(!canCleanup);
+            if (ImGui.Button("Clean record"))
+                cleanupId = record.RecordId;
+            ImGui.EndDisabled();
+            if (!canCleanup && ImGui.IsItemHovered())
+                ImGui.SetTooltip("请先恢复记录。Hidden/Modified 记录不能直接删除，避免无法找回原生对象。");
             ImGui.PopID();
         }
 
@@ -561,8 +569,8 @@ public sealed class MainWindow : Window
 
         if (restoreId != null)
             this.sceneEditor.RestoreNativeModification(restoreId);
-        if (deleteId != null)
-            this.sceneEditor.RemoveNativeModificationRecord(deleteId);
+        if (cleanupId != null)
+            this.sceneEditor.RemoveNativeModificationRecord(cleanupId);
     }
 
     private void DrawSceneEditorModeButtons(SceneEditableRef selected)
@@ -1899,6 +1907,7 @@ public sealed class MainWindow : Window
                 bgParts: this.AllBgParts(),
                 unsafeEnabled: this.realNpcSpawn.EnableUnsafeNativeWrites,
                 fullLayoutConfirmed: this.confirmFullLayoutCollisionMode);
+            this.sceneEditor.ForgetAllLocalBgPartRecords();
             this.selectedLocalLayoutObjectId = string.Empty;
             this.sceneEditorSelection.Clear(SceneEditorSelectionSource.MainUi);
         }
@@ -2345,6 +2354,7 @@ public sealed class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(deleteId))
         {
             this.localLayoutObjects.Delete(deleteId);
+            this.sceneEditor.ForgetLocalBgPartRecord(deleteId);
             if (string.Equals(this.selectedLocalLayoutObjectId, deleteId, StringComparison.Ordinal))
             {
                 this.selectedLocalLayoutObjectId = string.Empty;
@@ -2844,6 +2854,7 @@ public sealed class MainWindow : Window
         if (ImGui.Button("删除实例"))
         {
             this.localLayoutObjects.Delete(selected.Id);
+            this.sceneEditor.ForgetLocalBgPartRecord(selected.Id);
             this.selectedLocalLayoutObjectId = string.Empty;
             this.sceneEditorSelection.Clear(SceneEditorSelectionSource.MainUi);
         }
@@ -2853,6 +2864,7 @@ public sealed class MainWindow : Window
         if (ImGui.Button("强制从列表移除选中实例（不写 native）"))
         {
             this.localLayoutObjects.ForceRemoveInstance(selected.Id);
+            this.sceneEditor.ForgetLocalBgPartRecord(selected.Id);
             this.selectedLocalLayoutObjectId = string.Empty;
             this.sceneEditorSelection.Clear(SceneEditorSelectionSource.MainUi);
         }

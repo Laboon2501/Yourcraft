@@ -55,4 +55,10 @@ public sealed class SceneEditorNativeModificationRecord
     public string Reason { get; set; } = string.Empty;
 
     public string Status { get; set; } = "Modified";
+
+    public Vector3Data HiddenPosition { get; set; } = new();
+
+    public Vector3Data HiddenRotationEuler { get; set; } = new();
+
+    public Vector3Data HiddenScale { get; set; } = new() { X = 1f, Y = 1f, Z = 1f };
 }

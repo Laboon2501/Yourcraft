@@ -15,6 +15,7 @@ namespace LocalQuestReborn.Services;
 
 public sealed unsafe class SceneEditorService
 {
+    private const int RequiredRestoreStableTicks = 24;
     private readonly RealNpcSpawnService actors;
     private readonly LocalLayoutObjectService localLayoutObjects;
     private readonly LocalLightNativeService localLights;
@@ -29,6 +30,22 @@ public sealed unsafe class SceneEditorService
     private readonly List<SceneEditableRef> nativeCache = [];
     private DateTime lastNativeScanUtc = DateTime.MinValue;
     private DateTime lastUndoShortcutUtc = DateTime.MinValue;
+    private DateTime lastPersistDirtyUtc = DateTime.MinValue;
+    private DateTime lastLocalBgPartSnapshotUtc = DateTime.MinValue;
+    private bool persistDirty;
+    private bool restorePending;
+    private bool restoreRunning;
+    private int sceneGeneration;
+    private int restoreGeneration;
+    private int sceneStableTicks;
+    private uint lastSeenTerritory;
+    private string restoreReason = string.Empty;
+    private int restoreWaitTicks;
+    private int restoreStage;
+    private int restoreIndex;
+    private List<SceneEditorNativeModificationRecord> restoreNativeRecords = [];
+    private List<SceneEditorLocalBgPartRecord> restoreBgPartRecords = [];
+    private List<LocalLightInstance> restoreLightRecords = [];
 
     public SceneEditorService(
         RealNpcSpawnService actors,
@@ -96,9 +113,15 @@ public sealed unsafe class SceneEditorService
 
     public string LastQuickActionStatus { get; private set; } = "No SceneEditor quick action yet.";
 
+    public string RestoreStatus { get; private set; } = "Restore queue idle.";
+
     private List<SceneEditorNativeModificationRecord> NativeRecords => this.configuration.SceneEditorNativeModifications ??= [];
 
     public IReadOnlyList<SceneEditorNativeModificationRecord> NativeModificationRecords => this.NativeRecords;
+
+    private List<SceneEditorLocalBgPartRecord> LocalBgPartRecords => this.configuration.SceneEditorLocalBgParts ??= [];
+
+    public IReadOnlyList<SceneEditorLocalBgPartRecord> LocalBgPartRestoreRecords => this.LocalBgPartRecords;
 
     public RuntimeActorInstance? GetLocalActor(string runtimeId)
         => this.actors.Actors.FirstOrDefault(item => string.Equals(item.RuntimeId, runtimeId, StringComparison.OrdinalIgnoreCase));
@@ -134,6 +157,86 @@ public sealed unsafe class SceneEditorService
         this.localLights.RequestApply(runtimeId);
         this.LastStatus = this.localLights.LastStatus;
         this.TransformGeneration++;
+        this.MarkPersistDirty("LocalLight apply");
+    }
+
+    public void RequestRestore(string reason)
+    {
+        this.restorePending = true;
+        this.restoreReason = string.IsNullOrWhiteSpace(reason) ? "manual" : reason;
+        this.log.Information("[Restore] Request reason={Reason}", this.restoreReason);
+        this.RestoreStatus = $"Restore pending: {this.restoreReason}";
+    }
+
+    public void NotifySceneChanging(string reason)
+    {
+        this.sceneGeneration++;
+        this.sceneStableTicks = 0;
+        this.restoreRunning = false;
+        this.restoreStage = 0;
+        this.restoreIndex = 0;
+        this.restoreNativeRecords.Clear();
+        this.restoreBgPartRecords.Clear();
+        this.restoreLightRecords.Clear();
+        this.nativeCache.Clear();
+        this.lastNativeScanUtc = DateTime.MinValue;
+        this.RestoreStatus = $"[Restore] Scene invalidated: {reason}";
+        this.log.Information("[Restore] Scene invalidated reason={Reason} generation={Generation}", reason, this.sceneGeneration);
+    }
+
+    public void UpdateRestoreQueue(bool sceneStable)
+    {
+        this.SyncLocalBgPartSnapshotsDebounced();
+        this.SaveDirtyConfigurationIfDue();
+
+        var territory = this.getTerritoryType();
+        if (this.lastSeenTerritory != territory)
+        {
+            this.lastSeenTerritory = territory;
+            this.NotifySceneChanging($"TerritoryChanged:{territory}");
+        }
+
+        if (!sceneStable)
+        {
+            this.sceneStableTicks = 0;
+            if (this.restoreRunning)
+                this.RestoreStatus = "[Restore] Paused reason=scene unstable";
+            return;
+        }
+
+        this.sceneStableTicks++;
+        if (this.sceneStableTicks < RequiredRestoreStableTicks)
+        {
+            this.RestoreStatus = $"[Restore] Wait scene stable ticks={this.sceneStableTicks}/{RequiredRestoreStableTicks}";
+            return;
+        }
+
+        if (!this.restoreRunning && this.restorePending)
+            this.StartRestoreQueue();
+
+        if (!this.restoreRunning)
+            return;
+
+        if (this.restoreWaitTicks > 0)
+        {
+            this.restoreWaitTicks--;
+            this.RestoreStatus = $"[Restore] Wait scene stable ticks={this.restoreWaitTicks}";
+            return;
+        }
+
+        this.AdvanceRestoreQueue();
+    }
+
+    public void FlushPersistence()
+    {
+        this.SyncLocalBgPartSnapshots();
+        if (this.persistDirty)
+        {
+            this.log.Debug("[Persist] Save begin.");
+            this.saveConfiguration();
+            this.persistDirty = false;
+            this.log.Debug("[Persist] Save end.");
+        }
     }
 
     public void SetHoveredMarker(SceneEditableRef? item, Vector2 screenPosition, Vector2 mousePosition, float distance)
@@ -294,12 +397,17 @@ public sealed unsafe class SceneEditorService
                 var actorResult = this.actors.ApplyActorTransform(runtimeId, transform.WorldPosition, transform.WorldEulerRadians, scale);
                 this.LastStatus = this.actors.LastMessage;
                 if (actorResult)
+                {
                     this.TransformGeneration++;
+                    this.MarkPersistDirty("LocalActor transform");
+                }
                 return actorResult;
             case SceneEditableKind.LocalBgPart:
                 this.localLayoutObjects.ApplyVisualTransform(runtimeId, transform.WorldPosition, transform.WorldEulerRadians, scale);
                 this.LastStatus = this.localLayoutObjects.LastStatus;
                 this.TransformGeneration++;
+                this.SyncLocalBgPartSnapshots();
+                this.MarkPersistDirty("LocalBgPart transform");
                 return true;
             case SceneEditableKind.LocalLight:
                 var light = this.localLights.GetById(runtimeId);
@@ -315,12 +423,19 @@ public sealed unsafe class SceneEditorService
                 this.localLights.RequestApply(runtimeId);
                 this.LastStatus = this.localLights.LastStatus;
                 this.TransformGeneration++;
+                this.MarkPersistDirty("LocalLight transform");
                 return true;
             case SceneEditableKind.NativeBgPart:
             case SceneEditableKind.NativeLight:
                 if (!this.AllowNativeTransformWrites)
                 {
                     this.LastStatus = "Native transform write blocked: unsafe/native writes are disabled.";
+                    return false;
+                }
+
+                if (!this.CanRunRestoreNow(out var nativeLayoutPauseReason))
+                {
+                    this.LastStatus = $"Native transform write skipped: {nativeLayoutPauseReason}.";
                     return false;
                 }
 
@@ -334,6 +449,12 @@ public sealed unsafe class SceneEditorService
                 if (!this.AllowNativeTransformWrites)
                 {
                     this.LastStatus = "Native actor transform write blocked: unsafe/native writes are disabled.";
+                    return false;
+                }
+
+                if (!this.CanRunRestoreNow(out var nativeActorPauseReason))
+                {
+                    this.LastStatus = $"Native actor transform write skipped: {nativeActorPauseReason}.";
                     return false;
                 }
 
@@ -375,6 +496,25 @@ public sealed unsafe class SceneEditorService
 
         this.LastStatus = message;
         return result;
+    }
+
+    public void ForgetLocalBgPartRecord(string instanceId)
+    {
+        if (string.IsNullOrWhiteSpace(instanceId))
+            return;
+
+        var removed = this.LocalBgPartRecords.RemoveAll(item => string.Equals(item.InstanceId, instanceId, StringComparison.OrdinalIgnoreCase));
+        if (removed > 0)
+            this.MarkPersistDirty("LocalBgPart record removed");
+    }
+
+    public void ForgetAllLocalBgPartRecords()
+    {
+        if (this.LocalBgPartRecords.Count == 0)
+            return;
+
+        this.LocalBgPartRecords.Clear();
+        this.MarkPersistDirty("LocalBgPart records cleared");
     }
 
     public bool TryHandleUndoShortcut(bool isGizmoDragging, bool wantTextInput, bool ctrlDown, bool zPressed)
@@ -502,6 +642,8 @@ public sealed unsafe class SceneEditorService
         this.selection.Select(SceneEditableKind.LocalBgPart, created.Id, SceneEditorSelectionSource.SceneEditorPanel);
         this.LastQuickActionStatus = $"Copied one BgPart: {created.Id}; mode={mode}";
         this.TransformGeneration++;
+        this.SyncLocalBgPartSnapshots();
+        this.MarkPersistDirty("LocalBgPart created");
         return true;
     }
 
@@ -593,11 +735,14 @@ public sealed unsafe class SceneEditorService
         {
             record.Status = "HideFailed";
             record.LastModifiedAt = DateTime.UtcNow;
-            this.saveConfiguration();
+            this.MarkPersistDirty("Native hide failed");
             return false;
         }
 
         SetRecordCurrentTransform(record, hiddenTransform);
+        SetVector3Data(record.HiddenPosition, hiddenTransform.WorldPosition);
+        SetVector3Data(record.HiddenRotationEuler, hiddenTransform.WorldEulerRadians);
+        SetVector3Data(record.HiddenScale, hiddenTransform.WorldScale);
         record.IsHidden = true;
         record.IsModified = true;
         record.Reason = "Hidden";
@@ -609,7 +754,7 @@ public sealed unsafe class SceneEditorService
             record.PreferredModifyStatus = this.LastQuickActionStatus;
         }
 
-        this.saveConfiguration();
+        this.MarkPersistDirty("Native hide");
         this.LastStatus = $"Native object hidden underground: {selected.DisplayName}";
         this.log.Information("[SceneEditor] Native hide kind={Kind} key={Key} name={Name}", selected.Kind, record.StableKey, selected.DisplayName);
         return true;
@@ -640,8 +785,14 @@ public sealed unsafe class SceneEditorService
         if (record.Kind == SceneEditableKind.Player)
         {
             record.Status = "RestoreBlockedPlayer";
-            this.saveConfiguration();
+            this.MarkPersistDirty("Native restore blocked");
             this.LastStatus = "LocalPlayer restore is blocked.";
+            return false;
+        }
+
+        if (!this.CanRunRestoreNow(out var pausedReason))
+        {
+            this.LastStatus = $"Native restore paused: {pausedReason}.";
             return false;
         }
 
@@ -650,7 +801,7 @@ public sealed unsafe class SceneEditorService
         {
             record.Status = "Missing";
             record.LastModifiedAt = DateTime.UtcNow;
-            this.saveConfiguration();
+            this.MarkPersistDirty("Native restore missing");
             this.LastStatus = $"Native restore failed or object missing: {record.DisplayName}";
             return false;
         }
@@ -660,7 +811,7 @@ public sealed unsafe class SceneEditorService
         record.IsModified = false;
         record.Status = "Restored";
         record.LastModifiedAt = DateTime.UtcNow;
-        this.saveConfiguration();
+        this.MarkPersistDirty("Native restore");
         this.LastStatus = $"Native object restored: {record.DisplayName}";
         this.log.Information("[SceneEditor] Native restore kind={Kind} key={Key} name={Name}", record.Kind, record.StableKey, record.DisplayName);
         return true;
@@ -668,24 +819,32 @@ public sealed unsafe class SceneEditorService
 
     public int RestoreAllHiddenNativeObjects()
     {
-        var records = this.NativeRecords.Where(item => item.IsHidden).Select(item => item.RecordId).ToList();
-        var restored = 0;
-        foreach (var id in records)
-        {
-            if (this.RestoreNativeModification(id))
-                restored++;
-        }
-
-        this.LastStatus = $"Restored hidden native objects: {restored}/{records.Count}";
-        return restored;
+        return this.RestoreNativeRecords(item => item.IsHidden, "all hidden native objects");
     }
 
     public int RestoreAllNativeModifications()
     {
-        var records = this.NativeRecords
-            .Where(item => item.IsHidden || item.IsModified)
-            .Select(item => item.RecordId)
-            .ToList();
+        return this.RestoreNativeRecords(item => item.IsHidden || item.IsModified, "all native modifications");
+    }
+
+    public int RestoreCurrentTerritoryNativeActors()
+        => this.RestoreNativeRecords(item => this.IsCurrentTerritoryRecord(item) && item.Kind is SceneEditableKind.NativeActor or SceneEditableKind.EventNpc && (item.IsHidden || item.IsModified), "current territory native NPC/EventNPC modifications");
+
+    public int RestoreCurrentTerritoryNativeBgParts()
+        => this.RestoreNativeRecords(item => this.IsCurrentTerritoryRecord(item) && item.Kind == SceneEditableKind.NativeBgPart && (item.IsHidden || item.IsModified), "current territory native BgPart modifications");
+
+    public int RestoreCurrentTerritoryNativeLights()
+        => this.RestoreNativeRecords(item => this.IsCurrentTerritoryRecord(item) && item.Kind == SceneEditableKind.NativeLight && (item.IsHidden || item.IsModified), "current territory native Light modifications");
+
+    public int RestoreCurrentTerritoryNativeModifications()
+        => this.RestoreNativeRecords(item => this.IsCurrentTerritoryRecord(item) && (item.IsHidden || item.IsModified), "current territory native modifications");
+
+    public int RestoreCurrentTerritoryHiddenObjects()
+        => this.RestoreNativeRecords(item => this.IsCurrentTerritoryRecord(item) && item.IsHidden, "current territory hidden native objects");
+
+    private int RestoreNativeRecords(Func<SceneEditorNativeModificationRecord, bool> predicate, string label)
+    {
+        var records = this.NativeRecords.Where(predicate).Select(item => item.RecordId).ToList();
         var restored = 0;
         foreach (var id in records)
         {
@@ -693,17 +852,24 @@ public sealed unsafe class SceneEditorService
                 restored++;
         }
 
-        this.LastStatus = $"Restored native modifications: {restored}/{records.Count}";
+        this.LastStatus = $"Restored {label}: {restored}/{records.Count}";
         return restored;
     }
 
     public bool RemoveNativeModificationRecord(string recordId)
     {
-        var removed = this.NativeRecords.RemoveAll(item => string.Equals(item.RecordId, recordId, StringComparison.OrdinalIgnoreCase));
+        var record = this.NativeRecords.FirstOrDefault(item => string.Equals(item.RecordId, recordId, StringComparison.OrdinalIgnoreCase));
+        if (record is { IsHidden: true } or { IsModified: true })
+        {
+            this.LastStatus = "Record cleanup blocked: restore Hidden/Modified records before removing them.";
+            return false;
+        }
+
+        var removed = record == null ? 0 : this.NativeRecords.Remove(record) ? 1 : 0;
         if (removed <= 0)
             return false;
 
-        this.saveConfiguration();
+        this.MarkPersistDirty("Native record removed");
         this.LastStatus = "Removed native modification record.";
         return true;
     }
@@ -714,10 +880,306 @@ public sealed unsafe class SceneEditorService
             string.Equals(item.Status, "Restored", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(item.Status, "Missing", StringComparison.OrdinalIgnoreCase));
         if (removed > 0)
-            this.saveConfiguration();
+            this.MarkPersistDirty("Native records cleanup");
 
         this.LastStatus = $"Cleaned native modification records: {removed}";
         return removed;
+    }
+
+    private void CancelRestore(string reason)
+    {
+        if (!this.restoreRunning)
+            return;
+
+        this.restoreRunning = false;
+        this.restorePending = true;
+        this.restoreStage = 0;
+        this.restoreIndex = 0;
+        this.restoreNativeRecords.Clear();
+        this.restoreBgPartRecords.Clear();
+        this.restoreLightRecords.Clear();
+        this.RestoreStatus = $"[Restore] Cancelled: {reason}";
+        this.log.Information("[Restore] Cancel reason={Reason}", reason);
+    }
+
+    private void StartRestoreQueue()
+    {
+        this.restorePending = false;
+        this.restoreRunning = true;
+        this.restoreGeneration = this.sceneGeneration;
+        this.restoreStage = 0;
+        this.restoreIndex = 0;
+        this.restoreWaitTicks = 8;
+
+        var territory = this.getTerritoryType();
+        this.restoreNativeRecords = this.NativeRecords
+            .Where(item => this.IsCurrentTerritoryRecord(item))
+            .Where(item => item.Kind != SceneEditableKind.Player)
+            .Where(item => item.IsHidden || item.IsModified)
+            .Where(item => !string.Equals(item.Status, "Restored", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(item => item.Kind)
+            .ThenBy(item => item.CreatedAt)
+            .ToList();
+
+        this.restoreBgPartRecords = this.LocalBgPartRecords
+            .Where(item => item.Enabled)
+            .Where(item => item.TerritoryId == 0 || item.TerritoryId == territory)
+            .OrderBy(item => item.SortOrder)
+            .ThenBy(item => item.LastSavedAt)
+            .ToList();
+
+        this.restoreLightRecords = this.localLights.Instances
+            .Select((item, index) => new { item, index })
+            .OrderBy(pair => pair.index)
+            .Select(pair => pair.item)
+            .ToList();
+
+        this.RestoreStatus = $"[Restore] Start generation reason={this.restoreReason}; native={this.restoreNativeRecords.Count}; bgParts={this.restoreBgPartRecords.Count}; lights={this.restoreLightRecords.Count}";
+        this.log.Information(
+            "[Restore] Start reason={Reason}; territory={Territory}; native={NativeCount}; bgParts={BgPartCount}; lights={LightCount}",
+            this.restoreReason,
+            territory,
+            this.restoreNativeRecords.Count,
+            this.restoreBgPartRecords.Count,
+            this.restoreLightRecords.Count);
+    }
+
+    private void AdvanceRestoreQueue()
+    {
+        if (!this.CanRunRestoreNow(out var pauseReason))
+        {
+            this.RestoreStatus = $"[Restore] Paused reason={pauseReason}";
+            return;
+        }
+
+        if (this.restoreGeneration != this.sceneGeneration)
+        {
+            this.log.Information("[Restore] Abort stale generation old={Old} current={Current}", this.restoreGeneration, this.sceneGeneration);
+            this.restoreRunning = false;
+            this.restorePending = true;
+            this.RestoreStatus = $"[Restore] Abort stale generation old={this.restoreGeneration} current={this.sceneGeneration}";
+            return;
+        }
+
+        switch (this.restoreStage)
+        {
+            case 0:
+                if (this.restoreIndex == 0)
+                    this.log.Information("[Restore] Stage NativeModifications begin count={Count}", this.restoreNativeRecords.Count);
+
+                if (this.restoreIndex < this.restoreNativeRecords.Count)
+                {
+                    var record = this.restoreNativeRecords[this.restoreIndex++];
+                    this.ApplyPersistedNativeModification(record);
+                    this.RestoreStatus = $"[Restore] Native {this.restoreIndex}/{this.restoreNativeRecords.Count}: {record.DisplayName}";
+                    return;
+                }
+
+                this.log.Information("[Restore] Stage NativeModifications end count={Count}", this.restoreNativeRecords.Count);
+                this.restoreStage = 1;
+                this.restoreIndex = 0;
+                return;
+
+            case 1:
+                if (this.localLayoutObjects.IsBusy || this.localLayoutObjects.IsCreateQueueActive)
+                {
+                    this.RestoreStatus = "[Restore] Waiting for LocalBgPart queue to become idle.";
+                    return;
+                }
+
+                if (this.restoreIndex == 0)
+                    this.log.Information("[Restore] Stage LocalBgParts begin count={Count}", this.restoreBgPartRecords.Count);
+
+                if (this.restoreIndex < this.restoreBgPartRecords.Count)
+                {
+                    var record = this.restoreBgPartRecords[this.restoreIndex++];
+                    this.RestoreLocalBgPartRecord(record);
+                    this.RestoreStatus = $"[Restore] BgPart {this.restoreIndex}/{this.restoreBgPartRecords.Count}: {FirstNonEmpty(record.CurrentMdlPath, record.SourceMdlPath, record.InstanceId)}";
+                    return;
+                }
+
+                this.log.Information("[Restore] Stage LocalBgParts end count={Count}", this.restoreBgPartRecords.Count);
+                this.restoreStage = 2;
+                this.restoreIndex = 0;
+                return;
+
+            case 2:
+                if (this.restoreIndex == 0)
+                    this.log.Information("[Restore] Stage LocalLights begin count={Count}", this.restoreLightRecords.Count);
+
+                if (this.restoreIndex < this.restoreLightRecords.Count)
+                {
+                    var light = this.restoreLightRecords[this.restoreIndex++];
+                    if (light.Enabled)
+                        this.localLights.RequestApply(light.Id);
+                    this.RestoreStatus = $"[Restore] Light {this.restoreIndex}/{this.restoreLightRecords.Count}: {light.Name}";
+                    return;
+                }
+
+                this.log.Information("[Restore] Stage LocalLights end count={Count}", this.restoreLightRecords.Count);
+                this.restoreStage = 3;
+                this.restoreIndex = 0;
+                return;
+
+            case 3:
+                this.log.Information("[Restore] Stage LocalActors delegated to existing actor spawn/intent queues.");
+                this.restoreStage = 4;
+                this.restoreIndex = 0;
+                return;
+
+            default:
+                this.restoreRunning = false;
+                this.RestoreStatus = $"[Restore] Complete reason={this.restoreReason}";
+                this.log.Information("[Restore] Complete reason={Reason}", this.restoreReason);
+                if (this.restorePending)
+                    this.StartRestoreQueue();
+                return;
+        }
+    }
+
+    private bool CanRunRestoreNow(out string reason)
+    {
+        if (this.getTerritoryType() == 0)
+        {
+            reason = "territory invalid";
+            return false;
+        }
+
+        if (this.playerPositionProvider() == null)
+        {
+            reason = "LocalPlayer unavailable";
+            return false;
+        }
+
+        if (this.sceneStableTicks < RequiredRestoreStableTicks)
+        {
+            reason = $"scene stable ticks {this.sceneStableTicks}/{RequiredRestoreStableTicks}";
+            return false;
+        }
+
+        reason = string.Empty;
+        return true;
+    }
+
+    private bool ApplyPersistedNativeModification(SceneEditorNativeModificationRecord record)
+    {
+        if (record.Kind == SceneEditableKind.Player)
+            return false;
+
+        var transform = record.IsHidden
+            ? GetHiddenOrCurrentTransform(record)
+            : GetCurrentTransform(record);
+
+        if (!this.ApplyNativeRecordTransform(record, transform))
+        {
+            record.Status = "Missing";
+            record.LastModifiedAt = DateTime.UtcNow;
+            this.MarkPersistDirty("Persisted native restore missing");
+            this.log.Warning("[Restore] Native restore missing stableKey={StableKey} kind={Kind} name={Name}", record.StableKey, record.Kind, record.DisplayName);
+            return false;
+        }
+
+        record.Status = record.IsHidden ? "Hidden" : "Modified";
+        record.LastModifiedAt = DateTime.UtcNow;
+        this.MarkPersistDirty("Persisted native restore");
+        this.log.Information("[Restore] Native restore stableKey={StableKey} kind={Kind} status={Status}", record.StableKey, record.Kind, record.Status);
+        return true;
+    }
+
+    private bool RestoreLocalBgPartRecord(SceneEditorLocalBgPartRecord record)
+    {
+        var target = WorldTransform.FromEuler(
+            ToVector3(record.WorldPosition),
+            ToVector3(record.WorldRotationEuler),
+            WorldTransformUtil.NormalizeScale(ToVector3(record.WorldScale)));
+
+        var existing = this.localLayoutObjects.GetById(record.InstanceId);
+        if (existing != null && !existing.IsRestored && !existing.IsInvalid && !existing.IsDuplicate)
+        {
+            record.RestoreStatus = $"Existing runtime instance kept without native write: {existing.Id}";
+            this.log.Information("[Restore] BgPart order={Order} existing={Id} result={Result}", record.SortOrder, existing.Id, record.RestoreStatus);
+            return true;
+        }
+
+        var candidates = this.GetCurrentBgPartCandidates().ToList();
+        if (candidates.Count == 0)
+        {
+            record.RestoreStatus = "Failed: no BgPart carrier candidates.";
+            this.log.Warning("[Restore] BgPart order={Order} failed: no carrier candidates. path={Path}", record.SortOrder, FirstNonEmpty(record.CurrentMdlPath, record.SourceMdlPath));
+            this.MarkPersistDirty("LocalBgPart restore failed");
+            return false;
+        }
+
+        var template = this.ResolveBgPartTemplate(record, candidates);
+        if (template == null)
+        {
+            record.RestoreStatus = "Failed: no readable mdl path.";
+            this.MarkPersistDirty("LocalBgPart restore failed");
+            return false;
+        }
+
+        var created = this.localLayoutObjects.CreateCopyFromTemplate(
+            template,
+            candidates,
+            target.WorldPosition,
+            record.CollisionMode,
+            CarrierAllocationPolicy.PreferredListThenAnyValid,
+            unsafeEnabled: true,
+            fullLayoutConfirmed: record.CollisionMode == LocalLayoutTransformMode.FullLayoutWithCollision,
+            defaultRotationEuler: target.WorldEulerRadians,
+            defaultScale: target.WorldScale);
+
+        if (created == null)
+        {
+            record.RestoreStatus = $"Failed: {this.localLayoutObjects.LastStatus}";
+            this.log.Warning("[Restore] BgPart order={Order} create failed: {Result}", record.SortOrder, record.RestoreStatus);
+            this.MarkPersistDirty("LocalBgPart restore failed");
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(record.InstanceId) &&
+            !string.Equals(created.Id, record.InstanceId, StringComparison.OrdinalIgnoreCase) &&
+            this.localLayoutObjects.GetById(record.InstanceId) == null)
+        {
+            created.Id = record.InstanceId;
+        }
+        else if (string.IsNullOrWhiteSpace(record.InstanceId))
+        {
+            record.InstanceId = created.Id;
+        }
+
+        record.RestoreStatus = $"Restored: {created.Id}";
+        this.TransformGeneration++;
+        this.SyncLocalBgPartSnapshots();
+        this.MarkPersistDirty("LocalBgPart restored");
+        this.log.Information("[Restore] BgPart order={Order} restored id={Id} path={Path} mode={Mode}", record.SortOrder, created.Id, template.ResourcePath, record.CollisionMode);
+        return true;
+    }
+
+    private LayoutProbeInstance? ResolveBgPartTemplate(SceneEditorLocalBgPartRecord record, IReadOnlyList<LayoutProbeInstance> candidates)
+    {
+        var targetPath = FirstNonEmpty(record.CurrentMdlPath, record.CustomMdlPath, record.SourceMdlPath);
+        if (string.IsNullOrWhiteSpace(targetPath))
+            return null;
+
+        var exact = candidates.FirstOrDefault(item => string.Equals(item.ResourcePath, targetPath, StringComparison.OrdinalIgnoreCase));
+        if (exact != null)
+            return exact;
+
+        return new LayoutProbeInstance
+        {
+            Type = "BgPart",
+            Address = FirstNonEmpty(record.SourceBgPartStableKey, $"persisted:{record.InstanceId}"),
+            Key = FirstNonEmpty(record.SourceBgPartStableKey, $"persisted:{record.InstanceId}"),
+            ResourcePath = targetPath,
+            SourceKind = FirstNonEmpty(record.SourceKind, "PersistedSceneEditor"),
+            Position = ToVector3(record.WorldPosition),
+            Rotation = ToVector3(record.WorldRotationEuler).ToString(),
+            Scale = WorldTransformUtil.NormalizeScale(ToVector3(record.WorldScale)),
+            SharedGroupPath = record.SourceSharedGroupPath,
+            ParentKey = record.SourceBgPartStableKey,
+            ChildIndex = record.SourceChildIndex,
+        };
     }
 
     private SceneEditableRef? FindEditable(SceneEditableKind kind, string runtimeId)
@@ -725,8 +1187,124 @@ public sealed unsafe class SceneEditorService
             item.Kind == kind &&
             string.Equals(item.RuntimeId, runtimeId, StringComparison.OrdinalIgnoreCase));
 
+    private void MarkPersistDirty(string reason)
+    {
+        this.persistDirty = true;
+        this.lastPersistDirtyUtc = DateTime.UtcNow;
+        this.log.Debug("[Persist] MarkDirty reason={Reason}", reason);
+    }
+
+    private void SaveDirtyConfigurationIfDue()
+    {
+        if (!this.persistDirty)
+            return;
+
+        if ((DateTime.UtcNow - this.lastPersistDirtyUtc).TotalMilliseconds < 800)
+            return;
+
+        this.log.Debug("[Persist] Save begin.");
+        this.saveConfiguration();
+        this.persistDirty = false;
+        this.log.Debug("[Persist] Save end.");
+    }
+
+    private void SyncLocalBgPartSnapshotsDebounced()
+    {
+        if ((DateTime.UtcNow - this.lastLocalBgPartSnapshotUtc).TotalMilliseconds < 1200)
+            return;
+
+        this.lastLocalBgPartSnapshotUtc = DateTime.UtcNow;
+        this.SyncLocalBgPartSnapshots();
+    }
+
+    private void SyncLocalBgPartSnapshots()
+    {
+        var active = this.localLayoutObjects.Instances
+            .Where(item => !item.IsRestored && !item.IsInvalid && !item.IsDuplicate)
+            .ToList();
+
+        var changed = false;
+        for (var i = 0; i < active.Count; i++)
+        {
+            var instance = active[i];
+            var record = this.LocalBgPartRecords.FirstOrDefault(item => string.Equals(item.InstanceId, instance.Id, StringComparison.OrdinalIgnoreCase));
+            if (record == null)
+            {
+                record = new SceneEditorLocalBgPartRecord { InstanceId = instance.Id };
+                this.LocalBgPartRecords.Add(record);
+                changed = true;
+            }
+
+            changed |= this.CopyLocalBgPartToRecord(instance, record, i);
+        }
+
+        if (changed)
+            this.MarkPersistDirty("LocalBgPart snapshot sync");
+    }
+
+    private bool CopyLocalBgPartToRecord(LocalLayoutObjectInstance instance, SceneEditorLocalBgPartRecord record, int sortOrder)
+    {
+        var changed = false;
+        changed |= SetPropertyIfChanged(record.SortOrder, sortOrder, value => record.SortOrder = value);
+        changed |= SetPropertyIfChanged(record.TerritoryId, this.getTerritoryType(), value => record.TerritoryId = value);
+        changed |= SetPropertyIfChanged(record.SourceMdlPath, FirstNonEmpty(instance.TemplateResourcePath, instance.SourceResourcePath, instance.CurrentResourcePath, instance.CustomModelPath), value => record.SourceMdlPath = value);
+        changed |= SetPropertyIfChanged(record.CurrentMdlPath, FirstNonEmpty(instance.CurrentResourcePath, instance.CustomModelPath, instance.TemplateResourcePath), value => record.CurrentMdlPath = value);
+        changed |= SetPropertyIfChanged(record.CustomMdlPath, instance.CustomModelPath, value => record.CustomMdlPath = value);
+        changed |= SetPropertyIfChanged(record.CollisionMode, instance.TransformMode, value => record.CollisionMode = value);
+        changed |= SetPropertyIfChanged(record.SourceBgPartStableKey, FirstNonEmpty(instance.SourceParentKey, instance.OccupiedSlotAddress, instance.TemplateSourceSlotAddress), value => record.SourceBgPartStableKey = value);
+        changed |= SetPropertyIfChanged(record.SourceKind, instance.SourceKind, value => record.SourceKind = value);
+        changed |= SetPropertyIfChanged(record.SourceSharedGroupPath, instance.SourceSharedGroupPath, value => record.SourceSharedGroupPath = value);
+        changed |= SetPropertyIfChanged(record.SourceChildIndex, instance.SourceChildIndex, value => record.SourceChildIndex = value);
+        changed |= SetPropertyIfChanged(record.Enabled, !instance.IsRestored && !instance.IsInvalid, value => record.Enabled = value);
+        changed |= SetPropertyIfChanged(record.Hidden, !instance.Visible, value => record.Hidden = value);
+        changed |= SetPropertyIfChanged(record.RestoreStatus, string.IsNullOrWhiteSpace(instance.RestoreStatus) ? instance.InstanceState : instance.RestoreStatus, value => record.RestoreStatus = value);
+        changed |= SetVectorDataIfChanged(record.WorldPosition, instance.CurrentPosition);
+        changed |= SetVectorDataIfChanged(record.WorldRotationEuler, instance.CurrentRotationEuler);
+        changed |= SetVectorDataIfChanged(record.WorldScale, WorldTransformUtil.NormalizeScale(instance.CurrentScale));
+        if (changed)
+            record.LastSavedAt = DateTime.UtcNow;
+        return changed;
+    }
+
+    private static bool SetIfChanged<T>(ref T field, T value)
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value))
+            return false;
+
+        field = value;
+        return true;
+    }
+
+    private static bool SetPropertyIfChanged<T>(T current, T value, Action<T> setter)
+    {
+        if (EqualityComparer<T>.Default.Equals(current, value))
+            return false;
+
+        setter(value);
+        return true;
+    }
+
+    private static bool SetVectorDataIfChanged(Vector3Data data, Vector3 value)
+    {
+        if (MathF.Abs(data.X - value.X) <= 0.001f &&
+            MathF.Abs(data.Y - value.Y) <= 0.001f &&
+            MathF.Abs(data.Z - value.Z) <= 0.001f)
+        {
+            return false;
+        }
+
+        SetVector3Data(data, value);
+        return true;
+    }
+
+    private bool IsCurrentTerritoryRecord(SceneEditorNativeModificationRecord record)
+        => record.TerritoryId == 0 || record.TerritoryId == this.getTerritoryType();
+
     private WorldTransform ReadNativeTransformOrFallback(SceneEditableRef selected)
     {
+        if (!this.CanRunRestoreNow(out _))
+            return selected.Transform;
+
         if (selected.Kind is SceneEditableKind.NativeBgPart or SceneEditableKind.NativeLight && selected.NativePtr != 0)
         {
             try
@@ -762,7 +1340,7 @@ public sealed unsafe class SceneEditorService
             record.Status = record.IsModified ? "Modified" : "Restored";
         record.Reason = reason;
         record.LastModifiedAt = DateTime.UtcNow;
-        this.saveConfiguration();
+        this.MarkPersistDirty($"Native transform {reason}");
     }
 
     private SceneEditorNativeModificationRecord EnsureNativeRecord(SceneEditableRef selected, WorldTransform original, string reason)
@@ -778,7 +1356,7 @@ public sealed unsafe class SceneEditorService
             RecordId = Guid.NewGuid().ToString("N"),
             StableKey = stableKey,
             RuntimeIdAtRecordTime = selected.RuntimeId,
-            NativeAddress = selected.NativePtr == 0 ? string.Empty : $"0x{selected.NativePtr:X}",
+            NativeAddress = string.Empty,
             Kind = selected.Kind,
             DisplayName = selected.DisplayName,
             MdlPath = selected.MdlPath,
@@ -805,32 +1383,32 @@ public sealed unsafe class SceneEditorService
             return false;
         }
 
+        if (!this.CanRunRestoreNow(out var reason))
+        {
+            this.LastStatus = $"Native restore skipped: {reason}.";
+            return false;
+        }
+
         this.lastNativeScanUtc = DateTime.MinValue;
+        this.nativeCache.Clear();
         var current = this.GetEditables().FirstOrDefault(item =>
             item.IsNativeGameObject &&
             item.Kind == record.Kind &&
             string.Equals(this.GetStableKey(item), record.StableKey, StringComparison.OrdinalIgnoreCase));
 
-        if (current != null)
+        if (current == null || current.NativePtr == 0 || current.IsPlayer)
         {
-            return record.Kind switch
-            {
-                SceneEditableKind.NativeBgPart or SceneEditableKind.NativeLight
-                    => this.ApplyNativeLayoutTransformAddress(record.RuntimeIdAtRecordTime, current.NativePtr, transform, record.UseFullLayoutTransform),
-                SceneEditableKind.NativeActor or SceneEditableKind.EventNpc
-                    => this.ApplyNativeActorTransformAddress(record.RuntimeIdAtRecordTime, current.NativePtr, transform),
-                _ => false,
-            };
-        }
-
-        var address = ParsePointer(record.NativeAddress);
-        if (address == 0)
+            this.LastStatus = $"Native restore resolve failed: {record.StableKey}";
+            this.log.Warning("[Restore] Resolve native failed stableKey={StableKey} kind={Kind} name={Name}", record.StableKey, record.Kind, record.DisplayName);
             return false;
+        }
 
         return record.Kind switch
         {
             SceneEditableKind.NativeBgPart or SceneEditableKind.NativeLight
-                => this.ApplyNativeLayoutTransformAddress(record.RuntimeIdAtRecordTime, address, transform, record.UseFullLayoutTransform),
+                => this.ApplyNativeLayoutTransformAddress(record.RuntimeIdAtRecordTime, current.NativePtr, transform, record.UseFullLayoutTransform),
+            SceneEditableKind.NativeActor or SceneEditableKind.EventNpc
+                => this.ApplyNativeActorTransformAddress(record.RuntimeIdAtRecordTime, current.NativePtr, transform),
             _ => false,
         };
     }
@@ -864,6 +1442,23 @@ public sealed unsafe class SceneEditorService
             ToVector3(record.OriginalPosition),
             ToVector3(record.OriginalRotationEuler),
             ToVector3(record.OriginalScale));
+
+    private static WorldTransform GetCurrentTransform(SceneEditorNativeModificationRecord record)
+        => WorldTransform.FromEuler(
+            ToVector3(record.CurrentPosition),
+            ToVector3(record.CurrentRotationEuler),
+            ToVector3(record.CurrentScale));
+
+    private static WorldTransform GetHiddenOrCurrentTransform(SceneEditorNativeModificationRecord record)
+    {
+        var hidden = ToVector3(record.HiddenPosition);
+        return hidden == Vector3.Zero
+            ? GetCurrentTransform(record)
+            : WorldTransform.FromEuler(
+                hidden,
+                ToVector3(record.HiddenRotationEuler),
+                ToVector3(record.HiddenScale));
+    }
 
     private static void SetRecordOriginalTransform(SceneEditorNativeModificationRecord record, WorldTransform transform)
     {

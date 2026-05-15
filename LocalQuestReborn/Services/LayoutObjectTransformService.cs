@@ -86,30 +86,11 @@ public sealed unsafe class LayoutObjectTransformService
 
         try
         {
-            var bg = (SceneBgObject*)graphicsAddress;
-            if (!bg->IsVisible)
-            {
-                instance.IsRenderInvalid = true;
-                return "实例 render 已失效：visible=false。";
-            }
-
-            if (bg->ModelResourceHandle == null)
-            {
-                instance.IsRenderInvalid = true;
-                return "实例 render 已失效：ModelResourceHandle=null。";
-            }
-
-            if (bg->ModelResourceHandle->LoadState != 7)
-            {
-                instance.IsRenderInvalid = true;
-                return $"实例 render 未就绪：LoadState={bg->ModelResourceHandle->LoadState}。";
-            }
-
             var readback = ReadSceneObjectTransform(graphicsAddress);
             if (readback == null)
             {
                 instance.IsRenderInvalid = true;
-                return "实例 render 已失效：readback transform 失败。";
+                return "实例 render 已失效或 native pointer stale：readback transform 失败。";
             }
 
             if (!IsTransformNormal(readback.Value.Position, readback.Value.Rotation, readback.Value.Scale))
@@ -290,8 +271,7 @@ public sealed unsafe class LayoutObjectTransformService
             return null;
 
         var obj = (SceneObject*)graphicsObjectAddress;
-        var bg = (SceneBgObject*)graphicsObjectAddress;
-        return new SceneTransformSnapshot(obj->Position, obj->Rotation, obj->Scale, bg->IsTransformChanged);
+        return new SceneTransformSnapshot(obj->Position, obj->Rotation, obj->Scale, false);
     }
 
     private static void WriteSceneObjectTransform(nint graphicsObjectAddress, SceneTransformSnapshot snapshot)

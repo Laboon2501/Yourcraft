@@ -1491,6 +1491,8 @@ public sealed class RealNpcSpawnService
         this.RestoreTransformExact(actor, "before EnableDraw");
         this.VerifyNoUnexpectedTransformChange(actor, "before EnableDraw");
         this.SetPostSpawnQuarantineVisibility(actor, visible: true, $"appearance verified order={plan.SortOrder}");
+        this.RestoreTransformExact(actor, "after EnableDraw visibility");
+        this.VerifyNoUnexpectedTransformChange(actor, "after EnableDraw visibility");
         actor.PostSpawnPipelineState = "EnableDraw";
         actor.PostSpawnPipelineStatus = "Appearance verified; draw enabled.";
         this.log.Information("[ActorVisibility] enable draw only after verify success. order={Order}, actor={Actor}, ptr={Ptr}, index={Index}", actor.SortOrder, actor.RuntimeId, actor.Address, actor.ObjectIndex);
