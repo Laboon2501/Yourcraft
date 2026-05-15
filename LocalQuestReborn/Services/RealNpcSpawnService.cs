@@ -190,6 +190,23 @@ public sealed class RealNpcSpawnService
     public string PenumbraIpcLastError => this.penumbraIpc.LastError;
     public string PenumbraIpcApiVersion => this.penumbraIpc.ApiVersionText;
     public IReadOnlyList<PenumbraCollectionInfo> PenumbraCollections => this.penumbraIpc.Collections;
+    public string SpawnPrewarmStatus
+        => this.spawnWarmupInProgress
+            ? $"Running ticks={this.spawnWarmupTicks} reason={this.spawnWarmupReason}"
+            : this.spawnWarmupDoneForCurrentScene
+                ? "Ready"
+                : this.spawnWarmupFailed
+                    ? $"Failed reason={this.spawnWarmupReason}"
+                    : "NotStarted";
+    public string FormalQueueStatus
+        => this.pendingActorSpawns.Count > 0 ||
+           this.activePostSpawnApply != null ||
+           this.postSpawnApplyQueue.Count > 0 ||
+           this.pendingGposeRebuilds.Count > 0 ||
+           this.activeGposeRebuildSnapshot != null ||
+           !string.IsNullOrWhiteSpace(this.activeGposeRebuildRuntimeId)
+            ? $"Running pendingSpawn={this.pendingActorSpawns.Count}, activePostSpawn={this.activePostSpawnApply?.RuntimeId ?? "none"}, postSpawnQueue={this.postSpawnApplyQueue.Count}, gposePending={this.pendingGposeRebuilds.Count}, activeGpose={this.activeGposeRebuildRuntimeId}"
+            : "Idle";
     public int AppearanceQueueLength => this.appearanceApplyQueue.Count;
     public string AppearanceQueueCurrentActor => this.appearanceApplyQueue.CurrentActorRuntimeId;
     public long AppearanceQueueLastElapsedMilliseconds => this.appearanceApplyQueue.LastElapsedMilliseconds;
@@ -293,6 +310,7 @@ public sealed class RealNpcSpawnService
         {
             this.brioBridge.IpcProbe.Probe();
             this.ResetSpawnWarmup("Brio manual probe/reconnect");
+            this.EnsureSpawnWarmup("Brio manual probe/reconnect");
             this.LastMessage = this.brioBridge.IpcProbe.LastProbeMessage;
         });
 
@@ -391,9 +409,15 @@ public sealed class RealNpcSpawnService
         {
             this.log.Information("[SpawnWarmup] hidden ptr={Ptr} index={Index}; attempting stable delete after ticks={Ticks}", actor.Address, actor.ObjectIndex, this.spawnWarmupTicks);
             if (this.brioAssemblyBridge.TryDespawnActor(actor, out var deleteReason))
+            {
                 this.log.Information("[SpawnWarmup] delete result ptr={Ptr} index={Index} reason={Reason}", actor.Address, actor.ObjectIndex, deleteReason);
+                this.UntrackActorIdentity(actor, this.warmupActorPointers, this.warmupActorObjectIndexes);
+            }
             else
+            {
                 this.log.Warning("[SpawnWarmup] delete failed; keeping hidden orphan ptr={Ptr} index={Index} reason={Reason}", actor.Address, actor.ObjectIndex, deleteReason);
+                this.TrackWarmupActor(actor);
+            }
         }
 
         this.activeSpawnWarmupActor = null;
@@ -455,6 +479,14 @@ public sealed class RealNpcSpawnService
             pointers.Add(pointer);
         if (int.TryParse(actor.ObjectIndex, out var index) && index >= 0)
             objectIndexes.Add(index);
+    }
+
+    private void UntrackActorIdentity(RuntimeActorInstance actor, HashSet<nint> pointers, HashSet<int> objectIndexes)
+    {
+        if (TryParseAddress(actor.Address, out var pointer) && pointer != 0)
+            pointers.Remove(pointer);
+        if (int.TryParse(actor.ObjectIndex, out var index) && index >= 0)
+            objectIndexes.Remove(index);
     }
 
     public RuntimeActorInstance? SpawnNew(CustomNpc npc, Vector3? overrideSpawnPosition = null, bool requireWarmup = true, int cloneRetryAttempt = 0)
@@ -1415,8 +1447,12 @@ public sealed class RealNpcSpawnService
             return;
         }
 
-        this.brioAssemblyBridge.TryDespawnActor(actor, out var despawnReason);
-        this.log.Information("[ActorSpawn] sacrificial clone despawn result actor={Actor} ptr={Ptr} index={Index} reason={Reason}", actor.RuntimeId, actor.Address, actor.ObjectIndex, despawnReason);
+        var sacrificialDespawned = this.brioAssemblyBridge.TryDespawnActor(actor, out var despawnReason);
+        this.log.Information("[ActorSpawn] sacrificial clone despawn result actor={Actor} ptr={Ptr} index={Index} success={Success} reason={Reason}", actor.RuntimeId, actor.Address, actor.ObjectIndex, sacrificialDespawned, despawnReason);
+        if (sacrificialDespawned)
+            this.UntrackActorIdentity(actor, this.sacrificialClonePointers, this.sacrificialCloneObjectIndexes);
+        else
+            this.TrackSacrificialCloneActor(actor);
         this.registry.Remove(actor.RuntimeId);
         if (string.Equals(this.CurrentSelectedActorRuntimeId, actor.RuntimeId, StringComparison.OrdinalIgnoreCase))
             this.ClearSelectedActorForPlayerLookAt();
@@ -1948,7 +1984,10 @@ public sealed class RealNpcSpawnService
     {
         this.RestoreTransformExact(actor, "Before post-spawn behavior");
         if (actor.AnimationRigMode == ActorAnimationRigMode.Override && actor.AnimationRigPreset != ActorAnimationRigPreset.Current)
-            this.animationRigService.ApplyAnimationRigOverride(actor, out _);
+        {
+            actor.AnimationRigStatus = "Rig probe skipped during post-spawn. Actor creation/appearance pipeline is isolated; apply rig manually after Ready.";
+            this.log.Information("[AnimationRig] skipped automatic post-spawn rig probe actor={Actor} order={Order}", actor.RuntimeId, actor.SortOrder);
+        }
 
         this.actionSequenceService.Reset(actor);
         if (!actor.EnableActionSequence && actor.CurrentAnimationId > 0)
@@ -2035,6 +2074,13 @@ public sealed class RealNpcSpawnService
             return false;
         }
 
+        if (!this.TryValidateRigProbeAllowed(instance, out var blockReason))
+        {
+            this.LastMessage = blockReason;
+            instance.AnimationRigStatus = $"RigProbe skipped: {blockReason}";
+            return false;
+        }
+
         var success = this.animationRigService.ApplyAnimationRigOverride(instance, out var reason);
         this.VerifyNoUnexpectedTransformChange(instance, "After ApplyAnimationRig");
         this.LastMessage = reason;
@@ -2050,6 +2096,13 @@ public sealed class RealNpcSpawnService
             return false;
         }
 
+        if (!this.TryValidateRigProbeAllowed(instance, out var blockReason))
+        {
+            this.LastMessage = blockReason;
+            instance.AnimationRigStatus = $"RigProbe skipped: {blockReason}";
+            return false;
+        }
+
         var success = this.animationRigService.RestoreAnimationRig(instance, out var reason);
         this.VerifyNoUnexpectedTransformChange(instance, "After RestoreAnimationRig");
         this.LastMessage = reason;
@@ -2062,6 +2115,13 @@ public sealed class RealNpcSpawnService
         if (instance == null)
         {
             this.LastMessage = $"Runtime Actor not found: {runtimeId}";
+            return false;
+        }
+
+        if (!this.TryValidateRigProbeAllowed(instance, out var blockReason))
+        {
+            this.LastMessage = blockReason;
+            instance.AnimationRigStatus = $"RigProbe skipped: {blockReason}";
             return false;
         }
 
@@ -2082,6 +2142,146 @@ public sealed class RealNpcSpawnService
 
         this.animationRigService.DumpLastDebugReport(instance);
         this.LastMessage = $"AnimationRig debug report dumped to log for actor {runtimeId[..Math.Min(8, runtimeId.Length)]}.";
+    }
+
+    public void DumpActorAnimationPathBeforeExternalChange(string runtimeId)
+    {
+        var instance = this.registry.GetByRuntimeId(runtimeId);
+        if (instance == null)
+        {
+            this.LastMessage = $"Runtime Actor not found: {runtimeId}";
+            return;
+        }
+
+        if (!this.TryValidateRigProbeAllowed(instance, out var blockReason))
+        {
+            this.LastMessage = blockReason;
+            instance.AnimationPathResolverStatus = $"RigProbe skipped: {blockReason}";
+            return;
+        }
+
+        this.animationRigService.DumpAnimationPathBeforeExternalChange(instance);
+        this.LastMessage = instance.AnimationPathResolverStatus;
+    }
+
+    public void DumpActorAnimationPathAfterExternalChange(string runtimeId)
+    {
+        var instance = this.registry.GetByRuntimeId(runtimeId);
+        if (instance == null)
+        {
+            this.LastMessage = $"Runtime Actor not found: {runtimeId}";
+            return;
+        }
+
+        if (!this.TryValidateRigProbeAllowed(instance, out var blockReason))
+        {
+            this.LastMessage = blockReason;
+            instance.AnimationPathResolverStatus = $"RigProbe skipped: {blockReason}";
+            return;
+        }
+
+        this.animationRigService.DumpAnimationPathAfterExternalChange(instance);
+        this.LastMessage = instance.AnimationPathResolverStatus;
+    }
+
+    public bool CompareActorAnimationPathExternalDumps(string runtimeId)
+    {
+        var instance = this.registry.GetByRuntimeId(runtimeId);
+        if (instance == null)
+        {
+            this.LastMessage = $"Runtime Actor not found: {runtimeId}";
+            return false;
+        }
+
+        if (!this.TryValidateRigProbeAllowed(instance, out var blockReason))
+        {
+            this.LastMessage = blockReason;
+            instance.AnimationPathResolverStatus = $"RigProbe skipped: {blockReason}";
+            return false;
+        }
+
+        var success = this.animationRigService.CompareExternalAnimationPathDumps(instance, out var reason);
+        this.LastMessage = reason;
+        return success;
+    }
+
+    public bool CompareActorAnimationPathWithActor(string runtimeId, string otherRuntimeId)
+    {
+        var instance = this.registry.GetByRuntimeId(runtimeId);
+        var other = this.registry.GetByRuntimeId(otherRuntimeId);
+        if (instance == null || other == null)
+        {
+            this.LastMessage = "Compare failed: one of the actors was not found.";
+            return false;
+        }
+
+        if (string.Equals(instance.RuntimeId, other.RuntimeId, StringComparison.OrdinalIgnoreCase))
+        {
+            this.LastMessage = "Compare failed: choose a different actor.";
+            return false;
+        }
+
+        if (!this.TryValidateRigProbeAllowed(instance, out var blockReason))
+        {
+            this.LastMessage = blockReason;
+            instance.AnimationPathResolverStatus = $"RigProbe skipped: {blockReason}";
+            return false;
+        }
+
+        if (!this.TryValidateRigProbeAllowed(other, out blockReason))
+        {
+            this.LastMessage = blockReason;
+            other.AnimationPathResolverStatus = $"RigProbe skipped: {blockReason}";
+            return false;
+        }
+
+        var success = this.animationRigService.CompareAnimationPathWithActor(instance, other, out var reason);
+        this.VerifyNoUnexpectedTransformChange(instance, "After AnimationPath compare A");
+        this.VerifyNoUnexpectedTransformChange(other, "After AnimationPath compare B");
+        this.LastMessage = reason;
+        return success;
+    }
+
+    private bool TryValidateRigProbeAllowed(RuntimeActorInstance instance, out string reason)
+    {
+        if (this.spawnWarmupInProgress)
+        {
+            reason = "Actor not ready; rig probe skipped because spawn prewarm is running.";
+            return false;
+        }
+
+        if (this.pendingActorSpawns.Count > 0 ||
+            this.activePostSpawnApply != null ||
+            this.postSpawnApplyQueue.Count > 0 ||
+            this.pendingGposeRebuilds.Count > 0 ||
+            this.activeGposeRebuildSnapshot != null ||
+            !string.IsNullOrWhiteSpace(this.activeGposeRebuildRuntimeId))
+        {
+            reason = "Actor not ready; rig probe skipped because formal spawn/rebuild/appearance queue is active.";
+            return false;
+        }
+
+        if (!instance.IsValid || instance.CharacterObject == null)
+        {
+            reason = "Actor not ready; rig probe skipped because actor is invalid or missing native object.";
+            return false;
+        }
+
+        if (!instance.PostSpawnBehaviorReady ||
+            !string.Equals(instance.PostSpawnPipelineState, "Ready", StringComparison.OrdinalIgnoreCase))
+        {
+            reason = $"Actor not ready; rig probe skipped because post-spawn state is {instance.PostSpawnPipelineState}.";
+            return false;
+        }
+
+        if (!this.TryValidatePostSpawnActor(instance, out var validationReason))
+        {
+            reason = $"Actor not ready; rig probe skipped because target validation failed: {validationReason}";
+            return false;
+        }
+
+        reason = string.Empty;
+        return true;
     }
 
     public void ResetActionSequence(string runtimeId)
@@ -3000,6 +3200,20 @@ public sealed class RealNpcSpawnService
         if (actor == null)
         {
             this.log.Warning("[ActorSpawnQueue] spawn failed order={Order} batchIndex={BatchIndex} npc={NpcId}", request.SortOrder, request.BatchIndex, request.Npc.Id);
+            if (request.CloneRetryAttempt < MaxLocalPlayerCloneRetries)
+            {
+                this.EnqueueActorSpawnFront(request with
+                {
+                    CloneRetryAttempt = request.CloneRetryAttempt + 1,
+                    Source = $"{request.Source}-retry"
+                });
+                this.LastMessage = $"Formal spawn returned null; retrying same queued actor batchIndex={request.BatchIndex} attempt={request.CloneRetryAttempt + 1}/{MaxLocalPlayerCloneRetries}.";
+            }
+            else
+            {
+                this.LastMessage = $"Formal spawn failed after retries; actor not silently consumed. npc={request.Npc.Name}, batchIndex={request.BatchIndex}.";
+            }
+
             return;
         }
 

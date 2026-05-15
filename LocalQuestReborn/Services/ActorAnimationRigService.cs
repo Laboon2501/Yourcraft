@@ -9,15 +9,19 @@ public sealed class ActorAnimationRigService
     private readonly ActorAnimationService animationService;
     private readonly IPluginLog log;
     private readonly ActorAnimationRigResolverProbe resolverProbe;
+    private readonly ActorAnimationPathResolverProbe pathResolverProbe;
     private readonly Dictionary<nint, ActorAnimationRigPreset> activeRigByActorPtr = new();
     private readonly Dictionary<string, ActorAnimationRigPreset> activeRigByActorInstanceId = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, RigHookProbeState> hookProbeByActorInstanceId = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ActorAnimationPathDump> pathBeforeDumpByActorInstanceId = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ActorAnimationPathDump> pathAfterDumpByActorInstanceId = new(StringComparer.OrdinalIgnoreCase);
 
     public ActorAnimationRigService(ActorAnimationService animationService, IPluginLog log)
     {
         this.animationService = animationService;
         this.log = log;
         this.resolverProbe = new ActorAnimationRigResolverProbe(log);
+        this.pathResolverProbe = new ActorAnimationPathResolverProbe(log);
         this.animationService.TimelinePlayRequested += this.OnTimelinePlayRequested;
     }
 
@@ -35,9 +39,12 @@ public sealed class ActorAnimationRigService
         var animationId = actor.CurrentAnimationId != 0 ? actor.CurrentAnimationId : actor.DefaultAnimationId;
         var probe = this.BeginProbe(actor, actorPtr, animationId);
         var beforeSnapshot = this.resolverProbe.CaptureSnapshot(actor, animationId, actor.AnimationRigPreset, "BeforeReplay");
+        var beforePathDump = this.pathResolverProbe.Capture(actor, "BeforeRigReplay", animationId);
 
         var replaySuccess = this.ReapplyCurrentAnimationWithRig(actor, out var replayReason);
         var afterSnapshot = this.resolverProbe.CaptureSnapshot(actor, animationId, actor.AnimationRigPreset, "AfterReplay");
+        var afterPathDump = this.pathResolverProbe.Capture(actor, "AfterRigReplay", animationId);
+        var pathDiff = this.pathResolverProbe.Compare(beforePathDump, afterPathDump, "RigReplay");
         var afterHash = BuildAppearanceHash(actor.CharacterObject);
         var appearanceChanged = !string.Equals(beforeHash, afterHash, StringComparison.Ordinal);
         probe.AppearanceHashBefore = beforeHash;
@@ -59,6 +66,7 @@ public sealed class ActorAnimationRigService
         probe.ChangedAnimationDataPath = resolverReport.AnimationDataPathChanged;
         probe.AnimationBindingChanged = resolverReport.AnimationBindingChanged;
         actor.AnimationRigDebugReport = resolverReport.DetailedReport;
+        actor.AnimationPathResolverStatus = $"bindingChanged={pathDiff.AnimationBindingChanged}; candidateChanged={pathDiff.CandidateFieldChanged}; appearanceChanged={pathDiff.AppearanceHashChanged}";
 
         if (appearanceChanged)
         {
@@ -81,6 +89,9 @@ public sealed class ActorAnimationRigService
         var missing = probe.HookHitCount > 0
             ? "已命中当前 Actor 的动画播放链，并成功重播动画，但尚未找到安全的动画骨架/数据路径字段，所以骨架没有生效"
             : "current replay did not pass through the managed ActionTimeline hook";
+        missing = probe.HookHitCount > 0
+            ? "ActionTimeline replay succeeded, but the actor animation resource/data-path resolver did not use the selected rig. Use Anamnesis Diff or dual-actor comparison to locate the resolver input."
+            : missing;
         actor.AnimationRigStatus = $"{resultKind}: selected={actor.AnimationRigPreset}; {missing}. {probe.ToStatus()}";
         reason = actor.AnimationRigStatus;
         this.log.Information("[AnimationRig] rig resolver probe completed. actor={Actor} rig={Rig} result={Result} summary={Summary} details={Details}",
@@ -132,6 +143,76 @@ public sealed class ActorAnimationRigService
             ? actor.AnimationRigStatus
             : actor.AnimationRigDebugReport;
         this.log.Information("[AnimationRig] manual debug report dump actor={Actor} report={Report}", actor.RuntimeId, report);
+    }
+
+    public void DumpAnimationPathBeforeExternalChange(RuntimeActorInstance actor)
+    {
+        var animationId = GetCurrentAnimationId(actor);
+        var dump = this.pathResolverProbe.Capture(actor, "BeforeExternalRigChange", animationId);
+        this.pathBeforeDumpByActorInstanceId[actor.RuntimeId] = dump;
+        actor.AnimationPathResolverStatus = $"Before dump captured: timeline={animationId}; bindingHash={dump.AnimationBindingHash}; appearanceHash={dump.AppearanceHash}";
+        actor.AnimationRigDebugReport = dump.Report;
+        this.log.Information("[AnimationRig] Animation path before-external-change dump actor={Actor} report={Report}", actor.RuntimeId, dump.Report);
+    }
+
+    public void DumpAnimationPathAfterExternalChange(RuntimeActorInstance actor)
+    {
+        var animationId = GetCurrentAnimationId(actor);
+        var dump = this.pathResolverProbe.Capture(actor, "AfterExternalRigChange", animationId);
+        this.pathAfterDumpByActorInstanceId[actor.RuntimeId] = dump;
+        actor.AnimationPathResolverStatus = $"After dump captured: timeline={animationId}; bindingHash={dump.AnimationBindingHash}; appearanceHash={dump.AppearanceHash}";
+        actor.AnimationRigDebugReport = dump.Report;
+        this.log.Information("[AnimationRig] Animation path after-external-change dump actor={Actor} report={Report}", actor.RuntimeId, dump.Report);
+    }
+
+    public bool CompareExternalAnimationPathDumps(RuntimeActorInstance actor, out string reason)
+    {
+        if (!this.pathBeforeDumpByActorInstanceId.TryGetValue(actor.RuntimeId, out var before))
+        {
+            reason = "No Before dump. Click Dump Rig State Before External Change first.";
+            actor.AnimationPathResolverStatus = reason;
+            return false;
+        }
+
+        if (!this.pathAfterDumpByActorInstanceId.TryGetValue(actor.RuntimeId, out var after))
+        {
+            reason = "No After dump. Click Dump Rig State After External Change first.";
+            actor.AnimationPathResolverStatus = reason;
+            return false;
+        }
+
+        var diff = this.pathResolverProbe.Compare(before, after, "ExternalAnamnesisChange");
+        actor.AnimationPathResolverStatus = $"External diff: bindingChanged={diff.AnimationBindingChanged}; candidateChanged={diff.CandidateFieldChanged}; appearanceChanged={diff.AppearanceHashChanged}";
+        actor.AnimationRigDebugReport = diff.Report;
+        reason = actor.AnimationPathResolverStatus;
+        return true;
+    }
+
+    public bool CompareAnimationPathWithActor(RuntimeActorInstance actor, RuntimeActorInstance otherActor, out string reason)
+    {
+        var animationId = GetCurrentAnimationId(actor);
+        if (animationId == 0)
+        {
+            reason = "No current/default timeline for actor A.";
+            actor.AnimationPathResolverStatus = reason;
+            return false;
+        }
+
+        var actorReplay = this.animationService.PlayTransientTimeline(actor, animationId, out var actorReplayReason);
+        var otherReplay = this.animationService.PlayTransientTimeline(otherActor, animationId, out var otherReplayReason);
+        var actorDump = this.pathResolverProbe.Capture(actor, $"CompareA-{ShortId(actor.RuntimeId)}", animationId);
+        var otherDump = this.pathResolverProbe.Capture(otherActor, $"CompareB-{ShortId(otherActor.RuntimeId)}", animationId);
+        var diff = this.pathResolverProbe.Compare(actorDump, otherDump, "DualActorSameTimeline");
+        actor.AnimationPathResolverStatus = $"Dual actor compare: timeline={animationId}; A replay={actorReplay}; B replay={otherReplay}; bindingChanged={diff.AnimationBindingChanged}; candidateChanged={diff.CandidateFieldChanged}; appearanceChanged={diff.AppearanceHashChanged}";
+        actor.AnimationRigDebugReport = string.Join(Environment.NewLine, new[]
+        {
+            actor.AnimationPathResolverStatus,
+            $"actorReplay={actorReplayReason}",
+            $"otherReplay={otherReplayReason}",
+            diff.Report,
+        });
+        reason = actor.AnimationPathResolverStatus;
+        return true;
     }
 
     private RigHookProbeState BeginProbe(RuntimeActorInstance actor, nint actorPtr, uint animationId)
@@ -193,6 +274,12 @@ public sealed class ActorAnimationRigService
             timelineId,
             preset);
     }
+
+    private static uint GetCurrentAnimationId(RuntimeActorInstance actor)
+        => actor.CurrentAnimationId != 0 ? actor.CurrentAnimationId : actor.DefaultAnimationId;
+
+    private static string ShortId(string runtimeId)
+        => runtimeId[..Math.Min(8, runtimeId.Length)];
 
     private static bool TryReadAddress(string? rawAddress, out nint address)
     {

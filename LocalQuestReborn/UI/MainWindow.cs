@@ -29,6 +29,7 @@ public sealed class MainWindow : Window
 
     private string selectedNpcId = string.Empty;
     private string selectedActorRuntimeId = string.Empty;
+    private string animationRigCompareActorRuntimeId = string.Empty;
     private string selectedLocalLayoutObjectId = string.Empty;
     private string lastWorldTransformReadLocalLayoutObjectId = string.Empty;
     private string selectedLocalLightId = string.Empty;
@@ -598,6 +599,7 @@ public sealed class MainWindow : Window
             this.DrawActorBatchSpawnControls(selectedNpc);
 
         ImGui.TextWrapped($"Actor 数量：{this.realNpcSpawn.Actors.Count} | 队列长度：{this.realNpcSpawn.AppearanceQueueLength} | {this.realNpcSpawn.AppearanceQueueStatus}");
+        ImGui.TextWrapped($"Prewarm：{this.realNpcSpawn.SpawnPrewarmStatus} | FormalQueue：{this.realNpcSpawn.FormalQueueStatus}");
         ImGui.TextWrapped($"SpawnIntent 数量：{this.realNpcSpawn.SpawnIntentCount}");
 
         if (!ImGui.BeginTable("RuntimeActors", 8, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 320f)))
@@ -790,6 +792,7 @@ public sealed class MainWindow : Window
             if (ImGui.Button("Dump Reflection Details To Log"))
                 this.realNpcSpawn.DumpActorAnimationRigDebugReport(actor.RuntimeId);
         }
+        this.DrawActorAnimationPathResolverDebug(actor);
 
         ImGui.TextWrapped($"动画状态：enabled={actor.AnimationEnabled}, current={actor.CurrentAnimationId}, error={(string.IsNullOrWhiteSpace(actor.LastAnimationError) ? "无" : actor.LastAnimationError)}");
         ImGui.TextWrapped($"看向状态：enabled={actor.LookAtPlayerEnabled}, registered={actor.LookAtRegistered}, target={actor.LookAtTargetDebug}, looking={actor.IsLookingAtPlayer}, error={(string.IsNullOrWhiteSpace(actor.LastLookAtError) ? "无" : actor.LastLookAtError)}");
@@ -1025,6 +1028,69 @@ public sealed class MainWindow : Window
         }
 
         ImGui.EndCombo();
+    }
+
+    private void DrawActorAnimationPathResolverDebug(RuntimeActorInstance actor)
+    {
+        if (!ImGui.TreeNode("Animation Path Resolver / Anamnesis Diff"))
+            return;
+
+        ImGui.TextWrapped("NoEffect means ActionTimeline replay worked, but the animation resource/data-path resolver did not use the selected rig. Use these read-only probes to compare external Anamnesis changes or two different actors with the same TimelineId.");
+        if (!string.IsNullOrWhiteSpace(actor.AnimationPathResolverStatus))
+            ImGui.TextWrapped($"Path resolver：{actor.AnimationPathResolverStatus}");
+
+        ImGui.BeginDisabled(!actor.IsValid || actor.CharacterObject == null);
+        if (ImGui.Button("Dump Rig State Before External Change"))
+            this.realNpcSpawn.DumpActorAnimationPathBeforeExternalChange(actor.RuntimeId);
+        ImGui.SameLine();
+        if (ImGui.Button("Dump Rig State After External Change"))
+            this.realNpcSpawn.DumpActorAnimationPathAfterExternalChange(actor.RuntimeId);
+        ImGui.SameLine();
+        if (ImGui.Button("Compare Rig Dumps"))
+            this.realNpcSpawn.CompareActorAnimationPathExternalDumps(actor.RuntimeId);
+        ImGui.EndDisabled();
+
+        var actors = this.realNpcSpawn.Actors
+            .Where(candidate => !string.Equals(candidate.RuntimeId, actor.RuntimeId, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (actors.Count > 0)
+        {
+            if (string.IsNullOrWhiteSpace(this.animationRigCompareActorRuntimeId) ||
+                actors.All(candidate => !string.Equals(candidate.RuntimeId, this.animationRigCompareActorRuntimeId, StringComparison.OrdinalIgnoreCase)))
+            {
+                this.animationRigCompareActorRuntimeId = actors[0].RuntimeId;
+            }
+
+            var selected = actors.FirstOrDefault(candidate => string.Equals(candidate.RuntimeId, this.animationRigCompareActorRuntimeId, StringComparison.OrdinalIgnoreCase));
+            var selectedLabel = selected == null
+                ? "Select actor"
+                : $"{selected.DisplayName} / {ShortId(selected.RuntimeId)}";
+            if (ImGui.BeginCombo("Compare target actor", selectedLabel))
+            {
+                foreach (var candidate in actors)
+                {
+                    var label = $"{candidate.DisplayName} / {ShortId(candidate.RuntimeId)}";
+                    var isSelected = string.Equals(candidate.RuntimeId, this.animationRigCompareActorRuntimeId, StringComparison.OrdinalIgnoreCase);
+                    if (ImGui.Selectable(label, isSelected))
+                        this.animationRigCompareActorRuntimeId = candidate.RuntimeId;
+                    if (isSelected)
+                        ImGui.SetItemDefaultFocus();
+                }
+
+                ImGui.EndCombo();
+            }
+
+            ImGui.BeginDisabled(!actor.IsValid || actor.CharacterObject == null || selected == null || !selected.IsValid || selected.CharacterObject == null);
+            if (ImGui.Button("Compare Same Timeline With Target Actor"))
+                this.realNpcSpawn.CompareActorAnimationPathWithActor(actor.RuntimeId, this.animationRigCompareActorRuntimeId);
+            ImGui.EndDisabled();
+        }
+        else
+        {
+            ImGui.TextDisabled("Need another live Actor for dual-actor same Timeline comparison.");
+        }
+
+        ImGui.TreePop();
     }
 
     private void DrawActorRigControls(RuntimeActorInstance actor)
