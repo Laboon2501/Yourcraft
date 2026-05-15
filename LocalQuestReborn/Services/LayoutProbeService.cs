@@ -39,6 +39,13 @@ public sealed unsafe class LayoutProbeService
 
     public bool NearbyOnly { get; set; }
 
+    public void ClearRuntimeCache(string reason)
+    {
+        this.Instances = [];
+        this.SelectedInstances.Clear();
+        this.LastStatus = $"Layout runtime cache cleared: {reason}";
+    }
+
     public float MaxDistance { get; set; } = 100f;
 
     public bool SortByDistance { get; set; } = true;

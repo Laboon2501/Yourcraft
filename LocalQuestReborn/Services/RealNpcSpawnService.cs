@@ -35,6 +35,10 @@ public sealed class RealNpcSpawnService
     private readonly PenumbraIpcService penumbraIpc;
     private readonly IPluginLog log;
     private uint lastTerritoryType;
+    private int sceneGeneration;
+    private int actorSceneStableTicks;
+    private bool actorSceneInvalidated = true;
+    private string lastActorSceneInvalidReason = string.Empty;
     private int gposeRebuildQueueCount;
     private DateTime lastSpawnIntentFallbackCheckAt = DateTime.MinValue;
     private long nextRuntimeActorSequence;
@@ -60,6 +64,7 @@ public sealed class RealNpcSpawnService
     private int gposeRebuildSuccessCount;
     private const int SpawnWarmupMinimumTicks = 3;
     private const int MaxLocalPlayerCloneRetries = 3;
+    private const int RequiredActorSceneStableTicks = 30;
 
     public RealNpcSpawnService(
         IClientState clientState,
@@ -204,6 +209,18 @@ public sealed class RealNpcSpawnService
            !string.IsNullOrWhiteSpace(this.activeGposeRebuildRuntimeId)
             ? $"Running pendingSpawn={this.pendingActorSpawns.Count}, activePostSpawn={this.activePostSpawnApply?.RuntimeId ?? "none"}, postSpawnQueue={this.postSpawnApplyQueue.Count}, gposePending={this.pendingGposeRebuilds.Count}, activeGpose={this.activeGposeRebuildRuntimeId}"
             : "Idle";
+    public bool IsBusy
+        => this.spawnWarmupInProgress ||
+           this.pendingActorSpawns.Count > 0 ||
+           this.activePostSpawnApply != null ||
+           this.postSpawnApplyQueue.Count > 0 ||
+           this.pendingGposeRebuilds.Count > 0 ||
+           this.activeGposeRebuildSnapshot != null ||
+           !string.IsNullOrWhiteSpace(this.activeGposeRebuildRuntimeId);
+    public string BusyStatus => this.IsBusy ? $"{this.SpawnPrewarmStatus}; {this.FormalQueueStatus}" : "Idle";
+    public int SceneGeneration => this.sceneGeneration;
+    public int ActorSceneStableTicks => this.actorSceneStableTicks;
+    public bool CanRefreshActors => this.CanRefreshActorsNow(out _);
     public int AppearanceQueueLength => this.appearanceApplyQueue.Count;
     public string AppearanceQueueCurrentActor => this.appearanceApplyQueue.CurrentActorRuntimeId;
     public long AppearanceQueueLastElapsedMilliseconds => this.appearanceApplyQueue.LastElapsedMilliseconds;
@@ -223,6 +240,58 @@ public sealed class RealNpcSpawnService
     public string HumanoidGlamourerApplyStateSignature => this.appearanceApplyService.HumanoidGlamourerApplyStateSignature;
     public bool IsHumanoidBrioActorAppearanceAvailable => this.appearanceApplyService.IsHumanoidBrioActorAppearanceAvailable;
     public string HumanoidBrioActorAppearanceSignature => this.appearanceApplyService.HumanoidBrioActorAppearanceSignature;
+
+    public int GetConfiguredRestoreActorCount()
+    {
+        var territory = (ushort)Math.Clamp((int)this.clientState.TerritoryType, 0, ushort.MaxValue);
+        return this.database.Npcs.Count(npc => npc.RespawnAfterGpose && npc.TerritoryType == territory && territory != 0);
+    }
+
+    public CustomNpc? GetNpcById(string npcId)
+        => this.database.GetNpcById(npcId);
+
+    public int QueueRestoreConfiguredActors()
+    {
+        var queuedNpcIds = this.pendingActorSpawns
+            .Select(request => request.Npc.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var territory = (ushort)Math.Clamp((int)this.clientState.TerritoryType, 0, ushort.MaxValue);
+        var queued = 0;
+        for (var index = 0; index < this.database.Npcs.Count; index++)
+        {
+            var npc = this.database.Npcs[index];
+            if (!npc.RespawnAfterGpose)
+                continue;
+            if (territory == 0 || npc.TerritoryType != territory)
+            {
+                this.log.Information("[RestorePlan] Skipped actor wrong territory id={NpcId} actorTerritory={ActorTerritory} currentTerritory={CurrentTerritory}", npc.Id, npc.TerritoryType, territory);
+                continue;
+            }
+
+            if (this.registry.GetByNpcId(npc.Id).Any(actor => actor.IsValid))
+                continue;
+
+            if (queuedNpcIds.Contains(npc.Id))
+                continue;
+
+            this.spawnIntentRegistry.MarkShouldSpawn(npc);
+            this.pendingActorSpawns.Enqueue(new QueuedActorSpawnRequest(
+                npc,
+                this.GetTemplateSpawnPosition(npc),
+                index,
+                index,
+                0,
+                UpdateSpawnIntent: true,
+                Source: "SceneEditor restore"));
+            queuedNpcIds.Add(npc.Id);
+            queued++;
+        }
+
+        this.log.Information("[ActorRestore] queued configured actors count={Count}", queued);
+        if (queued > 0)
+            this.LastMessage = $"SceneEditor restore queued Actor count={queued}.";
+        return queued;
+    }
     public bool IsHumanoidAppearanceManagerAvailable => false;
     public string HumanoidAppearanceCurrentPath => this.appearanceApplyService.HumanoidAppearanceCurrentPath;
     public string HumanoidAppearanceLastResult => this.appearanceApplyService.HumanoidAppearanceLastResult;
@@ -258,6 +327,11 @@ public sealed class RealNpcSpawnService
 
     private Vector3 GetTemplateSpawnPosition(CustomNpc npc)
     {
+        var currentTerritory = (ushort)Math.Clamp((int)this.clientState.TerritoryType, 0, ushort.MaxValue);
+        var savedWorldPosition = ToVector3(npc.Position);
+        if (npc.TerritoryType == currentTerritory && savedWorldPosition != Vector3.Zero)
+            return savedWorldPosition;
+
         var basePosition = this.TryReadLocalPlayerPosition(out var playerPosition) ? playerPosition : Vector3.Zero;
         var offset = ToVector3(npc.DefaultSpawnOffset);
         return basePosition + offset;
@@ -484,14 +558,14 @@ public sealed class RealNpcSpawnService
             objectIndexes.Remove(index);
     }
 
-    public RuntimeActorInstance? SpawnNew(CustomNpc npc, Vector3? overrideSpawnPosition = null, bool requireWarmup = true, int cloneRetryAttempt = 0)
+    public RuntimeActorInstance? SpawnNew(CustomNpc npc, Vector3? overrideSpawnPosition = null, Vector3? overrideRotationEuler = null, Vector3? overrideScale = null, bool requireWarmup = true, int cloneRetryAttempt = 0, int? overrideSortOrder = null)
     {
         try
         {
             var runtimeId = Guid.NewGuid().ToString("N");
             var spawnPosition = overrideSpawnPosition ?? this.GetTemplateSpawnPosition(npc);
-            var spawnRotation = ToVector3(npc.DefaultRotationEuler);
-            var spawnScale = NormalizeScale(ToVector3(npc.DefaultScale));
+            var spawnRotation = overrideRotationEuler ?? ToVector3(npc.DefaultRotationEuler);
+            var spawnScale = NormalizeScale(overrideScale ?? ToVector3(npc.DefaultScale));
             if (!this.CanSpawnRealActor)
             {
                 this.LastMessage = "Brio Assembly 不可用，未生成真实 Actor。";
@@ -507,12 +581,14 @@ public sealed class RealNpcSpawnService
                     this.GetNpcSortOrder(npc.Id),
                     cloneRetryAttempt,
                     UpdateSpawnIntent: false,
-                    Source: "direct-warmup-gate"));
+                    Source: "direct-warmup-gate",
+                    RotationEuler: spawnRotation,
+                    Scale: spawnScale));
                 this.LastMessage = $"正在执行隐藏 Actor 创建 warm-up，正式生成已排队：{npc.Name}";
                 return null;
             }
 
-            if (!this.brioAssemblyBridge.TrySpawnActor(npc, runtimeId, out var instance, out var reason))
+            if (!this.brioAssemblyBridge.TrySpawnActor(npc, runtimeId, out var instance, out var reason, spawnPosition, spawnRotation.Y))
             {
                 this.LastMessage = $"生成真实 Actor 失败：{reason}";
                 return null;
@@ -541,10 +617,15 @@ public sealed class RealNpcSpawnService
             instance.NpcId = npc.Id;
             instance.NpcName = npc.Name;
             instance.DisplayName = npc.Name;
-            instance.SortOrder = this.GetNpcSortOrder(npc.Id);
+            instance.SortOrder = overrideSortOrder ?? this.GetNpcSortOrder(npc.Id);
             instance.SpawnSequence = ++this.nextRuntimeActorSequence;
             instance.SpawnedTerritoryType = (ushort)Math.Clamp((int)this.clientState.TerritoryType, 0, ushort.MaxValue);
             instance.SpawnedTerritoryName = this.clientState.TerritoryType.ToString();
+            instance.TerritoryId = instance.SpawnedTerritoryType;
+            instance.SceneGeneration = this.sceneGeneration;
+            instance.IsStale = false;
+            instance.IsReady = false;
+            instance.LastKnownObjectIndex = int.TryParse(instance.ObjectIndex, out var parsedObjectIndex) ? parsedObjectIndex : -1;
             instance.SpawnPosition = spawnPosition;
             instance.SpawnRotationEuler = spawnRotation;
             instance.SpawnScale = spawnScale;
@@ -622,6 +703,24 @@ public sealed class RealNpcSpawnService
 
         this.LastMessage = $"已加入串行 Actor 生成队列：{npc.Name} x{safeCount}。每个 Actor Ready/Failed 后才生成下一个。";
         this.log.Information("[ActorSpawnQueue] queued count={Count} npc={NpcId}/{NpcName} base={Base} offset={Offset}", safeCount, npc.Id, npc.Name, basePosition, offset);
+    }
+
+    public bool QueueRestoreActor(CustomNpc npc, Vector3 position, Vector3 rotationEuler, Vector3 scale, int sortOrder, int batchIndex, string source)
+    {
+        var safeScale = NormalizeScale(scale);
+        this.spawnIntentRegistry.MarkShouldSpawn(npc);
+        this.pendingActorSpawns.Enqueue(new QueuedActorSpawnRequest(
+            npc,
+            position,
+            batchIndex,
+            sortOrder,
+            CloneRetryAttempt: 0,
+            UpdateSpawnIntent: true,
+            Source: source,
+            RotationEuler: rotationEuler,
+            Scale: safeScale));
+        this.log.Information("[ActorRestore] queued local actor npc={NpcId}/{NpcName} order={Order} position={Position} rotation={Rotation} scale={Scale}", npc.Id, npc.Name, sortOrder, position, rotationEuler, safeScale);
+        return true;
     }
 
     private void EnqueueActorSpawnFront(QueuedActorSpawnRequest request)
@@ -730,7 +829,7 @@ public sealed class RealNpcSpawnService
             return false;
         }
 
-        if (!instance.IsValid || instance.CharacterObject == null)
+        if (instance.IsStale || !instance.IsValid || instance.CharacterObject == null || instance.SceneGeneration != this.sceneGeneration)
         {
             instance.LastTransformError = "当前 Actor 无效或已删除。";
             this.LastMessage = instance.LastTransformError;
@@ -761,7 +860,7 @@ public sealed class RealNpcSpawnService
             return false;
         }
 
-        if (!instance.IsValid || instance.CharacterObject == null)
+        if (instance.IsStale || !instance.IsValid || instance.CharacterObject == null || instance.SceneGeneration != this.sceneGeneration)
         {
             instance.LastTransformError = "当前 Actor 无效或已删除。";
             this.LastMessage = instance.LastTransformError;
@@ -778,6 +877,7 @@ public sealed class RealNpcSpawnService
             return false;
         }
 
+        var yawApplied = this.brioAssemblyBridge.TrySetActorNativeYaw(instance, rotationEuler.Y, out var yawReason);
         if (!this.brioCapabilityBridge.TryApplyModelTransform(instance, position, rotationEuler, safeScale, out var transformReason))
         {
             instance.LastTransformError = transformReason;
@@ -801,7 +901,7 @@ public sealed class RealNpcSpawnService
         instance.LastKnownRotationEuler = rotationEuler;
         instance.LastKnownScale = safeScale;
         instance.HasSavedTransform = true;
-        this.LastMessage = string.IsNullOrWhiteSpace(readReason) ? transformReason : readReason;
+        this.LastMessage = $"{(string.IsNullOrWhiteSpace(readReason) ? transformReason : readReason)}; rootYaw={(yawApplied ? "ok" : "skipped")} {yawReason}";
         return true;
     }
 
@@ -823,6 +923,26 @@ public sealed class RealNpcSpawnService
         instance.HasSavedTransform = true;
         instance.SavedTransformSnapshot = $"worldPosition={position}; worldEulerRadians={rotationEuler}; worldScale={NormalizeScale(scale)}";
         this.LastMessage = $"已保存当前 World Transform：{instance.SavedTransformSnapshot}";
+    }
+
+    public bool PersistActorWorldTransformToNpc(string runtimeId, Vector3 position, Vector3 rotationEuler, Vector3 scale)
+    {
+        var instance = this.registry.GetByRuntimeId(runtimeId);
+        if (instance == null)
+            return false;
+
+        var npc = this.database.GetNpcById(instance.NpcId);
+        if (npc == null)
+            return false;
+
+        var safeScale = NormalizeScale(scale);
+        npc.Position = new Vector3Data { X = position.X, Y = position.Y, Z = position.Z };
+        npc.TerritoryType = (ushort)Math.Clamp((int)this.clientState.TerritoryType, 0, ushort.MaxValue);
+        npc.DefaultRotationEuler = new Vector3Data { X = rotationEuler.X, Y = rotationEuler.Y, Z = rotationEuler.Z };
+        npc.DefaultScale = new Vector3Data { X = safeScale.X, Y = safeScale.Y, Z = safeScale.Z };
+        this.database.Save();
+        this.log.Information("[ActorRestore] persisted actor world transform npc={NpcId} runtime={RuntimeId} pos={Position} rot={Rotation} scale={Scale}", npc.Id, runtimeId, position, rotationEuler, safeScale);
+        return true;
     }
 
     private bool RestoreTransformExact(RuntimeActorInstance actor, string stage)
@@ -899,6 +1019,43 @@ public sealed class RealNpcSpawnService
 
         this.log.Warning("[ActorTransform] VerifyWorld {Stage} result=changed actor={Actor}; restoring world transform. {Readback}", stage, actor.RuntimeId, actor.LastTransformReadback);
         this.RestoreTransformExact(actor, $"{stage} guard restore");
+    }
+
+    private bool IsUnexpectedPlayerFallbackTransform(RuntimeActorInstance actor, out string reason)
+    {
+        reason = string.Empty;
+        var expectedWorld = this.GetAuthoritativeWorldTransform(actor);
+        if (!this.brioCapabilityBridge.TryReadModelTransform(actor, out var readReason))
+        {
+            reason = $"WorldTransform final read failed: {readReason}";
+            return false;
+        }
+
+        var actualPosition = actor.LastKnownPosition;
+        var actualRotation = actor.LastKnownRotationEuler;
+        var positionDelta = Vector3.Distance(actualPosition, expectedWorld.WorldPosition);
+        var rotationDelta = Vector3.Distance(actualRotation, expectedWorld.WorldEulerRadians);
+        if (positionDelta <= 0.25f && rotationDelta <= 0.05f)
+            return false;
+
+        if (!this.TryReadLocalPlayerPosition(out var localPlayerPosition))
+        {
+            reason = $"WrongTransform after final restore. deltaPos={positionDelta:F3}, deltaRot={rotationDelta:F3}";
+            return true;
+        }
+
+        var actualNearPlayer = Vector3.Distance(actualPosition, localPlayerPosition) < 2.0f;
+        var expectedNearPlayer = Vector3.Distance(expectedWorld.WorldPosition, localPlayerPosition) < 2.0f;
+        if (actualNearPlayer && !expectedNearPlayer)
+        {
+            reason = $"SpawnAtPlayerPosition after final restore. expected={expectedWorld.WorldPosition}, actual={actualPosition}, localPlayer={localPlayerPosition}, deltaRot={rotationDelta:F3}";
+            this.log.Warning("[ActorTransform] Final verify detected player-position fallback actor={Actor} reason={Reason}", actor.RuntimeId, reason);
+            return true;
+        }
+
+        reason = $"WrongTransform after final restore. expected={expectedWorld.WorldPosition}/{expectedWorld.WorldEulerRadians}, actual={actualPosition}/{actualRotation}, deltaPos={positionDelta:F3}, deltaRot={rotationDelta:F3}";
+        this.log.Warning("[ActorTransform] Final verify detected wrong transform actor={Actor} reason={Reason}", actor.RuntimeId, reason);
+        return true;
     }
 
     private (Vector3 Position, Vector3 RotationEuler, Vector3 Scale) GetAuthoritativeTransform(RuntimeActorInstance actor)
@@ -1140,6 +1297,7 @@ public sealed class RealNpcSpawnService
                 this.ApplyPostSpawnBehavior(actor);
                 this.VerifyNoUnexpectedTransformChange(actor, "after behavior apply");
                 actor.PostSpawnBehaviorReady = true;
+                actor.IsReady = true;
                 actor.PostSpawnPipelineState = "Ready";
                 actor.PostSpawnPipelineStatus = "Post-spawn appearance and behavior pipeline complete.";
                 this.log.Information("[RealNpcSpawnService] PostSpawn ready. order={Order}, runtime={RuntimeId}", actor.SortOrder, actor.RuntimeId);
@@ -1350,7 +1508,7 @@ public sealed class RealNpcSpawnService
 
         if (localPlayerCloneAppearance)
         {
-            this.DiscardLocalPlayerCloneAndRetry(actor, plan);
+            this.DiscardLocalPlayerCloneAndRetry(actor, plan, "LocalPlayer clone appearance detected");
             return;
         }
 
@@ -1402,17 +1560,18 @@ public sealed class RealNpcSpawnService
         plan.State = PostSpawnApplyState.EnableDraw;
     }
 
-    private void DiscardLocalPlayerCloneAndRetry(RuntimeActorInstance actor, PostSpawnApplyPlan plan)
+    private void DiscardLocalPlayerCloneAndRetry(RuntimeActorInstance actor, PostSpawnApplyPlan plan, string discardReason)
     {
         this.TrackSacrificialCloneActor(actor);
-        this.SetPostSpawnQuarantineVisibility(actor, visible: false, "LocalPlayer clone appearance detected; discarding sacrificial actor");
-        this.log.Error("[ActorSpawn] discard sacrificial clone ptr={Ptr} index={Index} actor={Actor} order={Order} cloneRetry={Retry}/{MaxRetry} validation={Validation}",
+        this.SetPostSpawnQuarantineVisibility(actor, visible: false, $"{discardReason}; discarding sacrificial actor");
+        this.log.Error("[ActorSpawn] discard sacrificial clone ptr={Ptr} index={Index} actor={Actor} order={Order} cloneRetry={Retry}/{MaxRetry} reason={Reason} validation={Validation}",
             actor.Address,
             actor.ObjectIndex,
             actor.RuntimeId,
             actor.SortOrder,
             plan.CloneRetryCount,
             MaxLocalPlayerCloneRetries,
+            discardReason,
             actor.LastAppearanceValidationResult);
 
         actor.PostSpawnPipelineState = "Failed";
@@ -1470,8 +1629,10 @@ public sealed class RealNpcSpawnService
             actor.SortOrder,
             plan.CloneRetryCount + 1,
             UpdateSpawnIntent: shouldUpdateSpawnIntent,
-            Source: "clone-discard-retry"));
-        this.LastMessage = $"检测到 LocalPlayer clone 外观，已隐藏丢弃并重新创建：{npc.Name} attempt={plan.CloneRetryCount + 1}/{MaxLocalPlayerCloneRetries}";
+            Source: "clone-discard-retry",
+            RotationEuler: actor.SpawnRotationEuler,
+            Scale: actor.SpawnScale));
+        this.LastMessage = $"检测到异常 Actor（{discardReason}），已隐藏丢弃并重新创建同一个 ActorInstance：{npc.Name} attempt={plan.CloneRetryCount + 1}/{MaxLocalPlayerCloneRetries}";
     }
 
     private void EnablePostSpawnActorDraw(RuntimeActorInstance actor, PostSpawnApplyPlan plan)
@@ -1490,6 +1651,12 @@ public sealed class RealNpcSpawnService
 
         this.RestoreTransformExact(actor, "before EnableDraw");
         this.VerifyNoUnexpectedTransformChange(actor, "before EnableDraw");
+        if (this.IsUnexpectedPlayerFallbackTransform(actor, out var fallbackReason))
+        {
+            this.DiscardLocalPlayerCloneAndRetry(actor, plan, fallbackReason);
+            return;
+        }
+
         this.SetPostSpawnQuarantineVisibility(actor, visible: true, $"appearance verified order={plan.SortOrder}");
         this.RestoreTransformExact(actor, "after EnableDraw visibility");
         this.VerifyNoUnexpectedTransformChange(actor, "after EnableDraw visibility");
@@ -1731,6 +1898,9 @@ public sealed class RealNpcSpawnService
         var localPlayer = this.clientState.GetType().GetProperty("LocalPlayer")?.GetValue(this.clientState);
         var localPlayerIndex = ReadTargetObjectIndex(localPlayer);
         TryParseAddress(ReadMember(localPlayer, "Address"), out var localPlayerPtr);
+
+        if (actor.IsStale || actor.SceneGeneration != this.sceneGeneration || actor.TerritoryId != 0 && actor.TerritoryId != this.clientState.TerritoryType)
+            return ActorTargetResolveResult.Fail($"actor stale/generation mismatch stale={actor.IsStale} actorGeneration={actor.SceneGeneration} currentGeneration={this.sceneGeneration} actorTerritory={actor.TerritoryId} currentTerritory={this.clientState.TerritoryType}", localPlayerPtr, localPlayerIndex);
 
         if (!actor.IsValid || actor.CharacterObject == null)
             return ActorTargetResolveResult.Fail("actor invalid or CharacterObject=null", localPlayerPtr, localPlayerIndex);
@@ -2375,9 +2545,30 @@ public sealed class RealNpcSpawnService
 
     public void RefreshActors()
     {
+        if (!this.CanRefreshActorsNow(out var reason))
+        {
+            this.log.Debug("[ActorRefresh] skipped reason={Reason}", reason);
+            return;
+        }
+
         foreach (var instance in this.registry.GetAll())
         {
-            this.brioAssemblyBridge.RefreshActor(instance);
+            if (instance.IsStale ||
+                instance.SceneGeneration != this.sceneGeneration ||
+                instance.TerritoryId != 0 && instance.TerritoryId != this.clientState.TerritoryType)
+            {
+                this.log.Debug("[ActorRefresh] skip stale actor runtime={RuntimeId} stale={Stale} actorGeneration={ActorGeneration} currentGeneration={Generation} actorTerritory={ActorTerritory} currentTerritory={Territory}",
+                    instance.RuntimeId,
+                    instance.IsStale,
+                    instance.SceneGeneration,
+                    this.sceneGeneration,
+                    instance.TerritoryId,
+                    this.clientState.TerritoryType);
+                continue;
+            }
+
+            if (!this.brioAssemblyBridge.RefreshActor(instance))
+                continue;
             if (this.targetabilityService.TryMatchCurrentTarget(instance))
                 this.CurrentSelectedActorRuntimeId = instance.RuntimeId;
         }
@@ -2545,8 +2736,178 @@ public sealed class RealNpcSpawnService
         return null;
     }
 
+    private bool UpdateActorSceneGate(out string reason)
+    {
+        var territoryType = this.clientState.TerritoryType;
+        if (territoryType != this.lastTerritoryType)
+        {
+            var previous = this.lastTerritoryType;
+            this.lastTerritoryType = territoryType;
+            this.InvalidateActorRuntimeScene($"TerritoryChanged {previous}->{territoryType}", force: true);
+            reason = "territory changed";
+            return false;
+        }
+
+        if (!this.IsClientLoggedIn())
+        {
+            this.InvalidateActorRuntimeScene("client logged out/title", force: false);
+            reason = "client logged out/title";
+            return false;
+        }
+
+        if (territoryType == 0)
+        {
+            this.InvalidateActorRuntimeScene("territory invalid", force: false);
+            reason = "territory invalid";
+            return false;
+        }
+
+        if (!this.HasLocalPlayer())
+        {
+            this.InvalidateActorRuntimeScene("LocalPlayer unavailable", force: false);
+            reason = "LocalPlayer unavailable";
+            return false;
+        }
+
+        if (this.actorSceneInvalidated)
+        {
+            this.actorSceneInvalidated = false;
+            this.actorSceneStableTicks = 0;
+            this.log.Information("[ActorScene] Scene became readable. generation={Generation} territory={Territory}", this.sceneGeneration, territoryType);
+        }
+
+        this.actorSceneStableTicks++;
+        if (this.actorSceneStableTicks < RequiredActorSceneStableTicks)
+        {
+            reason = $"scene stable ticks {this.actorSceneStableTicks}/{RequiredActorSceneStableTicks}";
+            return false;
+        }
+
+        reason = string.Empty;
+        return true;
+    }
+
+    private bool CanRefreshActorsNow(out string reason)
+    {
+        if (this.actorSceneInvalidated)
+        {
+            reason = "actor scene invalidated";
+            return false;
+        }
+
+        if (!this.IsClientLoggedIn())
+        {
+            reason = "client logged out/title";
+            return false;
+        }
+
+        if (this.clientState.TerritoryType == 0)
+        {
+            reason = "territory invalid";
+            return false;
+        }
+
+        if (!this.HasLocalPlayer())
+        {
+            reason = "LocalPlayer unavailable";
+            return false;
+        }
+
+        if (this.actorSceneStableTicks < RequiredActorSceneStableTicks)
+        {
+            reason = $"scene stable ticks {this.actorSceneStableTicks}/{RequiredActorSceneStableTicks}";
+            return false;
+        }
+
+        reason = string.Empty;
+        return true;
+    }
+
+    private void InvalidateActorRuntimeScene(string reason, bool force)
+    {
+        if (!force &&
+            this.actorSceneInvalidated &&
+            string.Equals(this.lastActorSceneInvalidReason, reason, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        this.sceneGeneration++;
+        this.actorSceneInvalidated = true;
+        this.actorSceneStableTicks = 0;
+        this.lastActorSceneInvalidReason = reason;
+        this.ResetSpawnWarmup(reason);
+        this.ClearActorLifecycleQueues(reason);
+        this.MarkRuntimeActorsStaleAndClear(reason);
+        this.ClearSelectedActorForPlayerLookAt();
+        this.log.Information("[ActorScene] Invalidated reason={Reason} generation={Generation}", reason, this.sceneGeneration);
+    }
+
+    private void ClearActorLifecycleQueues(string reason)
+    {
+        this.pendingActorSpawns.Clear();
+        this.postSpawnApplyQueue.Clear();
+        this.activePostSpawnApply = null;
+        this.pendingGposeRebuilds.Clear();
+        this.activeGposeRebuildRuntimeId = string.Empty;
+        this.activeGposeRebuildSnapshot = null;
+        this.gposeRebuildQueueCount = 0;
+        this.gposeRebuildTotalCount = 0;
+        this.gposeRebuildSuccessCount = 0;
+        this.log.Information("[ActorScene] Cleared actor lifecycle queues reason={Reason}", reason);
+    }
+
+    private void MarkRuntimeActorsStaleAndClear(string reason)
+    {
+        var actors = this.registry.GetAll();
+        foreach (var actor in actors)
+        {
+            actor.IsStale = true;
+            actor.IsReady = false;
+            actor.IsValid = false;
+            actor.CharacterObject = null;
+            actor.ObjectIndex = "-1";
+            actor.LastKnownObjectIndex = -1;
+            actor.Address = "0x0";
+            actor.PostSpawnBehaviorReady = true;
+            actor.PostSpawnPipelineState = "Stale";
+            actor.PostSpawnPipelineStatus = $"Scene invalidated: {reason}";
+        }
+
+        this.registry.Clear();
+        this.CurrentSelectedActorRuntimeId = string.Empty;
+        this.warmupActorPointers.Clear();
+        this.warmupActorObjectIndexes.Clear();
+        this.sacrificialClonePointers.Clear();
+        this.sacrificialCloneObjectIndexes.Clear();
+        this.activeSpawnWarmupActor = null;
+        this.log.Information("[ActorScene] Marked runtime actors stale and cleared registry count={Count} reason={Reason}", actors.Count, reason);
+    }
+
+    private bool HasLocalPlayer()
+        => this.clientState.GetType().GetProperty("LocalPlayer")?.GetValue(this.clientState) != null;
+
+    private bool IsClientLoggedIn()
+    {
+        try
+        {
+            var property = this.clientState.GetType().GetProperty("IsLoggedIn", BindingFlags.Instance | BindingFlags.Public);
+            if (property?.GetValue(this.clientState) is bool loggedIn)
+                return loggedIn;
+        }
+        catch
+        {
+        }
+
+        return this.HasLocalPlayer();
+    }
+
     public void Update()
     {
+        if (!this.UpdateActorSceneGate(out var sceneGateReason))
+        {
+            this.LastMessage = $"Actor refresh paused: {sceneGateReason}";
+            return;
+        }
+
         this.appearanceApplyQueue.Update();
         this.validityMonitorService.Update(this.registry.GetAll());
         if (this.validityMonitorService.CurrentIsGposing && !this.validityMonitorService.PreviousFrameIsGposing)
@@ -2566,17 +2927,7 @@ public sealed class RealNpcSpawnService
         if (this.validityMonitorService.ConsumeGposeExitReady())
             this.RebuildActorsAfterGposeExit();
         this.RebuildMissingIntentActorsIfNeeded();
-
-        var territoryType = this.clientState.TerritoryType;
-        if (territoryType == this.lastTerritoryType)
-        {
-            this.RefreshActors();
-            return;
-        }
-
-        this.lastTerritoryType = territoryType;
-        this.ResetSpawnWarmup("TerritoryChanged");
-        this.DespawnAll(DespawnReason.TerritoryChanged);
+        this.RefreshActors();
     }
 
     public void SetMessage(string message)
@@ -2898,7 +3249,7 @@ public sealed class RealNpcSpawnService
         try
         {
             this.log.Information("[RealNpcSpawnService] GPoseRebuild spawn begin. order={Order}, oldRuntime={OldRuntimeId}, npc={NpcId}/{Name}, cloneRetry={Retry}", snapshot.SortOrder, snapshot.OldRuntimeId, snapshot.Npc.Id, snapshot.Npc.Name, snapshot.CloneRetryAttempt);
-            var rebuilt = this.SpawnNew(snapshot.Npc, snapshot.Position, requireWarmup: false, cloneRetryAttempt: snapshot.CloneRetryAttempt);
+            var rebuilt = this.SpawnNew(snapshot.Npc, snapshot.Position, snapshot.RotationEuler, snapshot.Scale, requireWarmup: false, cloneRetryAttempt: snapshot.CloneRetryAttempt, overrideSortOrder: snapshot.SortOrder);
             if (rebuilt == null)
             {
                 this.log.Warning("[RealNpcSpawnService] GPoseRebuild spawn returned null. order={Order}, npc={NpcId}", snapshot.SortOrder, snapshot.Npc.Id);
@@ -2951,7 +3302,7 @@ public sealed class RealNpcSpawnService
             request.Position,
             request.CloneRetryAttempt,
             request.Source);
-        var actor = this.SpawnNew(request.Npc, request.Position, requireWarmup: false, cloneRetryAttempt: request.CloneRetryAttempt);
+        var actor = this.SpawnNew(request.Npc, request.Position, request.RotationEuler, request.Scale, requireWarmup: false, cloneRetryAttempt: request.CloneRetryAttempt, overrideSortOrder: request.SortOrder);
         if (actor == null)
         {
             this.log.Warning("[ActorSpawnQueue] spawn failed order={Order} batchIndex={BatchIndex} npc={NpcId}", request.SortOrder, request.BatchIndex, request.Npc.Id);
@@ -3065,7 +3416,9 @@ public sealed class RealNpcSpawnService
         int SortOrder,
         int CloneRetryAttempt,
         bool UpdateSpawnIntent,
-        string Source);
+        string Source,
+        Vector3? RotationEuler = null,
+        Vector3? Scale = null);
 
     private sealed class PostSpawnApplyPlan
     {

@@ -16,6 +16,16 @@ public sealed class RuntimeActorInstance
 
     public ushort SpawnedTerritoryType { get; set; }
 
+    public uint TerritoryId { get; set; }
+
+    public int SceneGeneration { get; set; }
+
+    public bool IsStale { get; set; }
+
+    public bool IsReady { get; set; }
+
+    public int LastKnownObjectIndex { get; set; } = -1;
+
     public string SpawnedTerritoryName { get; set; } = string.Empty;
 
     public string ObjectIndex { get; set; } = "不可用";

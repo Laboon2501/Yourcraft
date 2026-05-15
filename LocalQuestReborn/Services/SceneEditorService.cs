@@ -15,7 +15,7 @@ namespace LocalQuestReborn.Services;
 
 public sealed unsafe class SceneEditorService
 {
-    private const int RequiredRestoreStableTicks = 24;
+    private const int RequiredRestoreStableTicks = 60;
     private readonly RealNpcSpawnService actors;
     private readonly LocalLayoutObjectService localLayoutObjects;
     private readonly LocalLightNativeService localLights;
@@ -32,6 +32,7 @@ public sealed unsafe class SceneEditorService
     private DateTime lastUndoShortcutUtc = DateTime.MinValue;
     private DateTime lastPersistDirtyUtc = DateTime.MinValue;
     private DateTime lastLocalBgPartSnapshotUtc = DateTime.MinValue;
+    private DateTime lastLocalActorSnapshotUtc = DateTime.MinValue;
     private bool persistDirty;
     private bool restorePending;
     private bool restoreRunning;
@@ -45,7 +46,10 @@ public sealed unsafe class SceneEditorService
     private int restoreIndex;
     private List<SceneEditorNativeModificationRecord> restoreNativeRecords = [];
     private List<SceneEditorLocalBgPartRecord> restoreBgPartRecords = [];
+    private List<SceneEditorLocalActorRecord> restoreActorRecords = [];
     private List<LocalLightInstance> restoreLightRecords = [];
+    private LocalBgPartRestoreItem? activeBgPartRestore;
+    private bool restoreActorsRequested;
 
     public SceneEditorService(
         RealNpcSpawnService actors,
@@ -123,6 +127,10 @@ public sealed unsafe class SceneEditorService
 
     public IReadOnlyList<SceneEditorLocalBgPartRecord> LocalBgPartRestoreRecords => this.LocalBgPartRecords;
 
+    private List<SceneEditorLocalActorRecord> LocalActorRecords => this.configuration.SceneEditorLocalActors ??= [];
+
+    public IReadOnlyList<SceneEditorLocalActorRecord> LocalActorRestoreRecords => this.LocalActorRecords;
+
     public RuntimeActorInstance? GetLocalActor(string runtimeId)
         => this.actors.Actors.FirstOrDefault(item => string.Equals(item.RuntimeId, runtimeId, StringComparison.OrdinalIgnoreCase));
 
@@ -177,7 +185,10 @@ public sealed unsafe class SceneEditorService
         this.restoreIndex = 0;
         this.restoreNativeRecords.Clear();
         this.restoreBgPartRecords.Clear();
+        this.restoreActorRecords.Clear();
         this.restoreLightRecords.Clear();
+        this.activeBgPartRestore = null;
+        this.restoreActorsRequested = false;
         this.nativeCache.Clear();
         this.lastNativeScanUtc = DateTime.MinValue;
         this.RestoreStatus = $"[Restore] Scene invalidated: {reason}";
@@ -187,6 +198,7 @@ public sealed unsafe class SceneEditorService
     public void UpdateRestoreQueue(bool sceneStable)
     {
         this.SyncLocalBgPartSnapshotsDebounced();
+        this.SyncLocalActorSnapshotsDebounced();
         this.SaveDirtyConfigurationIfDue();
 
         var territory = this.getTerritoryType();
@@ -230,6 +242,7 @@ public sealed unsafe class SceneEditorService
     public void FlushPersistence()
     {
         this.SyncLocalBgPartSnapshots();
+        this.SyncLocalActorSnapshots();
         if (this.persistDirty)
         {
             this.log.Debug("[Persist] Save begin.");
@@ -398,6 +411,8 @@ public sealed unsafe class SceneEditorService
                 this.LastStatus = this.actors.LastMessage;
                 if (actorResult)
                 {
+                    this.actors.PersistActorWorldTransformToNpc(runtimeId, transform.WorldPosition, transform.WorldEulerRadians, scale);
+                    this.SyncLocalActorRecord(runtimeId, transform.WorldPosition, transform.WorldEulerRadians, scale);
                     this.TransformGeneration++;
                     this.MarkPersistDirty("LocalActor transform");
                 }
@@ -420,6 +435,7 @@ public sealed unsafe class SceneEditorService
                 light.Position = transform.WorldPosition;
                 light.Rotation = transform.WorldEulerRadians;
                 light.Scale = scale;
+                light.TerritoryId = this.getTerritoryType();
                 this.localLights.RequestApply(runtimeId);
                 this.LastStatus = this.localLights.LastStatus;
                 this.TransformGeneration++;
@@ -897,7 +913,10 @@ public sealed unsafe class SceneEditorService
         this.restoreIndex = 0;
         this.restoreNativeRecords.Clear();
         this.restoreBgPartRecords.Clear();
+        this.restoreActorRecords.Clear();
         this.restoreLightRecords.Clear();
+        this.activeBgPartRestore = null;
+        this.restoreActorsRequested = false;
         this.RestoreStatus = $"[Restore] Cancelled: {reason}";
         this.log.Information("[Restore] Cancel reason={Reason}", reason);
     }
@@ -910,10 +929,15 @@ public sealed unsafe class SceneEditorService
         this.restoreStage = 0;
         this.restoreIndex = 0;
         this.restoreWaitTicks = 8;
+        this.activeBgPartRestore = null;
+        this.restoreActorsRequested = false;
 
         var territory = this.getTerritoryType();
+        var nativeTotal = this.NativeRecords.Count;
+        var nativeLegacy = this.NativeRecords.Count(item => item.TerritoryId == 0);
+        var nativeWrongTerritory = this.NativeRecords.Count(item => item.TerritoryId != 0 && item.TerritoryId != territory);
         this.restoreNativeRecords = this.NativeRecords
-            .Where(item => this.IsCurrentTerritoryRecord(item))
+            .Where(item => item.TerritoryId == territory)
             .Where(item => item.Kind != SceneEditableKind.Player)
             .Where(item => item.IsHidden || item.IsModified)
             .Where(item => !string.Equals(item.Status, "Restored", StringComparison.OrdinalIgnoreCase))
@@ -921,27 +945,70 @@ public sealed unsafe class SceneEditorService
             .ThenBy(item => item.CreatedAt)
             .ToList();
 
+        var bgTotal = this.LocalBgPartRecords.Count;
+        var bgLegacy = this.LocalBgPartRecords.Count(item => item.TerritoryId == 0);
+        var bgWrongTerritory = this.LocalBgPartRecords.Count(item => item.TerritoryId != 0 && item.TerritoryId != territory);
         this.restoreBgPartRecords = this.LocalBgPartRecords
             .Where(item => item.Enabled)
-            .Where(item => item.TerritoryId == 0 || item.TerritoryId == territory)
+            .Where(item => item.TerritoryId == territory)
             .OrderBy(item => item.SortOrder)
             .ThenBy(item => item.LastSavedAt)
             .ToList();
 
+        var lightTotal = this.localLights.Instances.Count;
+        var lightLegacy = this.localLights.Instances.Count(item => item.TerritoryId == 0);
+        var lightWrongTerritory = this.localLights.Instances.Count(item => item.TerritoryId != 0 && item.TerritoryId != territory);
         this.restoreLightRecords = this.localLights.Instances
+            .Where(item => item.TerritoryId == territory)
             .Select((item, index) => new { item, index })
             .OrderBy(pair => pair.index)
             .Select(pair => pair.item)
             .ToList();
 
-        this.RestoreStatus = $"[Restore] Start generation reason={this.restoreReason}; native={this.restoreNativeRecords.Count}; bgParts={this.restoreBgPartRecords.Count}; lights={this.restoreLightRecords.Count}";
+        var actorTotal = this.LocalActorRecords.Count;
+        var actorLegacy = this.LocalActorRecords.Count(item => item.TerritoryId == 0);
+        var actorWrongTerritory = this.LocalActorRecords.Count(item => item.TerritoryId != 0 && item.TerritoryId != territory);
+        this.restoreActorRecords = this.LocalActorRecords
+            .Where(item => item.Enabled)
+            .Where(item => item.TerritoryId == territory)
+            .OrderBy(item => item.SortOrder)
+            .ThenBy(item => item.LastSavedAt)
+            .ToList();
+
+        var actorRestoreCount = this.restoreActorRecords.Count;
+        foreach (var record in this.NativeRecords.Where(item => item.TerritoryId == 0))
+            record.Status = "LegacyNoTerritory";
+        foreach (var record in this.LocalBgPartRecords.Where(item => item.TerritoryId == 0))
+            record.RestoreStatus = "LegacyNoTerritory: skipped automatic restore.";
+        foreach (var record in this.LocalActorRecords.Where(item => item.TerritoryId == 0))
+            record.RestoreStatus = "LegacyNoTerritory: skipped automatic restore.";
+        foreach (var light in this.localLights.Instances.Where(item => item.TerritoryId == 0))
+            light.LastOperation = "LegacyNoTerritory: skipped automatic restore.";
+        this.RestoreStatus = $"[Restore] Start generation reason={this.restoreReason}; native={this.restoreNativeRecords.Count}; bgParts={this.restoreBgPartRecords.Count}; lights={this.restoreLightRecords.Count}; actors={actorRestoreCount}";
         this.log.Information(
-            "[Restore] Start reason={Reason}; territory={Territory}; native={NativeCount}; bgParts={BgPartCount}; lights={LightCount}",
+            "[RestorePlan] reason={Reason}; currentTerritory={Territory}; native total={NativeTotal}, matched={NativeCount}, skippedWrongTerritory={NativeWrongTerritory}, skippedLegacyNoTerritory={NativeLegacy}; localBgParts total={BgTotal}, matched={BgPartCount}, skippedWrongTerritory={BgWrongTerritory}, skippedLegacyNoTerritory={BgLegacy}; localLights total={LightTotal}, matched={LightCount}, skippedWrongTerritory={LightWrongTerritory}, skippedLegacyNoTerritory={LightLegacy}; localActors total={ActorTotal}, matched={ActorCount}, skippedWrongTerritory={ActorWrongTerritory}, skippedLegacyNoTerritory={ActorLegacy}",
             this.restoreReason,
             territory,
+            nativeTotal,
             this.restoreNativeRecords.Count,
+            nativeWrongTerritory,
+            nativeLegacy,
+            bgTotal,
             this.restoreBgPartRecords.Count,
-            this.restoreLightRecords.Count);
+            bgWrongTerritory,
+            bgLegacy,
+            lightTotal,
+            this.restoreLightRecords.Count,
+            lightWrongTerritory,
+            lightLegacy,
+            actorTotal,
+            this.restoreActorRecords.Count,
+            actorWrongTerritory,
+            actorLegacy);
+        foreach (var record in this.LocalActorRecords.Where(item => item.TerritoryId == 0))
+            this.log.Information("[RestorePlan] Skipped actor legacy no territory id={Id} npc={NpcId}", record.RecordId, record.NpcId);
+        foreach (var record in this.LocalActorRecords.Where(item => item.TerritoryId != 0 && item.TerritoryId != territory))
+            this.log.Information("[RestorePlan] Skipped actor wrong territory id={Id} actorTerritory={ActorTerritory} currentTerritory={CurrentTerritory}", record.RecordId, record.TerritoryId, territory);
     }
 
     private void AdvanceRestoreQueue()
@@ -990,11 +1057,27 @@ public sealed unsafe class SceneEditorService
                 if (this.restoreIndex == 0)
                     this.log.Information("[Restore] Stage LocalBgParts begin count={Count}", this.restoreBgPartRecords.Count);
 
+                if (this.activeBgPartRestore != null)
+                {
+                    if (!this.AdvanceActiveLocalBgPartRestore())
+                        return;
+
+                    this.activeBgPartRestore = null;
+                    this.restoreIndex++;
+                    return;
+                }
+
                 if (this.restoreIndex < this.restoreBgPartRecords.Count)
                 {
-                    var record = this.restoreBgPartRecords[this.restoreIndex++];
-                    this.RestoreLocalBgPartRecord(record);
-                    this.RestoreStatus = $"[Restore] BgPart {this.restoreIndex}/{this.restoreBgPartRecords.Count}: {FirstNonEmpty(record.CurrentMdlPath, record.SourceMdlPath, record.InstanceId)}";
+                    var record = this.restoreBgPartRecords[this.restoreIndex];
+                    this.activeBgPartRestore = new LocalBgPartRestoreItem(
+                        record,
+                        WorldTransform.FromEuler(
+                            ToVector3(record.WorldPosition),
+                            ToVector3(record.WorldRotationEuler),
+                            WorldTransformUtil.NormalizeScale(ToVector3(record.WorldScale))));
+                    this.RestoreStatus = $"[RestoreBgPart] state=Pending order={record.SortOrder} path={FirstNonEmpty(record.CurrentMdlPath, record.SourceMdlPath, record.InstanceId)}";
+                    this.log.Information("[RestoreBgPart] state=Pending order={Order} path={Path}", record.SortOrder, FirstNonEmpty(record.CurrentMdlPath, record.SourceMdlPath, record.InstanceId));
                     return;
                 }
 
@@ -1022,7 +1105,22 @@ public sealed unsafe class SceneEditorService
                 return;
 
             case 3:
-                this.log.Information("[Restore] Stage LocalActors delegated to existing actor spawn/intent queues.");
+                if (!this.restoreActorsRequested)
+                {
+                    var queued = this.QueueRestoreLocalActorRecords();
+                    this.restoreActorsRequested = true;
+                    this.RestoreStatus = $"[Restore] LocalActors restore requested. queued={queued}";
+                    this.log.Information("[Restore] Stage LocalActors begin queued={Queued}", queued);
+                    return;
+                }
+
+                if (this.actors.IsBusy)
+                {
+                    this.RestoreStatus = $"[Restore] Waiting LocalActors queue: {this.actors.BusyStatus}";
+                    return;
+                }
+
+                this.log.Information("[Restore] Stage LocalActors end.");
                 this.restoreStage = 4;
                 this.restoreIndex = 0;
                 return;
@@ -1057,8 +1155,70 @@ public sealed unsafe class SceneEditorService
             return false;
         }
 
+        if (this.actors.IsBusy)
+        {
+            reason = $"actor spawn/apply queue busy: {this.actors.BusyStatus}";
+            return false;
+        }
+
         reason = string.Empty;
         return true;
+    }
+
+    private int QueueRestoreLocalActorRecords()
+    {
+        if (this.restoreActorRecords.Count == 0)
+            return 0;
+
+        var queued = 0;
+        var queuedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var index = 0; index < this.restoreActorRecords.Count; index++)
+        {
+            var record = this.restoreActorRecords[index];
+            var npc = this.actors.GetNpcById(record.NpcId);
+            if (npc == null)
+            {
+                record.RestoreStatus = "Failed: missing NPC config";
+                this.log.Warning("[ActorRestore] skip local actor record missing npc record={Record} npc={NpcId}", record.RecordId, record.NpcId);
+                continue;
+            }
+
+            var position = record.WorldPosition;
+            var rotation = record.WorldRotationEuler;
+            var scale = WorldTransformUtil.NormalizeScale(record.WorldScale);
+            var key = $"{record.NpcId}|{record.SortOrder}|{MathF.Round(position.X, 2)}|{MathF.Round(position.Y, 2)}|{MathF.Round(position.Z, 2)}";
+            if (!queuedKeys.Add(key))
+            {
+                record.RestoreStatus = "Skipped: duplicate actor restore record";
+                this.log.Information("[ActorRestore] skip duplicate local actor record={Record} key={Key}", record.RecordId, key);
+                continue;
+            }
+
+            var alreadyLive = this.actors.Actors.Any(actor =>
+                actor.IsValid &&
+                string.Equals(actor.NpcId, record.NpcId, StringComparison.OrdinalIgnoreCase) &&
+                Vector3.Distance(actor.TransformEditPosition == Vector3.Zero ? actor.SpawnPosition : actor.TransformEditPosition, position) < 0.1f);
+            if (alreadyLive)
+            {
+                record.RestoreStatus = "Skipped: matching live actor already exists";
+                continue;
+            }
+
+            this.actors.QueueRestoreActor(
+                npc,
+                position,
+                rotation,
+                scale,
+                record.SortOrder,
+                index,
+                "SceneEditor local actor restore");
+            record.RestoreStatus = "Queued";
+            queued++;
+        }
+
+        if (queued > 0)
+            this.MarkPersistDirty("LocalActor restore queued");
+        return queued;
     }
 
     private bool ApplyPersistedNativeModification(SceneEditorNativeModificationRecord record)
@@ -1066,13 +1226,18 @@ public sealed unsafe class SceneEditorService
         if (record.Kind == SceneEditableKind.Player)
             return false;
 
+        record.NativeAddress = string.Empty;
         var transform = record.IsHidden
             ? GetHiddenOrCurrentTransform(record)
             : GetCurrentTransform(record);
 
         if (!this.ApplyNativeRecordTransform(record, transform))
         {
-            record.Status = "Missing";
+            if (!string.Equals(record.Status, "Ambiguous", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(record.Status, "LegacyNoTerritory", StringComparison.OrdinalIgnoreCase))
+            {
+                record.Status = "Missing";
+            }
             record.LastModifiedAt = DateTime.UtcNow;
             this.MarkPersistDirty("Persisted native restore missing");
             this.log.Warning("[Restore] Native restore missing stableKey={StableKey} kind={Kind} name={Name}", record.StableKey, record.Kind, record.DisplayName);
@@ -1083,6 +1248,201 @@ public sealed unsafe class SceneEditorService
         record.LastModifiedAt = DateTime.UtcNow;
         this.MarkPersistDirty("Persisted native restore");
         this.log.Information("[Restore] Native restore stableKey={StableKey} kind={Kind} status={Status}", record.StableKey, record.Kind, record.Status);
+        return true;
+    }
+
+    private bool AdvanceActiveLocalBgPartRestore()
+    {
+        var item = this.activeBgPartRestore;
+        if (item == null)
+            return true;
+
+        if (!this.CanRunRestoreNow(out var pauseReason))
+        {
+            this.RestoreStatus = $"[RestoreBgPart] paused reason={pauseReason}";
+            return false;
+        }
+
+        var record = item.Record;
+        switch (item.State)
+        {
+            case LocalBgPartRestoreState.Pending:
+                item.State = LocalBgPartRestoreState.ResolvingSource;
+                record.RestoreStatus = "ResolvingSource";
+                this.log.Information("[RestoreBgPart] state=ResolvingSource order={Order} instance={Instance}", record.SortOrder, record.InstanceId);
+                return false;
+
+            case LocalBgPartRestoreState.ResolvingSource:
+            {
+                var existing = this.localLayoutObjects.GetById(record.InstanceId);
+                if (existing != null && !existing.IsRestored && !existing.IsInvalid && !existing.IsDuplicate)
+                {
+                    item.InstanceId = existing.Id;
+                    item.State = LocalBgPartRestoreState.WaitingNativeReady;
+                    item.WaitTicks = 5;
+                    record.RestoreStatus = $"WaitingNativeReady existing={existing.Id}";
+                    this.log.Information("[RestoreBgPart] state=WaitingNativeReady order={Order} existing={Id}", record.SortOrder, existing.Id);
+                    return false;
+                }
+
+                var candidates = this.GetCurrentBgPartCandidates().ToList();
+                if (candidates.Count == 0)
+                    return this.FailActiveLocalBgPartRestore(item, "no BgPart carrier candidates");
+
+                var template = this.ResolveBgPartTemplate(record, candidates);
+                if (template == null)
+                    return this.FailActiveLocalBgPartRestore(item, "no readable mdl path");
+
+                item.Candidates = candidates;
+                item.Template = template;
+                item.State = LocalBgPartRestoreState.CreatingCopy;
+                record.RestoreStatus = $"CreatingCopy template={template.ResourcePath}";
+                this.log.Information("[RestoreBgPart] state=CreatingCopy order={Order} template={Template}", record.SortOrder, template.ResourcePath);
+                return false;
+            }
+
+            case LocalBgPartRestoreState.CreatingCopy:
+            {
+                var created = this.localLayoutObjects.CreateCopyFromTemplate(
+                    item.Template,
+                    item.Candidates,
+                    item.Target.WorldPosition,
+                    record.CollisionMode,
+                    CarrierAllocationPolicy.PreferredListThenAnyValid,
+                    unsafeEnabled: true,
+                    fullLayoutConfirmed: record.CollisionMode == LocalLayoutTransformMode.FullLayoutWithCollision,
+                    defaultRotationEuler: item.Target.WorldEulerRadians,
+                    defaultScale: item.Target.WorldScale,
+                    deferInitialTransformApply: true);
+
+                if (created == null)
+                    return this.FailActiveLocalBgPartRestore(item, this.localLayoutObjects.LastStatus);
+
+                var previousRuntime = string.IsNullOrWhiteSpace(record.InstanceId)
+                    ? null
+                    : this.localLayoutObjects.GetById(record.InstanceId);
+                if (!string.IsNullOrWhiteSpace(record.InstanceId) &&
+                    !string.Equals(created.Id, record.InstanceId, StringComparison.OrdinalIgnoreCase) &&
+                    previousRuntime == null)
+                {
+                    created.Id = record.InstanceId;
+                }
+                else
+                {
+                    record.InstanceId = created.Id;
+                }
+
+                item.InstanceId = created.Id;
+                item.State = LocalBgPartRestoreState.WaitingInstanceRegistered;
+                item.WaitTicks = 2;
+                record.RestoreStatus = $"WaitingInstanceRegistered id={record.InstanceId}";
+                this.log.Information("[RestoreBgPart] create deferTransformApply=true order={Order} id={Id}", record.SortOrder, record.InstanceId);
+                return false;
+            }
+
+            case LocalBgPartRestoreState.WaitingInstanceRegistered:
+                if (item.WaitTicks-- > 0)
+                {
+                    this.RestoreStatus = $"[RestoreBgPart] waiting instance registered order={record.SortOrder} ticks={item.WaitTicks}";
+                    return false;
+                }
+
+                if (this.localLayoutObjects.GetById(item.InstanceId) == null)
+                {
+                    if (++item.Attempts < 30)
+                    {
+                        item.WaitTicks = 1;
+                        return false;
+                    }
+
+                    return this.FailActiveLocalBgPartRestore(item, $"created instance not registered: {item.InstanceId}");
+                }
+
+                item.State = LocalBgPartRestoreState.WaitingNativeReady;
+                item.Attempts = 0;
+                item.WaitTicks = 5;
+                record.RestoreStatus = $"WaitingNativeReady id={item.InstanceId}";
+                this.log.Information("[RestoreBgPart] state=WaitingNativeReady order={Order} id={Id}", record.SortOrder, item.InstanceId);
+                return false;
+
+            case LocalBgPartRestoreState.WaitingNativeReady:
+                if (item.WaitTicks-- > 0)
+                {
+                    this.RestoreStatus = $"[RestoreBgPart] waiting native ready order={record.SortOrder} ticks={item.WaitTicks}";
+                    return false;
+                }
+
+                if (!this.localLayoutObjects.PrepareRestoreNative(item.InstanceId, out var prepareResult))
+                {
+                    if (++item.Attempts < 30)
+                    {
+                        item.WaitTicks = 2;
+                        record.RestoreStatus = $"WaitingNativeReady retry={item.Attempts}; {prepareResult}";
+                        this.RestoreStatus = $"[RestoreBgPart] waiting native ready retry={item.Attempts}: {prepareResult}";
+                        return false;
+                    }
+
+                    return this.FailActiveLocalBgPartRestore(item, prepareResult);
+                }
+
+                item.State = LocalBgPartRestoreState.ApplyingTransform;
+                item.Attempts = 0;
+                record.RestoreStatus = $"ApplyingTransform; {prepareResult}";
+                this.log.Information("[RestoreBgPart] apply transform begin order={Order} id={Id}", record.SortOrder, item.InstanceId);
+                return false;
+
+            case LocalBgPartRestoreState.ApplyingTransform:
+                if (!this.localLayoutObjects.ApplyRestoreTransform(
+                        item.InstanceId,
+                        item.Target.WorldPosition,
+                        item.Target.WorldEulerRadians,
+                        item.Target.WorldScale,
+                        out var applyResult))
+                {
+                    if (++item.Attempts < 5)
+                    {
+                        item.WaitTicks = 2;
+                        item.State = LocalBgPartRestoreState.WaitingNativeReady;
+                        record.RestoreStatus = $"Apply retry={item.Attempts}; {applyResult}";
+                        this.RestoreStatus = $"[RestoreBgPart] apply retry={item.Attempts}: {applyResult}";
+                        return false;
+                    }
+
+                    return this.FailActiveLocalBgPartRestore(item, applyResult);
+                }
+
+                item.State = LocalBgPartRestoreState.VerifyingTransform;
+                item.WaitTicks = 1;
+                record.RestoreStatus = $"VerifyingTransform; {applyResult}";
+                this.log.Information("[RestoreBgPart] apply transform end order={Order} id={Id} result={Result}", record.SortOrder, item.InstanceId, applyResult);
+                return false;
+
+            case LocalBgPartRestoreState.VerifyingTransform:
+                if (item.WaitTicks-- > 0)
+                    return false;
+
+                _ = this.localLayoutObjects.RefreshWorldTransform(item.InstanceId);
+                item.State = LocalBgPartRestoreState.Done;
+                record.RestoreStatus = $"Done id={item.InstanceId}";
+                this.TransformGeneration++;
+                this.SyncLocalBgPartSnapshots();
+                this.MarkPersistDirty("LocalBgPart restored");
+                this.log.Information("[RestoreBgPart] state=Done order={Order} id={Id}", record.SortOrder, item.InstanceId);
+                return true;
+
+            case LocalBgPartRestoreState.Failed:
+            case LocalBgPartRestoreState.Done:
+            default:
+                return true;
+        }
+    }
+
+    private bool FailActiveLocalBgPartRestore(LocalBgPartRestoreItem item, string reason)
+    {
+        item.State = LocalBgPartRestoreState.Failed;
+        item.Record.RestoreStatus = $"Failed: {reason}";
+        this.MarkPersistDirty("LocalBgPart restore failed");
+        this.log.Warning("[RestoreBgPart] state=Failed order={Order} instance={Instance} reason={Reason}", item.Record.SortOrder, item.Record.InstanceId, reason);
         return true;
     }
 
@@ -1217,6 +1577,131 @@ public sealed unsafe class SceneEditorService
         this.SyncLocalBgPartSnapshots();
     }
 
+    private void SyncLocalActorSnapshotsDebounced()
+    {
+        if ((DateTime.UtcNow - this.lastLocalActorSnapshotUtc).TotalMilliseconds < 1200)
+            return;
+
+        this.lastLocalActorSnapshotUtc = DateTime.UtcNow;
+        this.SyncLocalActorSnapshots();
+    }
+
+    private void SyncLocalActorSnapshots()
+    {
+        var territory = this.getTerritoryType();
+        if (territory == 0)
+            return;
+
+        var active = this.actors.Actors
+            .Where(actor => !actor.IsStale)
+            .Where(actor => actor.IsValid || actor.IsReady)
+            .Where(actor => actor.TerritoryId == 0 || actor.TerritoryId == territory)
+            .OrderBy(actor => actor.SortOrder)
+            .ThenBy(actor => actor.SpawnSequence)
+            .ToList();
+
+        var changed = false;
+        for (var i = 0; i < active.Count; i++)
+        {
+            var actor = active[i];
+            var actorPosition = actor.HasSavedTransform ? actor.TransformEditPosition : actor.SpawnPosition;
+            var record = this.LocalActorRecords.FirstOrDefault(item =>
+                    string.Equals(item.RuntimeId, actor.RuntimeId, StringComparison.OrdinalIgnoreCase)) ??
+                this.LocalActorRecords.FirstOrDefault(item =>
+                    item.TerritoryId == territory &&
+                    string.Equals(item.NpcId, actor.NpcId, StringComparison.OrdinalIgnoreCase) &&
+                    item.SortOrder == actor.SortOrder &&
+                    Vector3.Distance(item.WorldPosition, actorPosition) < 0.25f);
+            if (record == null)
+            {
+                record = new SceneEditorLocalActorRecord
+                {
+                    RuntimeId = actor.RuntimeId,
+                    RecordId = Guid.NewGuid().ToString("N"),
+                };
+                this.LocalActorRecords.Add(record);
+                changed = true;
+            }
+
+            changed |= this.CopyLocalActorToRecord(actor, record, territory);
+        }
+
+        if (changed)
+            this.MarkPersistDirty("LocalActor snapshot sync");
+    }
+
+    private bool CopyLocalActorToRecord(RuntimeActorInstance actor, SceneEditorLocalActorRecord record, uint territory)
+    {
+        var position = actor.HasSavedTransform ? actor.TransformEditPosition : actor.SpawnPosition;
+        var rotation = actor.HasSavedTransform ? actor.TransformEditRotationEuler : actor.SpawnRotationEuler;
+        var scale = WorldTransformUtil.NormalizeScale(actor.HasSavedTransform ? actor.TransformEditScale : actor.SpawnScale);
+        var sortOrder = actor.SortOrder == int.MaxValue ? this.LocalActorRecords.IndexOf(record) : actor.SortOrder;
+        var changed =
+            record.NpcId != actor.NpcId ||
+            record.DisplayName != FirstNonEmpty(actor.DisplayName, actor.NpcName, actor.NpcId) ||
+            record.TerritoryId != territory ||
+            record.SortOrder != sortOrder ||
+            !record.Enabled ||
+            record.WorldPosition != position ||
+            record.WorldRotationEuler != rotation ||
+            record.WorldScale != scale;
+
+        if (!changed)
+            return false;
+
+        record.RuntimeId = actor.RuntimeId;
+        record.NpcId = actor.NpcId;
+        record.DisplayName = FirstNonEmpty(actor.DisplayName, actor.NpcName, actor.NpcId);
+        record.TerritoryId = territory;
+        record.SortOrder = sortOrder;
+        record.Enabled = true;
+        record.WorldPosition = position;
+        record.WorldRotationEuler = rotation;
+        record.WorldScale = scale;
+        record.LastSavedAt = DateTime.UtcNow;
+        record.RestoreStatus = "Saved";
+        this.log.Information("[ActorRestore] saved local actor snapshot runtime={RuntimeId} npc={NpcId} territory={Territory} order={Order} pos={Position} rot={Rotation} scale={Scale}",
+            actor.RuntimeId,
+            actor.NpcId,
+            territory,
+            sortOrder,
+            position,
+            rotation,
+            scale);
+        return true;
+    }
+
+    private void SyncLocalActorRecord(string runtimeId, Vector3 position, Vector3 rotationEuler, Vector3 scale)
+    {
+        var actor = this.GetLocalActor(runtimeId);
+        if (actor == null)
+            return;
+
+        var record = this.LocalActorRecords.FirstOrDefault(item => string.Equals(item.RuntimeId, runtimeId, StringComparison.OrdinalIgnoreCase));
+        if (record == null)
+        {
+            record = new SceneEditorLocalActorRecord
+            {
+                RuntimeId = runtimeId,
+                NpcId = actor.NpcId,
+                RecordId = Guid.NewGuid().ToString("N"),
+            };
+            this.LocalActorRecords.Add(record);
+        }
+
+        record.NpcId = actor.NpcId;
+        record.DisplayName = FirstNonEmpty(actor.DisplayName, actor.NpcName, actor.NpcId);
+        record.TerritoryId = this.getTerritoryType();
+        record.SortOrder = actor.SortOrder;
+        record.Enabled = true;
+        record.WorldPosition = position;
+        record.WorldRotationEuler = rotationEuler;
+        record.WorldScale = WorldTransformUtil.NormalizeScale(scale);
+        record.LastSavedAt = DateTime.UtcNow;
+        record.RestoreStatus = "Saved";
+        this.log.Information("[ActorRestore] saved local actor record runtime={RuntimeId} npc={NpcId} order={Order} pos={Position} rot={Rotation} scale={Scale}", runtimeId, record.NpcId, record.SortOrder, position, rotationEuler, record.WorldScale);
+    }
+
     private void SyncLocalBgPartSnapshots()
     {
         var active = this.localLayoutObjects.Instances
@@ -1298,7 +1783,7 @@ public sealed unsafe class SceneEditorService
     }
 
     private bool IsCurrentTerritoryRecord(SceneEditorNativeModificationRecord record)
-        => record.TerritoryId == 0 || record.TerritoryId == this.getTerritoryType();
+        => record.TerritoryId != 0 && record.TerritoryId == this.getTerritoryType();
 
     private WorldTransform ReadNativeTransformOrFallback(SceneEditableRef selected)
     {
@@ -1349,7 +1834,10 @@ public sealed unsafe class SceneEditorService
         var record = this.NativeRecords.FirstOrDefault(item =>
             string.Equals(item.StableKey, stableKey, StringComparison.OrdinalIgnoreCase));
         if (record != null)
+        {
+            record.NativeAddress = string.Empty;
             return record;
+        }
 
         record = new SceneEditorNativeModificationRecord
         {
@@ -1377,7 +1865,15 @@ public sealed unsafe class SceneEditorService
 
     private bool ApplyNativeRecordTransform(SceneEditorNativeModificationRecord record, WorldTransform transform)
     {
-        if (record.TerritoryId != 0 && record.TerritoryId != this.getTerritoryType())
+        if (record.TerritoryId == 0)
+        {
+            record.Status = "LegacyNoTerritory";
+            this.LastStatus = "Native restore skipped: legacy record has no TerritoryId.";
+            this.log.Information("[RestoreNative] skipped legacy no territory stableKey={StableKey} kind={Kind} name={Name}", record.StableKey, record.Kind, record.DisplayName);
+            return false;
+        }
+
+        if (record.TerritoryId != this.getTerritoryType())
         {
             this.LastStatus = "Native restore skipped: record belongs to another territory.";
             return false;
@@ -1391,10 +1887,7 @@ public sealed unsafe class SceneEditorService
 
         this.lastNativeScanUtc = DateTime.MinValue;
         this.nativeCache.Clear();
-        var current = this.GetEditables().FirstOrDefault(item =>
-            item.IsNativeGameObject &&
-            item.Kind == record.Kind &&
-            string.Equals(this.GetStableKey(item), record.StableKey, StringComparison.OrdinalIgnoreCase));
+        var current = this.ResolveNativeObjectFresh(record);
 
         if (current == null || current.NativePtr == 0 || current.IsPlayer)
         {
@@ -1406,11 +1899,85 @@ public sealed unsafe class SceneEditorService
         return record.Kind switch
         {
             SceneEditableKind.NativeBgPart or SceneEditableKind.NativeLight
-                => this.ApplyNativeLayoutTransformAddress(record.RuntimeIdAtRecordTime, current.NativePtr, transform, record.UseFullLayoutTransform),
+                => this.ApplyFreshNativeLayoutTransform(record, current, transform),
             SceneEditableKind.NativeActor or SceneEditableKind.EventNpc
                 => this.ApplyNativeActorTransformAddress(record.RuntimeIdAtRecordTime, current.NativePtr, transform),
             _ => false,
         };
+    }
+
+    private SceneEditableRef? ResolveNativeObjectFresh(SceneEditorNativeModificationRecord record)
+    {
+        if (!this.IsCurrentTerritoryRecord(record))
+        {
+            this.log.Information("[RestoreNative] skipped territory mismatch stableKey={StableKey} recordTerritory={RecordTerritory} currentTerritory={CurrentTerritory}", record.StableKey, record.TerritoryId, this.getTerritoryType());
+            return null;
+        }
+
+        this.log.Information("[RestoreNative] resolve begin stableKey={StableKey} kind={Kind} name={Name}", record.StableKey, record.Kind, record.DisplayName);
+        var candidates = this.GetNativeEditablesForRestore()
+            .Where(item => item.IsNativeGameObject)
+            .Where(item => !item.IsPlayer)
+            .Where(item => item.Kind == record.Kind)
+            .ToList();
+
+        var exact = candidates.FirstOrDefault(item =>
+            string.Equals(this.GetStableKey(item), record.StableKey, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(item.StableKey, record.StableKey, StringComparison.OrdinalIgnoreCase));
+        if (exact != null)
+        {
+            this.log.Information("[RestoreNative] resolve exact stableKey={StableKey} ptr={Ptr}", record.StableKey, exact.NativePtr);
+            return exact;
+        }
+
+        var original = GetOriginalTransform(record).WorldPosition;
+        var current = GetCurrentTransform(record).WorldPosition;
+        var hidden = ToVector3(record.HiddenPosition);
+        var scored = candidates
+            .Select(item => new { Item = item, Score = this.ScoreNativeCandidate(record, item, original, current, hidden) })
+            .OrderByDescending(item => item.Score)
+            .ThenBy(item => item.Item.ObjectIndex)
+            .ToList();
+        var best = scored.FirstOrDefault();
+
+        if (best == null || best.Score < 25)
+        {
+            this.log.Warning("[RestoreNative] resolve failed stableKey={StableKey} candidateCount={Count} bestScore={Score}", record.StableKey, candidates.Count, best?.Score ?? 0);
+            return null;
+        }
+
+        var ambiguousCount = scored.Count(item => item.Score == best.Score);
+        if (ambiguousCount > 1)
+        {
+            record.Status = "Ambiguous";
+            this.log.Warning("[RestoreNative] resolve ambiguous stableKey={StableKey} candidateCount={Count} bestScore={Score} tied={Tied}", record.StableKey, candidates.Count, best.Score, ambiguousCount);
+            return null;
+        }
+
+        this.log.Information("[RestoreNative] resolve fuzzy stableKey={StableKey} ptr={Ptr} score={Score} candidate={Candidate}", record.StableKey, best.Item.NativePtr, best.Score, best.Item.DisplayName);
+        return best.Item;
+    }
+
+    private int ScoreNativeCandidate(SceneEditorNativeModificationRecord record, SceneEditableRef item, Vector3 original, Vector3 current, Vector3 hidden)
+    {
+        var score = 0;
+        if (!string.IsNullOrWhiteSpace(record.MdlPath) && string.Equals(record.MdlPath, item.MdlPath, StringComparison.OrdinalIgnoreCase))
+            score += 50;
+        if (!string.IsNullOrWhiteSpace(record.DataId) && string.Equals(record.DataId, item.DataId, StringComparison.OrdinalIgnoreCase))
+            score += 35;
+        if (!string.IsNullOrWhiteSpace(record.DisplayName) && string.Equals(record.DisplayName, item.DisplayName, StringComparison.OrdinalIgnoreCase))
+            score += 20;
+        if (!string.IsNullOrWhiteSpace(record.MdlPath) && item.DisplayName.Contains(record.MdlPath, StringComparison.OrdinalIgnoreCase))
+            score += 10;
+        if (Vector3.Distance(item.Transform.WorldPosition, original) <= 2f)
+            score += 25;
+        if (Vector3.Distance(item.Transform.WorldPosition, current) <= 2f)
+            score += 20;
+        if (hidden != Vector3.Zero && Vector3.Distance(item.Transform.WorldPosition, hidden) <= 2f)
+            score += 20;
+        if (record.ObjectIndexAtRecordTime >= 0 && record.ObjectIndexAtRecordTime == item.ObjectIndex)
+            score += 5;
+        return score;
     }
 
     private bool IsHiddenRecord(string stableKey)
@@ -1424,8 +1991,11 @@ public sealed unsafe class SceneEditorService
         if (!string.IsNullOrWhiteSpace(selected.StableKey))
             return selected.StableKey;
 
-        return $"{this.getTerritoryType()}:{selected.Kind}:{selected.RuntimeId}:{selected.NativePtr:X}:{selected.ObjectIndex}:{selected.DisplayName}";
+        return $"{this.getTerritoryType()}:{selected.Kind}:{selected.ObjectKind}:data={selected.DataId}:mdl={selected.MdlPath}:name={selected.DisplayName}:pos={FormatStablePosition(selected.Transform.WorldPosition)}";
     }
+
+    private static string FormatStablePosition(Vector3 position)
+        => $"{MathF.Round(position.X, 1):F1},{MathF.Round(position.Y, 1):F1},{MathF.Round(position.Z, 1):F1}";
 
     private static bool CanTrackNativeModification(SceneEditableRef selected)
         => selected.IsNativeGameObject &&
@@ -1525,7 +2095,7 @@ public sealed unsafe class SceneEditorService
                 this.AddNativeActors(this.nativeCache, pluginPointers);
 
             if (this.ShowBgParts || this.ShowLights)
-                this.AddNativeLayoutObjects(this.nativeCache, pluginPointers);
+                this.AddNativeLayoutObjects(this.nativeCache, pluginPointers, restoreScan: false);
 
             this.LastNativeScanStatus = $"Native scan: {this.nativeCache.Count} readonly markers.";
         }
@@ -1559,6 +2129,23 @@ public sealed unsafe class SceneEditorService
         {
             if (light.NativeSceneLight != 0)
                 result.Add(light.NativeSceneLight);
+        }
+
+        return result;
+    }
+
+    private IReadOnlyList<SceneEditableRef> GetNativeEditablesForRestore()
+    {
+        var result = new List<SceneEditableRef>();
+        var pluginPointers = this.GetPluginNativePointers();
+        try
+        {
+            this.AddNativeActors(result, pluginPointers);
+            this.AddNativeLayoutObjects(result, pluginPointers, restoreScan: true);
+        }
+        catch (Exception ex)
+        {
+            this.log.Warning(ex, "[RestoreNative] fresh native scan failed.");
         }
 
         return result;
@@ -1600,7 +2187,7 @@ public sealed unsafe class SceneEditorService
                 : objectKind.Contains("Event", StringComparison.OrdinalIgnoreCase)
                     ? SceneEditableKind.EventNpc
                     : SceneEditableKind.NativeActor;
-            var stableKey = $"{objectKind}:{index}:{dataId}:{address:X}";
+            var stableKey = $"{this.getTerritoryType()}:{kind}:{objectKind}:data={dataId}:name={name}:pos={FormatStablePosition(position)}";
             result.Add(new SceneEditableRef(
                 $"native-actor:{address:X}",
                 kind,
@@ -1625,7 +2212,7 @@ public sealed unsafe class SceneEditorService
         }
     }
 
-    private void AddNativeLayoutObjects(List<SceneEditableRef> result, HashSet<nint> pluginPointers)
+    private void AddNativeLayoutObjects(List<SceneEditableRef> result, HashSet<nint> pluginPointers, bool restoreScan)
     {
         var previousNearbyOnly = this.layoutProbe.NearbyOnly;
         var previousMaxDistance = this.layoutProbe.MaxDistance;
@@ -1640,19 +2227,19 @@ public sealed unsafe class SceneEditorService
 
         try
         {
-            this.layoutProbe.NearbyOnly = true;
-            this.layoutProbe.MaxDistance = 80f;
+            this.layoutProbe.NearbyOnly = !restoreScan;
+            this.layoutProbe.MaxDistance = restoreScan ? 10000f : 80f;
             this.layoutProbe.SortByDistance = true;
-            this.layoutProbe.ShowBgPart = this.ShowBgParts;
+            this.layoutProbe.ShowBgPart = restoreScan || this.ShowBgParts;
             this.layoutProbe.ShowSharedGroup = false;
-            this.layoutProbe.ShowLight = this.ShowLights;
+            this.layoutProbe.ShowLight = restoreScan || this.ShowLights;
             this.layoutProbe.ShowTerrain = false;
             this.layoutProbe.ShowCamera = false;
             this.layoutProbe.ShowCharacter = false;
             this.layoutProbe.TypeFilter = string.Empty;
             this.layoutProbe.EnumerateInstances(this.playerPositionProvider());
 
-            foreach (var instance in this.layoutProbe.Instances.Take(160))
+            foreach (var instance in this.layoutProbe.Instances.Take(restoreScan ? 4000 : 160))
             {
                 var address = ParsePointer(instance.Address);
                 if (address != 0 && pluginPointers.Contains(address))
@@ -1661,9 +2248,9 @@ public sealed unsafe class SceneEditorService
                 var kind = instance.Type.Equals("Light", StringComparison.OrdinalIgnoreCase)
                     ? SceneEditableKind.NativeLight
                     : SceneEditableKind.NativeBgPart;
-                if (kind == SceneEditableKind.NativeBgPart && !this.ShowBgParts)
+                if (!restoreScan && kind == SceneEditableKind.NativeBgPart && !this.ShowBgParts)
                     continue;
-                if (kind == SceneEditableKind.NativeLight && !this.ShowLights)
+                if (!restoreScan && kind == SceneEditableKind.NativeLight && !this.ShowLights)
                     continue;
 
                 result.Add(new SceneEditableRef(
@@ -1710,6 +2297,54 @@ public sealed unsafe class SceneEditorService
            objectKind.Contains("Battle", StringComparison.OrdinalIgnoreCase) ||
            objectKind.Contains("Event", StringComparison.OrdinalIgnoreCase) ||
            objectKind.Contains("Companion", StringComparison.OrdinalIgnoreCase);
+
+    private enum LocalBgPartRestoreState
+    {
+        Pending,
+        ResolvingSource,
+        CreatingCopy,
+        WaitingInstanceRegistered,
+        WaitingNativeReady,
+        ApplyingTransform,
+        VerifyingTransform,
+        Done,
+        Failed,
+    }
+
+    private sealed class LocalBgPartRestoreItem
+    {
+        public LocalBgPartRestoreItem(SceneEditorLocalBgPartRecord record, WorldTransform target)
+        {
+            this.Record = record;
+            this.Target = target;
+            this.InstanceId = record.InstanceId;
+        }
+
+        public SceneEditorLocalBgPartRecord Record { get; }
+
+        public WorldTransform Target { get; }
+
+        public LocalBgPartRestoreState State { get; set; } = LocalBgPartRestoreState.Pending;
+
+        public string InstanceId { get; set; }
+
+        public int WaitTicks { get; set; }
+
+        public int Attempts { get; set; }
+
+        public LayoutProbeInstance? Template { get; set; }
+
+        public IReadOnlyList<LayoutProbeInstance> Candidates { get; set; } = [];
+    }
+
+    private readonly record struct FreshNativeLayoutTarget(
+        nint Address,
+        uint TerritoryId,
+        int SceneGeneration,
+        SceneEditableKind Kind,
+        string StableKey,
+        bool IsFresh,
+        string ResolveReason);
 
     private static bool TryGetAddress(object source, out nint address)
     {
@@ -1834,14 +2469,42 @@ public sealed unsafe class SceneEditorService
             return false;
         }
 
-        return this.ApplyNativeLayoutTransformAddress(runtimeId, address, transform, this.NativeFullLayoutTransformConfirmed);
+        var target = new FreshNativeLayoutTarget(
+            address,
+            this.getTerritoryType(),
+            this.sceneGeneration,
+            current!.Kind,
+            this.GetStableKey(current),
+            IsFresh: true,
+            ResolveReason: "interactive current frame");
+        return this.ApplyFreshNativeLayoutTransform(runtimeId, target, transform, this.NativeFullLayoutTransformConfirmed);
     }
 
-    private bool ApplyNativeLayoutTransformAddress(string runtimeId, nint address, WorldTransform transform, bool fullLayoutConfirmed)
+    private bool ApplyFreshNativeLayoutTransform(SceneEditorNativeModificationRecord record, SceneEditableRef current, WorldTransform transform)
     {
+        var target = new FreshNativeLayoutTarget(
+            current.NativePtr,
+            this.getTerritoryType(),
+            this.sceneGeneration,
+            current.Kind,
+            this.GetStableKey(current),
+            IsFresh: true,
+            ResolveReason: "ResolveNativeObjectFresh");
+        return this.ApplyFreshNativeLayoutTransform(record.RuntimeIdAtRecordTime, target, transform, record.UseFullLayoutTransform);
+    }
+
+    private bool ApplyFreshNativeLayoutTransform(string runtimeId, FreshNativeLayoutTarget target, WorldTransform transform, bool fullLayoutConfirmed)
+    {
+        if (!this.ValidateFreshNativeLayoutTarget(target, out var validationReason))
+        {
+            this.LastStatus = $"Native layout transform skipped: {validationReason}";
+            this.log.Warning("[RestoreNative] Apply native skipped stale pointer id={Id} stableKey={StableKey} reason={Reason}", runtimeId, target.StableKey, validationReason);
+            return false;
+        }
+
         try
         {
-            var pointer = (ILayoutInstance*)address;
+            var pointer = (ILayoutInstance*)target.Address;
             if (pointer->Id.Type == InstanceType.BgPart && !fullLayoutConfirmed)
             {
                 if (!TryGetGraphicsObjectAddress(pointer, out var graphicsObjectAddress))
@@ -1850,7 +2513,13 @@ public sealed unsafe class SceneEditorService
                     return false;
                 }
 
-                WriteSceneObjectTransform(graphicsObjectAddress, transform);
+                var graphicsTarget = target with { Address = graphicsObjectAddress, ResolveReason = $"{target.ResolveReason}; GraphicsObject" };
+                if (!this.TryWriteSceneObjectTransform(graphicsTarget, transform, out var writeReason))
+                {
+                    this.LastStatus = $"Native BgPart visual transform failed: {writeReason}";
+                    return false;
+                }
+
                 this.TransformGeneration++;
                 this.lastNativeScanUtc = DateTime.MinValue;
                 this.LastStatus = $"Native BgPart visual-only transform applied: {runtimeId}";
@@ -1877,6 +2546,42 @@ public sealed unsafe class SceneEditorService
         }
     }
 
+    private bool ValidateFreshNativeLayoutTarget(FreshNativeLayoutTarget target, out string reason)
+    {
+        if (target.Address == 0)
+        {
+            reason = "target pointer is zero";
+            return false;
+        }
+
+        if (!target.IsFresh)
+        {
+            reason = "target was not resolved fresh";
+            return false;
+        }
+
+        if (target.TerritoryId != this.getTerritoryType())
+        {
+            reason = $"territory mismatch target={target.TerritoryId}, current={this.getTerritoryType()}";
+            return false;
+        }
+
+        if (target.SceneGeneration != this.sceneGeneration)
+        {
+            reason = $"scene generation mismatch target={target.SceneGeneration}, current={this.sceneGeneration}";
+            return false;
+        }
+
+        if (!this.CanRunRestoreNow(out var pauseReason))
+        {
+            reason = pauseReason;
+            return false;
+        }
+
+        reason = string.Empty;
+        return true;
+    }
+
     private static bool TryGetGraphicsObjectAddress(ILayoutInstance* pointer, out nint graphicsObjectAddress)
     {
         graphicsObjectAddress = 0;
@@ -1898,10 +2603,13 @@ public sealed unsafe class SceneEditorService
         }
     }
 
-    private static void WriteSceneObjectTransform(nint graphicsObjectAddress, WorldTransform transform)
+    private bool TryWriteSceneObjectTransform(FreshNativeLayoutTarget target, WorldTransform transform, out string reason)
     {
-        var obj = (SceneObject*)graphicsObjectAddress;
-        var bg = (SceneBgObject*)graphicsObjectAddress;
+        if (!this.ValidateFreshNativeLayoutTarget(target, out reason))
+            return false;
+
+        var obj = (SceneObject*)target.Address;
+        var bg = (SceneBgObject*)target.Address;
         obj->Position = transform.WorldPosition;
         obj->Rotation = transform.WorldRotation;
         obj->Scale = WorldTransformUtil.NormalizeScale(transform.WorldScale);
@@ -1909,6 +2617,8 @@ public sealed unsafe class SceneEditorService
         bg->NotifyTransformChanged();
         bg->UpdateTransforms(true);
         bg->UpdateRender();
+        reason = string.Empty;
+        return true;
     }
 
     private bool ApplyNativeActorTransform(string runtimeId, WorldTransform transform)
@@ -2010,7 +2720,7 @@ public sealed unsafe class SceneEditorService
         try
         {
             this.layoutProbe.NearbyOnly = false;
-            this.layoutProbe.MaxDistance = 200f;
+            this.layoutProbe.MaxDistance = 10000f;
             this.layoutProbe.SortByDistance = true;
             this.layoutProbe.ShowBgPart = true;
             this.layoutProbe.ShowSharedGroup = false;

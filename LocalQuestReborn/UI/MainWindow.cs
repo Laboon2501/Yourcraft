@@ -1807,6 +1807,10 @@ public sealed class MainWindow : Window
         if (this.actorBatchUsePlayerPosition && this.runtime.PlayerPosition.HasValue)
             return this.runtime.PlayerPosition.Value;
 
+        var savedPosition = ToVector3(npc.Position);
+        if (npc.TerritoryType == this.runtime.TerritoryType && savedPosition != Vector3.Zero)
+            return savedPosition;
+
         return (this.runtime.PlayerPosition ?? Vector3.Zero) + ToVector3(npc.DefaultSpawnOffset);
     }
 

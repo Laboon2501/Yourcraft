@@ -31,5 +31,7 @@ public sealed class Configuration : IPluginConfiguration
 
     public List<SceneEditorLocalBgPartRecord> SceneEditorLocalBgParts { get; set; } = [];
 
+    public List<SceneEditorLocalActorRecord> SceneEditorLocalActors { get; set; } = [];
+
     public List<LocalLightInstance> LocalLights { get; set; } = [];
 }

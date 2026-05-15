@@ -28,6 +28,14 @@ public sealed unsafe class LocalLayoutObjectService
     private readonly HashSet<ulong> reservedSlots = [];
     private CreateManyJob? activeCreateManyJob;
     private AllocationPlan? lastAllocationPlan;
+    private const int RequiredLayoutStableTicks = 60;
+    private uint layoutSceneGeneration;
+    private uint restoreAllGeneration;
+    private uint lastRestoreAllTerritoryType;
+    private int layoutSceneStableTicks;
+    private bool layoutNativeReadable;
+    private bool restoreAllAndClearPending;
+    private string restoreAllAndClearReason = string.Empty;
 
     public LocalLayoutObjectService(ProtectedBgPartRegistry? protectedBgParts = null, PreferredModifyBgPartRegistry? preferredModifyBgParts = null)
     {
@@ -86,6 +94,8 @@ public sealed unsafe class LocalLayoutObjectService
 
     public string LastRestorePlanPreview { get; private set; } = string.Empty;
 
+    public string RestoreAllQueueStatus { get; private set; } = "RestoreAll queue idle.";
+
     public string LastModelOverrideStatus => this.modelOverrideService.LastResult;
 
     public string LastRecreateExperimentStatus => this.recreateExperimentService.LastResult;
@@ -133,6 +143,111 @@ public sealed unsafe class LocalLayoutObjectService
         // v11.8: AnimatedPlayback/PinTransform 正式入口已暂停；Update 不再写动态 transform / visible。
     }
 
+    public void NotifySceneChanging(string reason)
+    {
+        this.layoutSceneGeneration++;
+        this.restoreAllGeneration = this.layoutSceneGeneration;
+        this.layoutSceneStableTicks = 0;
+        this.layoutNativeReadable = false;
+        this.restoreAllAndClearPending = false;
+        this.activeCreateManyJob = null;
+        this.reservedSlots.Clear();
+        this.occupiedSlots.Clear();
+        this.MarkRuntimeLayoutPointersStale(reason);
+        this.RestoreAllQueueStatus = $"RestoreAll paused: scene changing ({reason}).";
+    }
+
+    public void RequestRestoreAllAndClear(string reason)
+    {
+        this.restoreAllAndClearPending = true;
+        this.restoreAllAndClearReason = reason;
+        this.restoreAllGeneration = this.layoutSceneGeneration;
+        this.RestoreAllQueueStatus = $"RestoreAllAndClear pending: {reason}";
+    }
+
+    public void UpdateRestoreAllAndClearQueue(bool sceneReady, uint territoryType)
+    {
+        if (territoryType != this.lastRestoreAllTerritoryType)
+        {
+            this.lastRestoreAllTerritoryType = territoryType;
+            this.layoutSceneStableTicks = 0;
+            this.layoutNativeReadable = false;
+        }
+
+        if (!sceneReady || territoryType == 0)
+        {
+            this.layoutSceneStableTicks = 0;
+            this.layoutNativeReadable = false;
+            if (this.restoreAllAndClearPending)
+                this.RestoreAllQueueStatus = "RestoreAllAndClear waiting: scene unstable.";
+            return;
+        }
+
+        this.layoutSceneStableTicks = Math.Min(this.layoutSceneStableTicks + 1, RequiredLayoutStableTicks);
+        this.layoutNativeReadable = this.layoutSceneStableTicks >= RequiredLayoutStableTicks;
+        if (!this.restoreAllAndClearPending)
+        {
+            this.RestoreAllQueueStatus = this.layoutNativeReadable
+                ? "RestoreAll queue idle; layout native read allowed."
+                : $"RestoreAll queue idle; waiting stable ticks {this.layoutSceneStableTicks}/{RequiredLayoutStableTicks}.";
+            return;
+        }
+
+        if (!this.CanReadLayoutNative(out var reason))
+        {
+            this.RestoreAllQueueStatus = $"RestoreAllAndClear waiting: {reason}";
+            return;
+        }
+
+        if (this.restoreAllGeneration != this.layoutSceneGeneration)
+        {
+            this.restoreAllAndClearPending = false;
+            this.RestoreAllQueueStatus = $"RestoreAllAndClear canceled: stale generation request={this.restoreAllGeneration}, current={this.layoutSceneGeneration}.";
+            return;
+        }
+
+        var requestReason = this.restoreAllAndClearReason;
+        this.restoreAllAndClearPending = false;
+        this.restoreAllAndClearReason = string.Empty;
+        this.RestoreAllQueueStatus = $"RestoreAllAndClear executing after scene stable: {requestReason}";
+        this.ExecuteRestoreAllAndClear();
+    }
+
+    private bool CanReadLayoutNative(out string reason)
+    {
+        if (!this.layoutNativeReadable)
+        {
+            reason = $"scene stable ticks {this.layoutSceneStableTicks}/{RequiredLayoutStableTicks}";
+            return false;
+        }
+
+        if (this.layoutSceneStableTicks < RequiredLayoutStableTicks)
+        {
+            reason = $"scene stable ticks {this.layoutSceneStableTicks}/{RequiredLayoutStableTicks}";
+            return false;
+        }
+
+        reason = string.Empty;
+        return true;
+    }
+
+    private void MarkRuntimeLayoutPointersStale(string reason)
+    {
+        foreach (var instance in this.instances)
+        {
+            instance.GraphicsObjectAddress = string.Empty;
+            instance.PendingStableGraphicsObjectAddress = string.Empty;
+            instance.PendingVisualTransform = false;
+            instance.TransformMonitorActive = false;
+            instance.IsRenderInvalid = true;
+            instance.IsInvalid = true;
+            instance.IsOccupied = false;
+            instance.InstanceState = "SceneStale";
+            instance.LastTransformWriteSkippedReason = $"Scene changed before native write: {reason}";
+            instance.TransformWriteDisabledReason = instance.LastTransformWriteSkippedReason;
+        }
+    }
+
     public bool IsSlotOccupied(string slotAddress)
     {
         this.RebuildOccupiedSlotRegistry();
@@ -161,7 +276,8 @@ public sealed unsafe class LocalLayoutObjectService
         bool unsafeEnabled,
         bool fullLayoutConfirmed,
         Vector3 defaultRotationEuler = default,
-        Vector3? defaultScale = null)
+        Vector3? defaultScale = null,
+        bool deferInitialTransformApply = false)
     {
         if (template == null)
         {
@@ -179,7 +295,7 @@ public sealed unsafe class LocalLayoutObjectService
             return null;
         }
 
-        var instance = this.CreateFromCandidate(carrier, position, mode, template, applyTemplateModel: false, allowReservedSlot: false, carrierPolicy);
+        var instance = this.CreateFromCandidate(carrier, position, mode, template, applyTemplateModel: false, allowReservedSlot: false, carrierPolicy, deferInitialTransformApply);
         if (instance == null)
             return null;
 
@@ -194,16 +310,22 @@ public sealed unsafe class LocalLayoutObjectService
             if (!applied && !instance.PendingVisualTransform && !string.Equals(instance.InstanceState, "PendingRecreateStabilize", StringComparison.OrdinalIgnoreCase))
                 instance.ApplyMdlError = FirstNonEmpty(instance.ApplyMdlError, this.LastStatus);
         }
-        else
+        else if (!deferInitialTransformApply)
         {
             this.WriteInstanceTransform(instance, position, instance.CurrentRotationEuler, instance.CurrentScale, "从模板创建复制体默认 transform");
+        }
+        else
+        {
+            instance.InstanceState = "RestoreWaitingNativeReady";
+            instance.RestoreStatus = "Restore deferred initial transform apply.";
+            instance.LastOperation = "从模板创建复制体：延迟 transform 写入";
         }
 
         this.LastStatus = $"已从模板创建复制体：template={template.Address}; carrier={carrier.Address}; policy={carrierPolicy}; targetMdl={template.ResourcePath}; scale={FormatVector(desiredScale)}; warning={FirstNonEmpty(templateWarning, carrier.CarrierWarningReason, "无")}; {this.LastStatus}";
         return instance;
     }
 
-    private LocalLayoutObjectInstance? CreateFromCandidate(LayoutProbeInstance? candidate, Vector3 playerPosition, LocalLayoutTransformMode mode, LayoutProbeInstance? template, bool applyTemplateModel, bool allowReservedSlot, CarrierAllocationPolicy carrierPolicy)
+    private LocalLayoutObjectInstance? CreateFromCandidate(LayoutProbeInstance? candidate, Vector3 playerPosition, LocalLayoutTransformMode mode, LayoutProbeInstance? template, bool applyTemplateModel, bool allowReservedSlot, CarrierAllocationPolicy carrierPolicy, bool deferInitialTransformApply = false)
     {
         if (this.IsBusy)
         {
@@ -347,7 +469,17 @@ public sealed unsafe class LocalLayoutObjectService
         this.instances.Add(instance);
         if (TryNormalizeSlotAddress(instance.OccupiedSlotAddress, out var occupiedSlotAddress))
             this.occupiedSlots[occupiedSlotAddress] = instance;
-        this.WriteInstanceTransform(instance, playerPosition, instance.CurrentRotationEuler, instance.CurrentScale, "从候选 BgPart 创建本地物件实例");
+        if (!deferInitialTransformApply)
+        {
+            this.WriteInstanceTransform(instance, playerPosition, instance.CurrentRotationEuler, instance.CurrentScale, "从候选 BgPart 创建本地物件实例");
+        }
+        else
+        {
+            instance.InstanceState = "RestoreWaitingNativeReady";
+            instance.RestoreStatus = "Restore deferred initial transform apply.";
+            instance.LastOperation = "从候选 BgPart 创建本地物件实例：延迟 transform 写入";
+            this.LastStatus = $"已创建本地场景物体实例并延迟 transform 写入：{instance.Id}";
+        }
         if (applyTemplateModel)
             this.LastStatus = "SetModel 当前为高风险实验，创建实例时已强制跳过自动模型替换。";
         return instance;
@@ -1822,6 +1954,92 @@ public sealed unsafe class LocalLayoutObjectService
         }
     }
 
+    public bool PrepareRestoreNative(string id, out string result)
+    {
+        result = string.Empty;
+        var instance = this.GetById(id);
+        if (instance == null)
+        {
+            result = $"Instance not found: {id}";
+            this.LastStatus = result;
+            return false;
+        }
+
+        if (instance.IsInvalid || instance.IsRestored || instance.IsDuplicate)
+        {
+            result = $"Instance is not writable: invalid={instance.IsInvalid}, restored={instance.IsRestored}, duplicate={instance.IsDuplicate}";
+            this.LastStatus = result;
+            return false;
+        }
+
+        if (instance.PendingVisualTransform ||
+            string.Equals(instance.InstanceState, "PendingRecreateStabilize", StringComparison.OrdinalIgnoreCase))
+        {
+            result = $"Instance is waiting for recreate/model refresh stabilization: state={instance.InstanceState}; pending={instance.PendingVisualTransform}; {instance.PendingVisualTransformResult}";
+            this.LastStatus = result;
+            return false;
+        }
+
+        if (instance.TransformMode == LocalLayoutTransformMode.VisualOnly)
+            return this.RefreshGraphicsObjectAddressForRestore(instance, out result);
+
+        if (!TryGetPointer(instance.OccupiedSlotAddress, out var pointer) || pointer == null)
+        {
+            result = $"slot address invalid: {instance.OccupiedSlotAddress}";
+            this.LastStatus = result;
+            return false;
+        }
+
+        var layout = ReadLayoutTransform(pointer);
+        if (layout == null)
+        {
+            result = "Layout transform readback failed.";
+            this.LastStatus = result;
+            return false;
+        }
+
+        if (!IsTransformNormal(layout.Value.Position, layout.Value.Rotation, layout.Value.Scale))
+        {
+            result = $"Layout transform readback is abnormal: {FormatSnapshot(layout.Value)}";
+            this.LastStatus = result;
+            return false;
+        }
+
+        result = $"Layout instance ready: {FormatSnapshot(layout.Value)}";
+        this.LastStatus = result;
+        return true;
+    }
+
+    public bool ApplyRestoreTransform(string id, Vector3 position, Vector3 rotationEuler, Vector3 scale, out string result)
+    {
+        result = string.Empty;
+        var instance = this.GetById(id);
+        if (instance == null)
+        {
+            result = $"Instance not found: {id}";
+            this.LastStatus = result;
+            return false;
+        }
+
+        if (!this.PrepareRestoreNative(id, out var prepareResult))
+        {
+            result = prepareResult;
+            return false;
+        }
+
+        instance.IsRestoring = true;
+        try
+        {
+            var applied = this.WriteInstanceTransform(instance, position, rotationEuler, scale, "SceneEditor restore transform");
+            result = this.LastStatus;
+            return applied;
+        }
+        finally
+        {
+            instance.IsRestoring = false;
+        }
+    }
+
     public bool ExecuteModelRefreshStep(string id, string stepName)
     {
         var instance = this.GetById(id);
@@ -2032,6 +2250,14 @@ public sealed unsafe class LocalLayoutObjectService
         bool unsafeEnabled = true,
         bool fullLayoutConfirmed = true)
     {
+        if (!this.CanReadLayoutNative(out var nativeReadReason))
+        {
+            this.LastStatus = $"RestoreAll 已延迟：layout native 当前不可读（{nativeReadReason}）。";
+            if (removeAfterRestore)
+                this.RequestRestoreAllAndClear($"RestoreAll removeAfterRestore delayed: {nativeReadReason}");
+            return;
+        }
+
         if (this.IsBusy)
         {
             this.LastStatus = "RestoreAll 已在执行中，忽略重复请求。";
@@ -2108,7 +2334,10 @@ public sealed unsafe class LocalLayoutObjectService
         }
     }
 
-    public void RestoreAllAndClear() => this.RestoreAll(removeAfterRestore: true, bgParts: [], unsafeEnabled: true, fullLayoutConfirmed: true);
+    public void RestoreAllAndClear() => this.RequestRestoreAllAndClear("direct RestoreAllAndClear request");
+
+    private void ExecuteRestoreAllAndClear()
+        => this.RestoreAll(removeAfterRestore: true, bgParts: [], unsafeEnabled: true, fullLayoutConfirmed: true);
 
     public void MoveAllActiveVisualOnlyToPlayer(Vector3 playerPosition)
     {
@@ -2425,6 +2654,13 @@ public sealed unsafe class LocalLayoutObjectService
     public string BuildRestorePlanPreview()
     {
         var lines = new List<string>();
+        if (!this.CanReadLayoutNative(out var nativeReadReason))
+        {
+            lines.Add($"RestoreAll plan：pending; scene unstable ({nativeReadReason})");
+            this.LastRestorePlanPreview = string.Join(Environment.NewLine, lines);
+            return this.LastRestorePlanPreview;
+        }
+
         var targets = this.instances.Where(instance => IsActiveInstance(instance, out _)).ToList();
         lines.Add($"RestoreAll plan：active instances={targets.Count}");
         foreach (var instance in targets)

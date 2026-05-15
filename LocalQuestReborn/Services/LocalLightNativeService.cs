@@ -18,6 +18,7 @@ public sealed unsafe class LocalLightNativeService
     private readonly Configuration configuration;
     private readonly IPluginLog log;
     private readonly Action save;
+    private readonly Func<uint> getTerritoryType;
     private readonly Queue<NativeOperation> pendingOperations = [];
     private readonly HashSet<nint> activeLights = [];
     private readonly HashSet<nint> reusableLights = [];
@@ -27,11 +28,12 @@ public sealed unsafe class LocalLightNativeService
     private bool sceneTearingDown;
     private int sceneTeardownCooldown;
 
-    public LocalLightNativeService(Configuration configuration, IPluginLog log, Action save)
+    public LocalLightNativeService(Configuration configuration, IPluginLog log, Action save, Func<uint>? getTerritoryType = null)
     {
         this.configuration = configuration;
         this.log = log;
         this.save = save;
+        this.getTerritoryType = getTerritoryType ?? (() => 0);
 
         foreach (var light in this.configuration.LocalLights)
             this.ClearRuntimePointers(light, needsRecreate: light.Enabled, operation: "loaded-config");
@@ -59,6 +61,7 @@ public sealed unsafe class LocalLightNativeService
             Name = name,
             Enabled = true,
             Hidden = false,
+            TerritoryId = this.getTerritoryType(),
             LightKind = kind,
             Position = position,
             Rotation = rotation,
@@ -99,6 +102,8 @@ public sealed unsafe class LocalLightNativeService
         }
 
         this.EndSceneTeardownForUserAction();
+        if (light.TerritoryId == 0)
+            light.TerritoryId = this.getTerritoryType();
         this.Normalize(light);
         this.save();
         if (!light.Enabled)
@@ -228,6 +233,13 @@ public sealed unsafe class LocalLightNativeService
         {
             if (!light.Enabled || !light.NeedsNativeRecreate || light.NativeOperationPending || light.NativeSceneLight != 0)
                 continue;
+            if (light.TerritoryId == 0 || light.TerritoryId != this.getTerritoryType())
+            {
+                light.LastOperation = light.TerritoryId == 0
+                    ? "LegacyNoTerritory: skipped automatic native recreate."
+                    : $"Skipped wrong territory: light={light.TerritoryId}, current={this.getTerritoryType()}";
+                continue;
+            }
 
             this.EnqueueCreateOrApply(light, "recreate-enabled");
             break;
@@ -447,6 +459,19 @@ public sealed unsafe class LocalLightNativeService
         if (!this.configuration.LocalLights.Contains(op.Light))
         {
             reason = "light removed from configuration";
+            return false;
+        }
+
+        var currentTerritory = this.getTerritoryType();
+        if (op.Light.TerritoryId == 0)
+        {
+            reason = "legacy light has no TerritoryId";
+            return false;
+        }
+
+        if (currentTerritory == 0 || op.Light.TerritoryId != currentTerritory)
+        {
+            reason = $"wrong territory light={op.Light.TerritoryId}, current={currentTerritory}";
             return false;
         }
 

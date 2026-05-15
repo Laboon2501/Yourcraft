@@ -71,7 +71,7 @@ public sealed class BrioAssemblyBridgeService
         }
     }
 
-    public bool TrySpawnActor(CustomNpc npc, string runtimeId, out RuntimeActorInstance instance, out string reason)
+    public bool TrySpawnActor(CustomNpc npc, string runtimeId, out RuntimeActorInstance instance, out string reason, Vector3? initialWorldPosition = null, float? initialYawRadians = null)
     {
         instance = new RuntimeActorInstance
         {
@@ -117,7 +117,7 @@ public sealed class BrioAssemblyBridgeService
             var selectedSpawnFlag = this.SelectSpawnFlag(spawnFlagsType, spawnFlags, out var selectedSpawnFlagInfo);
             this.SelectedSpawnFlag = selectedSpawnFlagInfo;
 
-            var spawnPosition = localPlayer.Position + new Vector3(npc.DefaultSpawnOffset.X, npc.DefaultSpawnOffset.Y, npc.DefaultSpawnOffset.Z);
+            var spawnPosition = initialWorldPosition ?? localPlayer.Position + new Vector3(npc.DefaultSpawnOffset.X, npc.DefaultSpawnOffset.Y, npc.DefaultSpawnOffset.Z);
             instance.LastKnownPosition = spawnPosition;
             var createMethods = actorSpawnService.GetType()
                 .GetMethods(BindingFlags.Instance | BindingFlags.Public)
@@ -138,7 +138,7 @@ public sealed class BrioAssemblyBridgeService
             var isSixParameter = IsSixParameterCreateCharacter(createCharacter);
             this.LastCreateCharacterSignatureKind = isSixParameter ? "6 参数 CreateCharacter" : "3 参数 CreateCharacter";
             var args = isSixParameter
-                ? new object?[] { null, selectedSpawnFlag, true, spawnPosition, 0f, string.IsNullOrWhiteSpace(instance.DesiredDisplayName) ? npc.Id : instance.DesiredDisplayName }
+                ? new object?[] { null, selectedSpawnFlag, true, spawnPosition, initialYawRadians ?? 0f, string.IsNullOrWhiteSpace(instance.DesiredDisplayName) ? npc.Id : instance.DesiredDisplayName }
                 : new object?[] { null, selectedSpawnFlag, true };
 
             var result = createCharacter.Invoke(actorSpawnService, args);
@@ -511,15 +511,64 @@ public sealed class BrioAssemblyBridgeService
         return true;
     }
 
-    public void RefreshActor(RuntimeActorInstance instance)
+    public unsafe bool TrySetActorNativeYaw(RuntimeActorInstance instance, float yawRadians, out string reason)
     {
+        if (!this.EnableUnsafeNativeWrites)
+        {
+            reason = "native root yaw write disabled.";
+            return false;
+        }
+
+        if (instance.IsStale || instance.CharacterObject == null)
+        {
+            reason = "actor stale or CharacterObject unavailable.";
+            return false;
+        }
+
+        if (!TryReadAddress(instance.CharacterObject, out var address) || address == 0)
+        {
+            reason = $"unable to read valid Address. Address={ReadProperty(instance.CharacterObject, "Address")}";
+            return false;
+        }
+
+        if (!float.IsFinite(yawRadians))
+        {
+            reason = $"invalid yaw radians: {yawRadians}";
+            return false;
+        }
+
+        try
+        {
+            var native = (FFXIVClientStructs.FFXIV.Client.Game.Character.Character*)address;
+            native->GameObject.SetRotation(yawRadians);
+            native->GameObject.RotationModified();
+            reason = $"native root yaw set to {yawRadians:F4}.";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            reason = ex.Message;
+            this.log.Error(ex, "Native SetRotation failed. Address={Address}, Yaw={Yaw}", address, yawRadians);
+            return false;
+        }
+    }
+
+    public bool RefreshActor(RuntimeActorInstance instance)
+    {
+        if (instance.IsStale)
+        {
+            instance.IsValid = false;
+            return false;
+        }
+
         if (instance.CharacterObject == null)
         {
             instance.IsValid = false;
-            return;
+            return false;
         }
 
         this.FillInstanceFromCharacter(instance, instance.CharacterObject);
+        return instance.IsValid;
     }
 
     public bool SpawnSelectedNpcReflection(CustomNpc npc, out string reason)
@@ -1133,9 +1182,16 @@ public sealed class BrioAssemblyBridgeService
 
     private void FillInstanceFromCharacter(RuntimeActorInstance instance, object character)
     {
+        if (instance.IsStale)
+        {
+            instance.IsValid = false;
+            return;
+        }
+
         instance.CharacterObject = character;
         instance.ObjectIndex = ReadProperty(character, "ObjectIndex");
         instance.Address = ReadProperty(character, "Address");
+        instance.LastKnownObjectIndex = int.TryParse(instance.ObjectIndex, out var objectIndex) ? objectIndex : -1;
         instance.IsValid = IsCharacterValid(character);
         instance.CurrentNativeName = this.nameService.TryReadNativeName(character);
         if (TryReadVector3Property(character, "Position", out var position))

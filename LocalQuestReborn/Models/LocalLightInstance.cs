@@ -14,6 +14,8 @@ public sealed class LocalLightInstance
 
     public bool Hidden { get; set; }
 
+    public uint TerritoryId { get; set; }
+
     public LocalLightKind LightKind { get; set; } = LocalLightKind.Point;
 
     public Vector3 Position { get; set; }

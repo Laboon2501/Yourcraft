@@ -154,7 +154,7 @@ public sealed class Plugin : IDalamudPlugin
         this.protectedBgParts = new ProtectedBgPartRegistry(this.configuration, () => this.runtime.TerritoryType, () => this.pluginInterface.SavePluginConfig(this.configuration));
         this.preferredModifyBgParts = new PreferredModifyBgPartRegistry(this.configuration, () => this.runtime.TerritoryType, () => this.pluginInterface.SavePluginConfig(this.configuration));
         this.localLayoutObjects = new LocalLayoutObjectService(this.protectedBgParts, this.preferredModifyBgParts);
-        this.localLights = new LocalLightNativeService(this.configuration, log, () => this.pluginInterface.SavePluginConfig(this.configuration));
+        this.localLights = new LocalLightNativeService(this.configuration, log, () => this.pluginInterface.SavePluginConfig(this.configuration), () => this.runtime.TerritoryType);
         this.sceneEditorSelection = new SceneEditorSelectionService(log);
         this.sceneEditor = new SceneEditorService(
             this.realNpcSpawn,
@@ -251,7 +251,8 @@ public sealed class Plugin : IDalamudPlugin
         this.sceneEditor.FlushPersistence();
         this.localLights.DestroyAllNative("插件卸载", keepInstances: true);
         this.standaloneBgObjectProbe.MarkAllInvalid("插件卸载：Standalone 对象没有安全销毁入口，已停止写入并标记失效。");
-        this.localLayoutObjects.RestoreAllAndClear();
+        this.localLayoutObjects.NotifySceneChanging("PluginDispose");
+        this.layoutProbe.ClearRuntimeCache("PluginDispose");
         this.realNpcSpawn.DespawnAll();
         this.penumbraIpc.Dispose();
         this.propRuntime.DespawnAll();
@@ -294,6 +295,8 @@ public sealed class Plugin : IDalamudPlugin
         if (this.clientState.IsGPosing != this.lastLocalLightGposeState)
         {
             this.sceneEditor.NotifySceneChanging(this.clientState.IsGPosing ? "GPoseEnter" : "GPoseExit");
+            this.localLayoutObjects.NotifySceneChanging(this.clientState.IsGPosing ? "GPoseEnter" : "GPoseExit");
+            this.layoutProbe.ClearRuntimeCache(this.clientState.IsGPosing ? "GPoseEnter" : "GPoseExit");
             this.localLights.DestroyAllNative("GPose enter/exit，销毁 native light 并等待重建", keepInstances: true);
             this.lastLocalLightGposeState = this.clientState.IsGPosing;
         }
@@ -314,13 +317,16 @@ public sealed class Plugin : IDalamudPlugin
         if (this.runtime.TerritoryType != this.lastLayoutObjectTerritoryType)
         {
             this.sceneEditor.NotifySceneChanging($"TerritoryChanging:{this.lastLayoutObjectTerritoryType}->{this.runtime.TerritoryType}");
+            this.localLayoutObjects.NotifySceneChanging($"TerritoryChanging:{this.lastLayoutObjectTerritoryType}->{this.runtime.TerritoryType}");
+            this.layoutProbe.ClearRuntimeCache($"TerritoryChanging:{this.lastLayoutObjectTerritoryType}->{this.runtime.TerritoryType}");
             this.localLights.DestroyAllNative("区域切换，销毁 native light 并等待重建", keepInstances: true);
             this.standaloneBgObjectProbe.MarkAllInvalid("区域切换：Standalone 对象指针可能已由游戏清理，已停止写入并标记失效。");
-            this.localLayoutObjects.RestoreAllAndClear();
+            this.localLayoutObjects.RequestRestoreAllAndClear("TerritoryChanged");
             this.lastLayoutObjectTerritoryType = this.runtime.TerritoryType;
             this.sceneEditor.RequestRestore("TerritoryChanged");
         }
 
+        this.localLayoutObjects.UpdateRestoreAllAndClearQueue(playerAvailable && this.runtime.TerritoryType != 0 && !this.clientState.IsGPosing, this.runtime.TerritoryType);
         this.sceneEditor.UpdateRestoreQueue(playerAvailable && this.runtime.TerritoryType != 0 && !this.clientState.IsGPosing);
     }
 
