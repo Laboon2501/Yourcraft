@@ -51,6 +51,9 @@ public sealed class ActorValidityMonitorService
         foreach (var actor in actors)
         {
             checkedCount++;
+            if (IsPendingSpawnShell(actor))
+                continue;
+
             if (!this.IsStillValid(actor, out var position, out var reason))
             {
                 actor.IsValid = false;
@@ -66,6 +69,19 @@ public sealed class ActorValidityMonitorService
         }
 
         this.LastStatus = $"已检查 {checkedCount} 个 Actor。";
+    }
+
+    private static bool IsPendingSpawnShell(RuntimeActorInstance actor)
+    {
+        if (actor.CharacterObject != null || actor.IsReady)
+            return false;
+
+        if (string.Equals(actor.ObjectIndex, "Pending", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(actor.Address, "Pending", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        var state = actor.PostSpawnPipelineState ?? string.Empty;
+        return state is "Pending" or "PendingRestore" or "WaitingPrewarm" or "WaitingSceneStable" or "WaitingPostSpawn" or "Creating" or "WaitingBrioResult" or "BindingRuntime" or "ApplyingTransform";
     }
 
     public bool ConsumeGposeExitReady()

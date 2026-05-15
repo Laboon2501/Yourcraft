@@ -1191,6 +1191,7 @@ public sealed class MainWindow : Window
 
         ImGui.TextWrapped($"Actor 数量：{this.realNpcSpawn.Actors.Count} | 队列长度：{this.realNpcSpawn.AppearanceQueueLength} | {this.realNpcSpawn.AppearanceQueueStatus}");
         ImGui.TextWrapped($"Prewarm：{this.realNpcSpawn.SpawnPrewarmStatus} | FormalQueue：{this.realNpcSpawn.FormalQueueStatus}");
+        ImGui.TextWrapped($"SpawnQueue pending={this.realNpcSpawn.PendingActorSpawnCount} | {this.realNpcSpawn.ActorSpawnQueueDebug}");
         ImGui.TextWrapped($"SpawnIntent 数量：{this.realNpcSpawn.SpawnIntentCount}");
 
         if (!ImGui.BeginTable("RuntimeActors", 8, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 320f)))
@@ -1268,12 +1269,21 @@ public sealed class MainWindow : Window
         ImGui.PopID();
     }
 
+    #pragma warning disable CS0162, CS8602
     private void DrawSelectedActorTransformEditor(RuntimeActorInstance actor, CustomNpc? npc)
     {
+        if (actor != null)
+        {
+            this.DrawSelectedActorTransformEditorPendingAware(actor);
+            return;
+        }
+
         ImGui.Separator();
         ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "Actor World Transform 编辑");
-        if (!actor.IsValid || actor.CharacterObject == null)
+        var nativeReady = actor.IsValid && actor.CharacterObject != null && !actor.IsStale;
+        if (!nativeReady)
         {
+            if (false)
             ImGui.TextColored(new Vector4(1f, 0.35f, 0.25f, 1f), "当前 Actor 无效或已删除。");
             return;
         }
@@ -1323,7 +1333,7 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"last transform readback：{(string.IsNullOrWhiteSpace(actor.LastTransformReadback) ? "未读取" : actor.LastTransformReadback)}");
         ImGui.TextWrapped($"last transform error：{(string.IsNullOrWhiteSpace(actor.LastTransformError) ? "无" : actor.LastTransformError)}");
 
-        ImGui.BeginDisabled(!actor.IsValid || this.IsInGpose());
+        ImGui.BeginDisabled(this.IsInGpose());
         if (ImGui.Button("应用 World Transform"))
             this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
         ImGui.SameLine();
@@ -1354,8 +1364,115 @@ public sealed class MainWindow : Window
         if (ImGui.Button("保存当前 World Transform"))
             this.realNpcSpawn.SaveActorTransformSnapshot(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
 
+        ImGui.BeginDisabled(!nativeReady);
+
         if (ImGui.Button("从当前 Actor 读取 World Transform"))
             this.realNpcSpawn.RefreshActorTransform(actor.RuntimeId);
+        ImGui.EndDisabled();
+        ImGui.EndDisabled();
+    }
+
+    #pragma warning restore CS0162, CS8602
+
+    private void DrawSelectedActorTransformEditorPendingAware(RuntimeActorInstance actor)
+    {
+        ImGui.Separator();
+        ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "Actor World Transform");
+
+        var nativeReady = actor.IsValid && actor.CharacterObject != null && !actor.IsStale;
+        if (!nativeReady)
+        {
+            var state = string.IsNullOrWhiteSpace(actor.PostSpawnPipelineState) ? "Pending" : actor.PostSpawnPipelineState;
+            var status = string.IsNullOrWhiteSpace(actor.PostSpawnPipelineStatus) ? "Actor native is not ready yet." : actor.PostSpawnPipelineStatus;
+            var color = string.Equals(state, "Failed", StringComparison.OrdinalIgnoreCase)
+                ? new Vector4(1f, 0.35f, 0.25f, 1f)
+                : new Vector4(0.95f, 0.78f, 0.28f, 1f);
+            ImGui.TextColored(color, $"Actor native not ready: {state}");
+            ImGui.TextWrapped($"{status} Transform edits are saved to WorldTransform config and will apply when the Actor becomes Ready.");
+        }
+
+        if (actor.TransformEditScale == Vector3.Zero)
+            actor.TransformEditScale = actor.LastKnownScale == Vector3.Zero ? Vector3.One : actor.LastKnownScale;
+        if (actor.TransformEditPosition == Vector3.Zero && actor.LastKnownPosition != Vector3.Zero)
+            actor.TransformEditPosition = actor.LastKnownPosition;
+
+        var transformChanged = false;
+        var editPosition = actor.TransformEditPosition;
+        if (ImGui.InputFloat("World Position X", ref editPosition.X)) { actor.TransformEditPosition = editPosition; transformChanged = true; }
+        if (ImGui.InputFloat("World Position Y", ref editPosition.Y)) { actor.TransformEditPosition = editPosition; transformChanged = true; }
+        if (ImGui.InputFloat("World Position Z", ref editPosition.Z)) { actor.TransformEditPosition = editPosition; transformChanged = true; }
+
+        var rotationDegrees = new Vector3(
+            RadiansToDegrees(actor.TransformEditRotationEuler.X),
+            RadiansToDegrees(actor.TransformEditRotationEuler.Y),
+            RadiansToDegrees(actor.TransformEditRotationEuler.Z));
+        if (ImGui.InputFloat("World Pitch X (deg)", ref rotationDegrees.X))
+        {
+            actor.TransformEditRotationEuler = new Vector3(DegreesToRadians(rotationDegrees.X), actor.TransformEditRotationEuler.Y, actor.TransformEditRotationEuler.Z);
+            transformChanged = true;
+        }
+
+        if (ImGui.InputFloat("World Yaw Y (deg)", ref rotationDegrees.Y))
+        {
+            actor.TransformEditRotationEuler = new Vector3(actor.TransformEditRotationEuler.X, DegreesToRadians(rotationDegrees.Y), actor.TransformEditRotationEuler.Z);
+            transformChanged = true;
+        }
+
+        if (ImGui.InputFloat("World Roll Z (deg)", ref rotationDegrees.Z))
+        {
+            actor.TransformEditRotationEuler = new Vector3(actor.TransformEditRotationEuler.X, actor.TransformEditRotationEuler.Y, DegreesToRadians(rotationDegrees.Z));
+            transformChanged = true;
+        }
+
+        var editScale = actor.TransformEditScale;
+        if (ImGui.InputFloat("World Scale X", ref editScale.X)) { actor.TransformEditScale = Vector3.Max(editScale, new Vector3(0.01f)); transformChanged = true; }
+        if (ImGui.InputFloat("World Scale Y", ref editScale.Y)) { actor.TransformEditScale = Vector3.Max(editScale, new Vector3(0.01f)); transformChanged = true; }
+        if (ImGui.InputFloat("World Scale Z", ref editScale.Z)) { actor.TransformEditScale = Vector3.Max(editScale, new Vector3(0.01f)); transformChanged = true; }
+
+        if (transformChanged && !this.IsInGpose())
+            this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
+
+        ImGui.TextWrapped($"world readback position: {FormatVector(actor.LastKnownPosition)}");
+        ImGui.TextWrapped($"world readback rotation: pitch {RadiansToDegrees(actor.LastKnownRotationEuler.X):F1}, yaw {RadiansToDegrees(actor.LastKnownRotationEuler.Y):F1}, roll {RadiansToDegrees(actor.LastKnownRotationEuler.Z):F1}");
+        ImGui.TextWrapped($"world readback scale: {FormatVector(actor.LastKnownScale)}");
+        ImGui.TextWrapped($"last transform readback: {(string.IsNullOrWhiteSpace(actor.LastTransformReadback) ? "not read" : actor.LastTransformReadback)}");
+        ImGui.TextWrapped($"last transform status: {(string.IsNullOrWhiteSpace(actor.LastTransformError) ? "none" : actor.LastTransformError)}");
+
+        ImGui.BeginDisabled(this.IsInGpose());
+        if (ImGui.Button("Apply World Transform"))
+            this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
+        ImGui.SameLine();
+        if (ImGui.Button("Move to player position") && this.runtime.PlayerPosition.HasValue)
+        {
+            actor.TransformEditPosition = this.runtime.PlayerPosition.Value;
+            this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("Reset position"))
+        {
+            actor.TransformEditPosition = actor.SpawnPosition == Vector3.Zero ? actor.LastKnownPosition : actor.SpawnPosition;
+            this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
+        }
+
+        if (ImGui.Button("Reset rotation"))
+        {
+            actor.TransformEditRotationEuler = Vector3.Zero;
+            this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("Reset scale"))
+        {
+            actor.TransformEditScale = Vector3.One;
+            this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("Save World Transform"))
+            this.realNpcSpawn.SaveActorTransformSnapshot(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
+
+        ImGui.BeginDisabled(!nativeReady);
+        if (ImGui.Button("Read World Transform From Actor"))
+            this.realNpcSpawn.RefreshActorTransform(actor.RuntimeId);
+        ImGui.EndDisabled();
         ImGui.EndDisabled();
     }
 
