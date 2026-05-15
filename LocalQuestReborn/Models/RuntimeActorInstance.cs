@@ -212,6 +212,8 @@ public sealed class RuntimeActorInstance
 
     public string AnimationRigStatus { get; set; } = "Current";
 
+    public string AnimationRigDebugReport { get; set; } = string.Empty;
+
     public bool LookAtPlayerEnabled { get; set; }
 
     public float LookAtRadius { get; set; } = 8f;

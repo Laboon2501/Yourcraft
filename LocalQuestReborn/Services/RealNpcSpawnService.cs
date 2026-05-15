@@ -2071,6 +2071,19 @@ public sealed class RealNpcSpawnService
         return success;
     }
 
+    public void DumpActorAnimationRigDebugReport(string runtimeId)
+    {
+        var instance = this.registry.GetByRuntimeId(runtimeId);
+        if (instance == null)
+        {
+            this.LastMessage = $"Runtime Actor not found: {runtimeId}";
+            return;
+        }
+
+        this.animationRigService.DumpLastDebugReport(instance);
+        this.LastMessage = $"AnimationRig debug report dumped to log for actor {runtimeId[..Math.Min(8, runtimeId.Length)]}.";
+    }
+
     public void ResetActionSequence(string runtimeId)
     {
         var instance = this.registry.GetByRuntimeId(runtimeId);

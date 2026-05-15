@@ -8,6 +8,7 @@ public sealed class ActorAnimationRigService
 {
     private readonly ActorAnimationService animationService;
     private readonly IPluginLog log;
+    private readonly ActorAnimationRigResolverProbe resolverProbe;
     private readonly Dictionary<nint, ActorAnimationRigPreset> activeRigByActorPtr = new();
     private readonly Dictionary<string, ActorAnimationRigPreset> activeRigByActorInstanceId = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, RigHookProbeState> hookProbeByActorInstanceId = new(StringComparer.OrdinalIgnoreCase);
@@ -16,6 +17,7 @@ public sealed class ActorAnimationRigService
     {
         this.animationService = animationService;
         this.log = log;
+        this.resolverProbe = new ActorAnimationRigResolverProbe(log);
         this.animationService.TimelinePlayRequested += this.OnTimelinePlayRequested;
     }
 
@@ -32,48 +34,61 @@ public sealed class ActorAnimationRigService
         var beforeHash = BuildAppearanceHash(actor.CharacterObject);
         var animationId = actor.CurrentAnimationId != 0 ? actor.CurrentAnimationId : actor.DefaultAnimationId;
         var probe = this.BeginProbe(actor, actorPtr, animationId);
+        var beforeSnapshot = this.resolverProbe.CaptureSnapshot(actor, animationId, actor.AnimationRigPreset, "BeforeReplay");
 
         var replaySuccess = this.ReapplyCurrentAnimationWithRig(actor, out var replayReason);
+        var afterSnapshot = this.resolverProbe.CaptureSnapshot(actor, animationId, actor.AnimationRigPreset, "AfterReplay");
         var afterHash = BuildAppearanceHash(actor.CharacterObject);
         var appearanceChanged = !string.Equals(beforeHash, afterHash, StringComparison.Ordinal);
         probe.AppearanceHashBefore = beforeHash;
         probe.AppearanceHashAfter = afterHash;
         probe.ReplaySuccess = replaySuccess;
         probe.ReplayReason = replayReason;
-        var brioProbe = ProbeBrioRigDetails(actor);
-        probe.BrioTimelineCandidates = brioProbe.CandidateSignatures;
-        probe.BrioActionTimelineCapabilityFound = brioProbe.ActionTimelineCapabilityFound;
-        probe.BrioAffectsSkeletonsMemberFound = brioProbe.AffectsSkeletonsMemberFound;
-        probe.BrioActionTimelineCapabilityInstanceFound = brioProbe.ActionTimelineCapabilityInstanceFound;
-        probe.BrioCapabilityProbeResult = brioProbe.CapabilityProbeResult;
+        var resolverReport = this.resolverProbe.Probe(
+            actor,
+            beforeSnapshot,
+            afterSnapshot,
+            probe.HookInstalled,
+            probe.HookHitCount,
+            probe.OwnerActorPointer != 0 && probe.OwnerActorPointer == probe.ActorPointer,
+            replaySuccess,
+            appearanceChanged);
+        probe.ResolverResult = resolverReport.Result;
+        probe.ResolverReason = resolverReport.Reason;
+        probe.ResolverNextProbeTarget = resolverReport.NextProbeTarget;
+        probe.ChangedAnimationDataPath = resolverReport.AnimationDataPathChanged;
+        probe.AnimationBindingChanged = resolverReport.AnimationBindingChanged;
+        actor.AnimationRigDebugReport = resolverReport.DetailedReport;
 
         if (appearanceChanged)
         {
             this.ClearActiveRigContext(actor, actorPtr);
             actor.HasAnimationRigNativeOverride = false;
-            actor.AnimationRigStatus = $"Reverted: ActionTimeline rig probe changed appearance hash unexpectedly. {probe.ToStatus()}; changedAppearance=true";
+            actor.AnimationRigStatus = $"Reverted: ActionTimeline replay changed appearance hash unexpectedly. {probe.ToStatus()}";
             reason = actor.AnimationRigStatus;
-            this.log.Error("[AnimationRig] appearance changed during rig context probe. actor={Actor} rig={Rig} before={Before} after={After} report={Report}",
+            this.log.Error("[AnimationRig] appearance changed during rig context probe. actor={Actor} rig={Rig} before={Before} after={After} summary={Summary} details={Details}",
                 actor.RuntimeId,
                 actor.AnimationRigPreset,
                 beforeHash,
                 afterHash,
-                probe.ToStatus());
+                probe.ToStatus(),
+                actor.AnimationRigDebugReport);
             return false;
         }
 
         actor.HasAnimationRigNativeOverride = false;
-        var resultKind = probe.HookHitCount > 0 ? "Unsupported" : "NoEffect";
+        var resultKind = "NoEffect";
         var missing = probe.HookHitCount > 0
-            ? "managed ActionTimeline hook was hit, but no verified animation-resolve/data-path field is registered for this build"
+            ? "已命中当前 Actor 的动画播放链，并成功重播动画，但尚未找到安全的动画骨架/数据路径字段，所以骨架没有生效"
             : "current replay did not pass through the managed ActionTimeline hook";
         actor.AnimationRigStatus = $"{resultKind}: selected={actor.AnimationRigPreset}; {missing}. {probe.ToStatus()}";
         reason = actor.AnimationRigStatus;
-        this.log.Information("[AnimationRig] rig context probe completed. actor={Actor} rig={Rig} result={Result} report={Report}",
+        this.log.Information("[AnimationRig] rig resolver probe completed. actor={Actor} rig={Rig} result={Result} summary={Summary} details={Details}",
             actor.RuntimeId,
             actor.AnimationRigPreset,
             resultKind,
-            probe.ToStatus());
+            probe.ToStatus(),
+            actor.AnimationRigDebugReport);
         return false;
     }
 
@@ -88,6 +103,7 @@ public sealed class ActorAnimationRigService
         this.ReapplyCurrentAnimationWithRig(actor, out var replayReason);
         var afterHash = BuildAppearanceHash(actor.CharacterObject);
         actor.AnimationRigStatus = $"Current: rig context cleared. appearanceHashBefore={beforeHash}; appearanceHashAfter={afterHash}; replay={replayReason}";
+        actor.AnimationRigDebugReport = actor.AnimationRigStatus;
         reason = actor.AnimationRigStatus;
         this.log.Information("[AnimationRig] restore current actor={Actor} ptr={Pointer} before={Before} after={After} replay={Replay}",
             actor.RuntimeId,
@@ -108,6 +124,14 @@ public sealed class ActorAnimationRigService
         }
 
         return this.animationService.PlayTransientTimeline(actor, animationId, out reason);
+    }
+
+    public void DumpLastDebugReport(RuntimeActorInstance actor)
+    {
+        var report = string.IsNullOrWhiteSpace(actor.AnimationRigDebugReport)
+            ? actor.AnimationRigStatus
+            : actor.AnimationRigDebugReport;
+        this.log.Information("[AnimationRig] manual debug report dump actor={Actor} report={Report}", actor.RuntimeId, report);
     }
 
     private RigHookProbeState BeginProbe(RuntimeActorInstance actor, nint actorPtr, uint animationId)
@@ -168,166 +192,6 @@ public sealed class ActorAnimationRigService
             route,
             timelineId,
             preset);
-    }
-
-    private static BrioRigProbeDetails ProbeBrioRigDetails(RuntimeActorInstance actor)
-    {
-        try
-        {
-            var brioAssembly = AppDomain.CurrentDomain.GetAssemblies()
-                .FirstOrDefault(assembly => assembly.GetName().Name?.Contains("Brio", StringComparison.OrdinalIgnoreCase) == true);
-            if (brioAssembly == null)
-                return new BrioRigProbeDetails(false, false, false, "Brio assembly not loaded.", string.Empty);
-
-            var types = SafeGetTypes(brioAssembly).ToList();
-            var actionTimelineCapabilityType = types.FirstOrDefault(type =>
-                string.Equals(type.FullName, "Brio.Capabilities.Actor.ActionTimelineCapability", StringComparison.OrdinalIgnoreCase) ||
-                type.FullName?.Contains("ActionTimelineCapability", StringComparison.OrdinalIgnoreCase) == true);
-            var actionTimelineFound = actionTimelineCapabilityType != null;
-            var affectsFound = types.Any(type => type.GetMembers(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
-                .Any(member => member.Name.Contains("AffectsSkeletons", StringComparison.OrdinalIgnoreCase)));
-
-            var signatures = types
-                .Where(type =>
-                    type.FullName?.Contains("ActionTimelineCapability", StringComparison.OrdinalIgnoreCase) == true ||
-                    type.FullName?.Contains("BrioAccessUtils", StringComparison.OrdinalIgnoreCase) == true ||
-                    type.FullName?.Contains("SpawnFlags", StringComparison.OrdinalIgnoreCase) == true ||
-                    type.GetMembers(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
-                        .Any(member => member.Name.Contains("AffectsSkeletons", StringComparison.OrdinalIgnoreCase) || LooksLikeTimelineMember(type, member)))
-                .SelectMany(type => DescribeInterestingMembers(type).Prepend($"type {type.FullName}"))
-                .Distinct(StringComparer.Ordinal)
-                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
-                .Take(32)
-                .ToList();
-
-            var capabilityProbe = TryGetActionTimelineCapabilityInstance(actor, brioAssembly, actionTimelineCapabilityType, out var capabilityInstance);
-            return new BrioRigProbeDetails(
-                actionTimelineFound,
-                affectsFound,
-                capabilityInstance != null,
-                capabilityProbe,
-                string.Join(" | ", signatures));
-        }
-        catch (Exception ex)
-        {
-            return new BrioRigProbeDetails(false, false, false, $"probe failed: {ex.Message}", string.Empty);
-        }
-    }
-
-    private static IEnumerable<string> DescribeInterestingMembers(Type type)
-        => type.GetMembers(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
-            .Where(member => member.Name.Contains("AffectsSkeletons", StringComparison.OrdinalIgnoreCase) || LooksLikeTimelineMember(type, member))
-            .Take(12)
-            .Select(member => $"{type.FullName}.{DescribeMember(member)}");
-
-    private static string DescribeMember(MemberInfo member)
-    {
-        var visibility = member switch
-        {
-            MethodBase method when method.IsPublic => "public",
-            MethodBase method when method.IsPrivate => "private",
-            MethodBase method when method.IsFamily => "protected",
-            FieldInfo field when field.IsPublic => "public",
-            FieldInfo field when field.IsPrivate => "private",
-            FieldInfo field when field.IsFamily => "protected",
-            _ => "member",
-        };
-        var scope = member switch
-        {
-            MethodBase method when method.IsStatic => " static",
-            FieldInfo field when field.IsStatic => " static",
-            PropertyInfo property when (property.GetMethod ?? property.SetMethod)?.IsStatic == true => " static",
-            _ => string.Empty,
-        };
-
-        return member switch
-        {
-            MethodInfo method => $"{visibility}{scope} {FormatType(method.ReturnType)} {method.Name}({string.Join(", ", method.GetParameters().Select(parameter => $"{FormatType(parameter.ParameterType)} {parameter.Name}"))})",
-            ConstructorInfo ctor => $"{visibility}{scope} {ctor.Name}({string.Join(", ", ctor.GetParameters().Select(parameter => $"{FormatType(parameter.ParameterType)} {parameter.Name}"))})",
-            PropertyInfo property => $"{visibility}{scope} {FormatType(property.PropertyType)} {property.Name} {{ get={property.CanRead}; set={property.CanWrite}; }}",
-            FieldInfo field => $"{visibility}{scope} {FormatType(field.FieldType)} {field.Name}",
-            _ => $"{visibility}{scope} {member.MemberType} {member.Name}",
-        };
-    }
-
-    private static string FormatType(Type type)
-        => type.FullName ?? type.Name;
-
-    private static string TryGetActionTimelineCapabilityInstance(RuntimeActorInstance actor, Assembly brioAssembly, Type? actionTimelineCapabilityType, out object? capability)
-    {
-        capability = null;
-        if (actor.CharacterObject == null)
-            return "actor.CharacterObject=null";
-        if (actionTimelineCapabilityType == null)
-            return "ActionTimelineCapability type not found";
-
-        try
-        {
-            var accessUtils = brioAssembly.GetType("Brio.BrioAccessUtils");
-            var entityManager = accessUtils?.GetProperty("EntityManager", BindingFlags.Static | BindingFlags.Public)?.GetValue(null);
-            if (entityManager == null)
-                return "BrioAccessUtils.EntityManager unavailable";
-
-            var setSelectedEntity = entityManager.GetType()
-                .GetMethods(BindingFlags.Instance | BindingFlags.Public)
-                .FirstOrDefault(method =>
-                {
-                    if (method.Name != "SetSelectedEntity")
-                        return false;
-
-                    var parameters = method.GetParameters();
-                    return parameters.Length == 1 && parameters[0].ParameterType.IsInstanceOfType(actor.CharacterObject);
-                });
-            if (setSelectedEntity == null)
-                return "EntityManager.SetSelectedEntity(actor) overload not found";
-
-            setSelectedEntity.Invoke(entityManager, [actor.CharacterObject]);
-            var tryGetCapability = entityManager.GetType()
-                .GetMethods(BindingFlags.Instance | BindingFlags.Public)
-                .FirstOrDefault(method => method.Name == "TryGetCapabilityFromSelectedEntity" && method.IsGenericMethodDefinition);
-            if (tryGetCapability == null)
-                return "TryGetCapabilityFromSelectedEntity<T> not found";
-
-            var args = new object?[] { null, false, true };
-            var result = tryGetCapability.MakeGenericMethod(actionTimelineCapabilityType).Invoke(entityManager, args);
-            capability = args[0];
-            return $"TryGetCapability result={result ?? "null"}; instance={(capability != null ? capability.GetType().FullName : "null")}";
-        }
-        catch (Exception ex)
-        {
-            return $"capability probe failed: {ex.Message}";
-        }
-    }
-
-    private static IEnumerable<Type> SafeGetTypes(Assembly assembly)
-    {
-        try
-        {
-            return assembly.GetTypes();
-        }
-        catch (ReflectionTypeLoadException ex)
-        {
-            return ex.Types.OfType<Type>();
-        }
-        catch
-        {
-            return [];
-        }
-    }
-
-    private static bool LooksLikeTimelineMember(Type type, MemberInfo member)
-    {
-        static bool HasToken(string value)
-            => value.Contains("ActionTimeline", StringComparison.OrdinalIgnoreCase) ||
-               value.Contains("Timeline", StringComparison.OrdinalIgnoreCase) ||
-               value.Contains("Sequencer", StringComparison.OrdinalIgnoreCase) ||
-               value.Contains("Slot", StringComparison.OrdinalIgnoreCase) ||
-               value.Contains("DataPath", StringComparison.OrdinalIgnoreCase) ||
-               value.Contains("Skeleton", StringComparison.OrdinalIgnoreCase) ||
-               value.Contains("Rig", StringComparison.OrdinalIgnoreCase) ||
-               value.Contains("ModelType", StringComparison.OrdinalIgnoreCase);
-
-        return HasToken(type.FullName ?? type.Name) || HasToken(member.Name);
     }
 
     private static bool TryReadAddress(string? rawAddress, out nint address)
@@ -484,24 +348,16 @@ public sealed class ActorAnimationRigService
 
         public string AppearanceHashAfter { get; set; } = string.Empty;
 
-        public string BrioTimelineCandidates { get; set; } = string.Empty;
+        public bool AnimationBindingChanged { get; set; }
 
-        public bool BrioActionTimelineCapabilityFound { get; set; }
+        public string ResolverResult { get; set; } = "Unknown";
 
-        public bool BrioAffectsSkeletonsMemberFound { get; set; }
+        public string ResolverReason { get; set; } = string.Empty;
 
-        public bool BrioActionTimelineCapabilityInstanceFound { get; set; }
-
-        public string BrioCapabilityProbeResult { get; set; } = string.Empty;
+        public string ResolverNextProbeTarget { get; set; } = string.Empty;
 
         public string ToStatus()
-            => $"method={this.Method}; hookInstalled={this.HookInstalled}; hookHitCount={this.HookHitCount}; hookOwnerMatched={this.OwnerActorPointer != 0 && this.OwnerActorPointer == this.ActorPointer}; actorPtr={FormatPointer(this.ActorPointer)}; ownerActorPtr={FormatPointer(this.OwnerActorPointer)}; slot={this.Slot}; timelineId={this.TimelineId}; selectedRig={this.SelectedPreset}; brioActionTimelineCapabilityFound={this.BrioActionTimelineCapabilityFound}; brioAffectsSkeletonsMemberFound={this.BrioAffectsSkeletonsMemberFound}; brioActionTimelineCapabilityInstanceFound={this.BrioActionTimelineCapabilityInstanceFound}; brioCapabilityProbe={this.BrioCapabilityProbeResult}; resolvedRigBefore={this.ResolvedRigBefore}; resolvedRigAfter={this.ResolvedRigAfter}; changedAnimationDataPath={this.ChangedAnimationDataPath}; changedAppearance={this.AppearanceHashBefore != this.AppearanceHashAfter}; replaySuccess={this.ReplaySuccess}; replay={this.ReplayReason}; appearanceHashBefore={this.AppearanceHashBefore}; appearanceHashAfter={this.AppearanceHashAfter}; brioCandidates={this.BrioTimelineCandidates}";
+            => $"method={this.Method}; hookInstalled={this.HookInstalled}; hookHitCount={this.HookHitCount}; hookOwnerMatched={this.OwnerActorPointer != 0 && this.OwnerActorPointer == this.ActorPointer}; timelineId={this.TimelineId}; selectedRig={this.SelectedPreset}; animationDataPathChanged={this.ChangedAnimationDataPath}; animationBindingChanged={this.AnimationBindingChanged}; appearanceChanged={this.AppearanceHashBefore != this.AppearanceHashAfter}; replaySuccess={this.ReplaySuccess}; result={this.ResolverResult}; nextProbeTarget={this.ResolverNextProbeTarget}; reason={this.ResolverReason}";
     }
 
-    private readonly record struct BrioRigProbeDetails(
-        bool ActionTimelineCapabilityFound,
-        bool AffectsSkeletonsMemberFound,
-        bool ActionTimelineCapabilityInstanceFound,
-        string CapabilityProbeResult,
-        string CandidateSignatures);
 }

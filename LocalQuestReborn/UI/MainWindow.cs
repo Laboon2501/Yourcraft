@@ -782,6 +782,14 @@ public sealed class MainWindow : Window
         this.DrawActorRigControls(actor);
         ImGui.TextWrapped("动画骨架 / Animation Rig（实验）：点击应用会注册 ActionTimeline rig context、重播当前动画并输出 hook/probe 诊断；不会写 Race/Gender/Customize、不会调用 Penumbra redraw、不会改变外观。");
         ImGui.TextWrapped($"Rig 状态：{actor.AnimationRigStatus}");
+        if (!string.IsNullOrWhiteSpace(actor.AnimationRigDebugReport))
+        {
+            if (ImGui.Button("Copy Rig Debug Report"))
+                ImGui.SetClipboardText(actor.AnimationRigDebugReport);
+            ImGui.SameLine();
+            if (ImGui.Button("Dump Reflection Details To Log"))
+                this.realNpcSpawn.DumpActorAnimationRigDebugReport(actor.RuntimeId);
+        }
 
         ImGui.TextWrapped($"动画状态：enabled={actor.AnimationEnabled}, current={actor.CurrentAnimationId}, error={(string.IsNullOrWhiteSpace(actor.LastAnimationError) ? "无" : actor.LastAnimationError)}");
         ImGui.TextWrapped($"看向状态：enabled={actor.LookAtPlayerEnabled}, registered={actor.LookAtRegistered}, target={actor.LookAtTargetDebug}, looking={actor.IsLookingAtPlayer}, error={(string.IsNullOrWhiteSpace(actor.LastLookAtError) ? "无" : actor.LastLookAtError)}");
@@ -1037,7 +1045,7 @@ public sealed class MainWindow : Window
                     }
                     else
                     {
-                        actor.AnimationRigStatus = "Override selected. 点击应用会运行 ActionTimeline rig context probe；未找到安全 data-path 字段时只输出诊断，不写外观字段。";
+                        actor.AnimationRigStatus = "Override selected. 点击应用会运行 ActionTimeline hook + AnimationRigResolverProbe；未找到安全 resolver 字段时只输出诊断，不写外观字段。";
                     }
                 }
 
@@ -1096,7 +1104,7 @@ public sealed class MainWindow : Window
                     : ActorAnimationRigMode.Override;
                 actor.AnimationRigStatus = value == ActorAnimationRigPreset.Current
                     ? "Current: using the actor's own animation data path."
-                    : "Override selected. 点击应用会运行 ActionTimeline rig context probe；未找到安全 data-path 字段时只输出诊断，不写外观字段。";
+                    : "Override selected. 点击应用会运行 ActionTimeline hook + AnimationRigResolverProbe；未找到安全 resolver 字段时只输出诊断，不写外观字段。";
             }
 
             if (selected)
