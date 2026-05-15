@@ -64,6 +64,8 @@ public sealed class Plugin : IDalamudPlugin
     private readonly PreferredModifyBgPartRegistry preferredModifyBgParts;
     private readonly LocalLayoutObjectService localLayoutObjects;
     private readonly LocalLightNativeService localLights;
+    private readonly SceneEditorSelectionService sceneEditorSelection;
+    private readonly SceneEditorService sceneEditor;
     private readonly BgPartVisualTransformProbeService bgPartVisualProbe;
     private readonly RotationMatrixExperimentService rotationMatrixExperiment;
     private readonly BgPartVisualRescueService bgPartVisualRescue;
@@ -80,6 +82,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly GameNpcAppearanceApplyService gameNpcAppearanceApply;
     private readonly GlamourerDesignCatalogService glamourerDesignCatalog;
     private readonly ActionTimelinePickerWindow actionTimelinePickerWindow;
+    private readonly SceneEditorOverlayWindow sceneEditorOverlayWindow;
     private readonly MainWindow mainWindow;
     private uint lastLayoutObjectTerritoryType;
     private bool lastPluginUiGposeState;
@@ -152,6 +155,16 @@ public sealed class Plugin : IDalamudPlugin
         this.preferredModifyBgParts = new PreferredModifyBgPartRegistry(this.configuration, () => this.runtime.TerritoryType, () => this.pluginInterface.SavePluginConfig(this.configuration));
         this.localLayoutObjects = new LocalLayoutObjectService(this.protectedBgParts, this.preferredModifyBgParts);
         this.localLights = new LocalLightNativeService(this.configuration, log, () => this.pluginInterface.SavePluginConfig(this.configuration));
+        this.sceneEditorSelection = new SceneEditorSelectionService(log);
+        this.sceneEditor = new SceneEditorService(
+            this.realNpcSpawn,
+            this.localLayoutObjects,
+            this.localLights,
+            this.sceneEditorSelection,
+            objectTable,
+            this.layoutProbe,
+            () => this.runtime.PlayerPosition,
+            log);
         this.bgPartVisualProbe = new BgPartVisualTransformProbeService();
         this.rotationMatrixExperiment = new RotationMatrixExperimentService(this.bgPartVisualProbe);
         this.bgPartVisualRescue = new BgPartVisualRescueService(this.bgPartVisualProbe);
@@ -171,10 +184,12 @@ public sealed class Plugin : IDalamudPlugin
         this.ApplyGposeUiVisibilityPolicy();
 
         this.actionTimelinePickerWindow = new ActionTimelinePickerWindow(this.actorAnimationPicker);
-        this.mainWindow = new MainWindow(this.configuration, this.database, this.runtime, this.experimentalNpc, this.realNpcSpawn, this.propRuntime, this.layoutProbe, this.layoutTransform, this.layoutClone, this.layerDump, this.localLayoutObjects, this.localLights, this.bgPartVisualProbe, this.rotationMatrixExperiment, this.bgPartVisualRescue, this.visualOnlyRotationDeepProbe, this.drawObjectUpdateDirtyProbe, this.graphicsSceneObjectTransform, this.bgPartCollisionSourceProbe, this.animatedBgPartControllerProbe, this.standaloneBgObjectProbe, this.standaloneRenderListProbe, this.meddleSceneProbe, this.gameNpcCatalog, this.gameNpcAppearanceResolver, this.glamourerDesignCatalog, this.actorAnimationPicker, this.actionTimelinePickerWindow, this.penumbraIpc, this.Reload, () => this.pluginInterface.SavePluginConfig(this.configuration), () => this.clientState.IsGPosing);
+        this.sceneEditorOverlayWindow = new SceneEditorOverlayWindow(gameGui, this.sceneEditor, this.sceneEditorSelection);
+        this.mainWindow = new MainWindow(this.configuration, this.database, this.runtime, this.experimentalNpc, this.realNpcSpawn, this.propRuntime, this.layoutProbe, this.layoutTransform, this.layoutClone, this.layerDump, this.localLayoutObjects, this.localLights, this.sceneEditor, this.sceneEditorSelection, this.bgPartVisualProbe, this.rotationMatrixExperiment, this.bgPartVisualRescue, this.visualOnlyRotationDeepProbe, this.drawObjectUpdateDirtyProbe, this.graphicsSceneObjectTransform, this.bgPartCollisionSourceProbe, this.animatedBgPartControllerProbe, this.standaloneBgObjectProbe, this.standaloneRenderListProbe, this.meddleSceneProbe, this.gameNpcCatalog, this.gameNpcAppearanceResolver, this.glamourerDesignCatalog, this.actorAnimationPicker, this.actionTimelinePickerWindow, this.penumbraIpc, this.Reload, () => this.pluginInterface.SavePluginConfig(this.configuration), () => this.clientState.IsGPosing);
 
         this.windowSystem.AddWindow(this.mainWindow);
         this.windowSystem.AddWindow(this.actionTimelinePickerWindow);
+        this.windowSystem.AddWindow(this.sceneEditorOverlayWindow);
 
         this.commandManager.AddHandler(CommandName, new CommandInfo(this.OnCommand)
         {

@@ -16,6 +16,8 @@ public sealed class MainWindow : Window
     private readonly LayerDumpService layerDump;
     private readonly LocalLayoutObjectService localLayoutObjects;
     private readonly LocalLightNativeService localLights;
+    private readonly SceneEditorService sceneEditor;
+    private readonly SceneEditorSelectionService sceneEditorSelection;
     private readonly BgPartCollisionSourceProbeService bgPartCollisionSourceProbe;
     private readonly AnimatedBgPartControllerProbeService animatedBgPartControllerProbe;
     private readonly StandaloneBgObjectProbeService standaloneBgObjectProbe;
@@ -28,6 +30,10 @@ public sealed class MainWindow : Window
     private readonly Action reloadAction;
     private readonly Action saveConfiguration;
     private readonly Func<bool> isGposing;
+    private readonly TransformEditState sceneEditorTransformEdit = new();
+
+    private string sceneEditorGlamourerDesignName = string.Empty;
+    private string sceneEditorGlamourerDesignStatus = "No native actor design save attempted.";
 
     private string selectedNpcId = string.Empty;
     private string selectedActorRuntimeId = string.Empty;
@@ -81,6 +87,8 @@ public sealed class MainWindow : Window
         LayerDumpService layerDump,
         LocalLayoutObjectService localLayoutObjects,
         LocalLightNativeService localLights,
+        SceneEditorService sceneEditor,
+        SceneEditorSelectionService sceneEditorSelection,
         BgPartVisualTransformProbeService bgPartVisualProbe,
         RotationMatrixExperimentService rotationMatrixExperiment,
         BgPartVisualRescueService bgPartVisualRescue,
@@ -111,6 +119,8 @@ public sealed class MainWindow : Window
         this.layerDump = layerDump;
         this.localLayoutObjects = localLayoutObjects;
         this.localLights = localLights;
+        this.sceneEditor = sceneEditor;
+        this.sceneEditorSelection = sceneEditorSelection;
         this.bgPartCollisionSourceProbe = bgPartCollisionSourceProbe;
         this.animatedBgPartControllerProbe = animatedBgPartControllerProbe;
         this.standaloneBgObjectProbe = standaloneBgObjectProbe;
@@ -152,6 +162,8 @@ public sealed class MainWindow : Window
             this.realNpcSpawn.ProbeGlamourerIpc();
         }
 
+        this.SyncMainUiSelectionFromSceneEditor();
+
         ImGui.Separator();
         if (!ImGui.BeginTabBar("LqrMainTabs"))
             return;
@@ -183,6 +195,12 @@ public sealed class MainWindow : Window
         if (ImGui.BeginTabItem("本地灯光"))
         {
             this.DrawLocalLights();
+            ImGui.EndTabItem();
+        }
+
+        if (ImGui.BeginTabItem("画面编辑"))
+        {
+            this.DrawSceneEditor();
             ImGui.EndTabItem();
         }
 
@@ -264,6 +282,368 @@ public sealed class MainWindow : Window
 
     private void DrawGposeBlockedMessage(string actionName)
         => ImGui.TextDisabled($"GPose 中已禁用：{actionName}。请退出 GPose 后执行该操作。");
+
+    private void SelectSceneEditableFromMainUi(SceneEditableKind kind, string runtimeId)
+    {
+        if (string.IsNullOrWhiteSpace(runtimeId))
+            return;
+
+        this.sceneEditorSelection.Select(kind, runtimeId, SceneEditorSelectionSource.MainUi);
+    }
+
+    private void SyncMainUiSelectionFromSceneEditor()
+    {
+        if (!this.sceneEditorSelection.HasSelection || this.sceneEditorSelection.SelectedKind == null)
+            return;
+
+        switch (this.sceneEditorSelection.SelectedKind.Value)
+        {
+            case SceneEditableKind.LocalActor:
+                if (!string.Equals(this.selectedActorRuntimeId, this.sceneEditorSelection.SelectedRuntimeId, StringComparison.Ordinal))
+                {
+                    this.selectedActorRuntimeId = this.sceneEditorSelection.SelectedRuntimeId;
+                    var actor = this.realNpcSpawn.Actors.FirstOrDefault(item => string.Equals(item.RuntimeId, this.selectedActorRuntimeId, StringComparison.Ordinal));
+                    if (actor != null)
+                        this.selectedNpcId = actor.NpcId;
+                }
+                break;
+            case SceneEditableKind.LocalBgPart:
+                if (!string.Equals(this.selectedLocalLayoutObjectId, this.sceneEditorSelection.SelectedRuntimeId, StringComparison.Ordinal))
+                    this.selectedLocalLayoutObjectId = this.sceneEditorSelection.SelectedRuntimeId;
+                break;
+            case SceneEditableKind.LocalLight:
+                if (!string.Equals(this.selectedLocalLightId, this.sceneEditorSelection.SelectedRuntimeId, StringComparison.Ordinal))
+                    this.selectedLocalLightId = this.sceneEditorSelection.SelectedRuntimeId;
+                break;
+        }
+    }
+
+    private void DrawSceneEditor()
+    {
+        this.SyncSceneEditorBgPartCopyMode();
+
+        var io = ImGui.GetIO();
+        this.sceneEditor.TryHandleUndoShortcut(
+            this.sceneEditor.Gizmo.InputState.State == SceneEditorInputInteractionState.GizmoDragging,
+            io.WantTextInput,
+            io.KeyCtrl,
+            ImGui.IsKeyPressed(ImGuiKey.Z));
+
+        var overlayEnabled = this.sceneEditor.OverlayEnabled;
+        if (ImGui.Checkbox("启用画面编辑 Overlay", ref overlayEnabled))
+            this.sceneEditor.OverlayEnabled = overlayEnabled;
+
+        var showPluginObjects = this.sceneEditor.ShowPluginObjects;
+        if (ImGui.Checkbox("Plugin objects", ref showPluginObjects))
+            this.sceneEditor.ShowPluginObjects = showPluginObjects;
+        ImGui.SameLine();
+        var showNativeObjects = this.sceneEditor.ShowNativeObjects;
+        if (ImGui.Checkbox("Native objects", ref showNativeObjects))
+            this.sceneEditor.ShowNativeObjects = showNativeObjects;
+
+        var showActors = this.sceneEditor.ShowActors;
+        if (ImGui.Checkbox("Actor", ref showActors))
+            this.sceneEditor.ShowActors = showActors;
+        ImGui.SameLine();
+        var showBgParts = this.sceneEditor.ShowBgParts;
+        if (ImGui.Checkbox("BgPart", ref showBgParts))
+            this.sceneEditor.ShowBgParts = showBgParts;
+        ImGui.SameLine();
+        var showLights = this.sceneEditor.ShowLights;
+        if (ImGui.Checkbox("Light", ref showLights))
+            this.sceneEditor.ShowLights = showLights;
+
+        var markerSize = this.sceneEditor.MarkerRadius;
+        if (ImGui.SliderFloat("Marker Size", ref markerSize, 4f, 9f))
+            this.sceneEditor.MarkerRadius = markerSize;
+
+        if (ImGui.CollapsingHeader("Gizmo 设置", ImGuiTreeNodeFlags.DefaultOpen))
+        {
+            ImGui.TextWrapped($"Current gizmo mode: {this.sceneEditor.GizmoMode}");
+            var moveSensitivity = this.sceneEditor.Gizmo.MoveSensitivity;
+            if (ImGui.InputFloat("Move sensitivity", ref moveSensitivity))
+                this.sceneEditor.Gizmo.MoveSensitivity = MathF.Max(0.01f, moveSensitivity);
+
+            var rotateSensitivity = this.sceneEditor.Gizmo.RotateSensitivityDegreesPerPixel;
+            if (ImGui.InputFloat("Rotate sensitivity deg/pixel", ref rotateSensitivity))
+                this.sceneEditor.Gizmo.RotateSensitivityDegreesPerPixel = MathF.Max(0.01f, rotateSensitivity);
+
+            var scaleSensitivity = this.sceneEditor.Gizmo.ScaleSensitivity;
+            if (ImGui.InputFloat("Scale sensitivity", ref scaleSensitivity))
+                this.sceneEditor.Gizmo.ScaleSensitivity = MathF.Max(0.001f, scaleSensitivity);
+
+            var snapEnabled = this.sceneEditor.Gizmo.SnapEnabled;
+            if (ImGui.Checkbox("Snap enabled", ref snapEnabled))
+                this.sceneEditor.Gizmo.SnapEnabled = snapEnabled;
+
+            var moveSnap = this.sceneEditor.Gizmo.MoveSnapStep;
+            if (ImGui.InputFloat("Move snap step", ref moveSnap))
+                this.sceneEditor.Gizmo.MoveSnapStep = MathF.Max(0.001f, moveSnap);
+
+            var rotateSnap = this.sceneEditor.Gizmo.RotateSnapDegrees;
+            if (ImGui.InputFloat("Rotate snap degrees", ref rotateSnap))
+                this.sceneEditor.Gizmo.RotateSnapDegrees = MathF.Max(0.1f, rotateSnap);
+
+            var scaleSnap = this.sceneEditor.Gizmo.ScaleSnapStep;
+            if (ImGui.InputFloat("Scale snap step", ref scaleSnap))
+                this.sceneEditor.Gizmo.ScaleSnapStep = MathF.Max(0.001f, scaleSnap);
+
+            ImGui.TextDisabled("Shift = fine tune, Ctrl = snap while dragging.");
+        }
+
+        var editables = this.sceneEditor.GetEditables();
+        ImGui.TextWrapped($"Editable objects: {editables.Count} | {this.sceneEditor.LastStatus}");
+        ImGui.TextDisabled(this.sceneEditor.LastNativeScanStatus);
+
+        var selected = this.sceneEditor.GetSelectedEditable();
+        ImGui.Separator();
+        if (selected == null)
+        {
+            ImGui.TextWrapped("当前未选择对象。点击 marker 或在主 UI 选择对象。");
+            if (ImGui.Button("清空选择"))
+                this.sceneEditorSelection.Clear(SceneEditorSelectionSource.SceneEditorPanel);
+            return;
+        }
+
+        ImGui.TextWrapped($"类型：{selected.Kind}");
+        ImGui.TextWrapped($"名称：{selected.DisplayName}");
+        ImGui.TextWrapped($"RuntimeId：{selected.RuntimeId}");
+        ImGui.TextWrapped($"Mdl/Kind：{selected.MdlPath}");
+
+        this.DrawSceneEditorModeButtons(selected);
+        this.DrawSceneEditorUndoControls();
+        this.DrawSceneEditorBgPartQuickActions(selected);
+        this.DrawSceneEditorTransformPanel(selected);
+        if (ImGui.Button("清空选择"))
+            this.sceneEditorSelection.Clear(SceneEditorSelectionSource.SceneEditorPanel);
+
+        if (ImGui.CollapsingHeader("Scene Editor Debug"))
+        {
+            var debugIo = ImGui.GetIO();
+            ImGui.TextWrapped($"MousePos：{debugIo.MousePos}");
+            ImGui.TextWrapped($"WantCaptureMouse：{debugIo.WantCaptureMouse}");
+            ImGui.TextWrapped($"InputState：{this.sceneEditor.Gizmo.InputState.State}");
+            ImGui.TextWrapped($"HoveredMarker：{this.sceneEditor.Gizmo.InputState.HoveredMarkerId}");
+            ImGui.TextWrapped($"HoveredGizmoAxis：{this.sceneEditor.Gizmo.InputState.HoveredGizmoAxis}");
+            ImGui.TextWrapped($"ActiveGizmoAxis：{this.sceneEditor.Gizmo.InputState.ActiveGizmoAxis}");
+            ImGui.TextWrapped($"SelectedRuntimeId：{this.sceneEditorSelection.SelectedRuntimeId}");
+            ImGui.TextWrapped($"Hover：{this.sceneEditor.LastHoveredMarkerDebug}");
+            ImGui.TextWrapped($"Click：{this.sceneEditor.LastClickedMarkerDebug}");
+            ImGui.TextWrapped($"Gizmo：{this.sceneEditor.Gizmo.LastDebug}");
+        }
+    }
+
+    private void SyncSceneEditorBgPartCopyMode()
+    {
+        this.sceneEditor.AllowNativeTransformWrites =
+            this.realNpcSpawn.EnableUnsafeNativeWrites &&
+            (!this.localLayoutFullCollisionMode || this.confirmFullLayoutCollisionMode);
+        this.sceneEditor.NativeFullLayoutTransformConfirmed =
+            this.localLayoutFullCollisionMode && this.confirmFullLayoutCollisionMode;
+    }
+
+    private void DrawSceneEditorModeButtons(SceneEditableRef selected)
+    {
+        if (!selected.TransformEditable)
+        {
+            ImGui.TextDisabled("Native/read-only target: transform gizmo is disabled.");
+            return;
+        }
+
+        ImGui.TextUnformatted("Gizmo:");
+        this.DrawSceneEditorModeButton("Select", SceneEditorGizmoMode.Select);
+        ImGui.SameLine();
+        this.DrawSceneEditorModeButton("Move", SceneEditorGizmoMode.Move);
+        ImGui.SameLine();
+        this.DrawSceneEditorModeButton("Rotate", SceneEditorGizmoMode.Rotate);
+        ImGui.SameLine();
+        this.DrawSceneEditorModeButton("Scale", SceneEditorGizmoMode.Scale);
+    }
+
+    private void DrawSceneEditorModeButton(string label, SceneEditorGizmoMode mode)
+    {
+        var active = this.sceneEditor.GizmoMode == mode;
+        if (active)
+            ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.95f, 0.55f, 0.18f, 1f));
+
+        if (ImGui.Button(label))
+            this.sceneEditor.SetGizmoMode(mode);
+
+        if (active)
+            ImGui.PopStyleColor();
+    }
+
+    private void DrawSceneEditorUndoControls()
+    {
+        var entry = this.sceneEditor.Undo.Peek;
+        ImGui.BeginDisabled(entry == null);
+        if (ImGui.Button("Undo last transform (Ctrl+Z)"))
+            this.sceneEditor.TryUndoLast();
+        ImGui.EndDisabled();
+
+        if (entry == null)
+            ImGui.TextDisabled("No SceneEditor transform undo.");
+        else
+            ImGui.TextDisabled($"Undo ready: {entry.Source} {entry.DisplayName}");
+    }
+
+    private void DrawSceneEditorBgPartQuickActions(SceneEditableRef selected)
+    {
+        if (selected.Kind is not (SceneEditableKind.LocalBgPart or SceneEditableKind.NativeBgPart))
+            return;
+
+        this.SyncSceneEditorBgPartCopyMode();
+        ImGui.Separator();
+        ImGui.TextWrapped("BgPart quick actions");
+        if (!string.IsNullOrWhiteSpace(selected.MdlPath))
+        {
+            ImGui.TextWrapped($"mdl: {selected.MdlPath}");
+            ImGui.SameLine();
+            if (ImGui.Button("Copy mdl##SceneEditorBgPartMdl"))
+                ImGui.SetClipboardText(selected.MdlPath);
+        }
+
+        var fullLayoutBlocked = this.localLayoutFullCollisionMode && !this.confirmFullLayoutCollisionMode;
+        ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || this.localLayoutObjects.IsCreateQueueActive || !this.realNpcSpawn.EnableUnsafeNativeWrites || fullLayoutBlocked);
+        if (ImGui.Button("Copy 1##SceneEditorCopyOneBgPart"))
+            this.TryCreateSingleBgPartCopy(selected, "SceneEditorPanel");
+        ImGui.EndDisabled();
+        if (ImGui.IsItemHovered() && (!this.realNpcSpawn.EnableUnsafeNativeWrites || fullLayoutBlocked))
+            ImGui.SetTooltip(fullLayoutBlocked ? "FullLayoutWithCollision requires the danger confirmation checkbox." : "Enable Unsafe/native writes first.");
+
+        ImGui.SameLine();
+        if (ImGui.Button("Set candidate##SceneEditorBgPartCandidate"))
+            this.sceneEditor.TryMarkBgPartCandidate(selected);
+        ImGui.SameLine();
+        if (ImGui.Button("Preferred##SceneEditorBgPartPreferred"))
+            this.sceneEditor.TryPreferBgPart(selected);
+        ImGui.SameLine();
+        if (ImGui.Button("Protect##SceneEditorBgPartProtect"))
+            this.sceneEditor.TryProtectBgPart(selected);
+        ImGui.TextDisabled(this.sceneEditor.LastQuickActionStatus);
+    }
+
+    private void DrawSceneEditorTransformPanel(SceneEditableRef selected)
+    {
+        if (selected.IsNativeGameObject)
+            this.DrawSceneEditorNativePanel(selected);
+
+        if (!selected.TransformEditable)
+        {
+            return;
+        }
+
+        this.sceneEditorTransformEdit.Bind(selected, this.sceneEditorSelection.Generation + this.sceneEditor.TransformGeneration);
+
+        var disabled = !selected.IsValid || this.IsInGpose();
+        if (disabled)
+            ImGui.TextDisabled(selected.IsValid ? "GPose 中禁止写 Transform。" : "对象当前无效。");
+
+        ImGui.BeginDisabled(disabled);
+        var changed = false;
+        var position = this.sceneEditorTransformEdit.PositionInput;
+        if (InputVector3("World Position", ref position))
+        {
+            this.sceneEditorTransformEdit.PositionInput = position;
+            changed = true;
+        }
+
+        var eulerDegrees = RadiansVectorToDegrees(this.sceneEditorTransformEdit.EulerInput);
+        if (InputVector3("World Rotation (deg)", ref eulerDegrees))
+        {
+            this.sceneEditorTransformEdit.EulerInput = DegreesVectorToRadians(eulerDegrees);
+            changed = true;
+        }
+
+        var scale = this.sceneEditorTransformEdit.ScaleInput;
+        if (InputVector3("World Scale", ref scale))
+        {
+            this.sceneEditorTransformEdit.ScaleInput = Vector3.Max(scale, new Vector3(0.01f));
+            changed = true;
+        }
+
+        if (changed)
+        {
+            var before = selected.Transform;
+            var after = this.sceneEditorTransformEdit.ToWorldTransform();
+            if (this.sceneEditor.ApplyWorldTransform(selected.Kind, selected.RuntimeId, after))
+                this.sceneEditor.PushTransformUndo(selected.Kind, selected.RuntimeId, selected.DisplayName, before, after, "TransformInput");
+        }
+        ImGui.EndDisabled();
+
+        if (ImGui.Button("读取当前世界 Transform"))
+        {
+            this.sceneEditor.RefreshTransform(selected.Kind, selected.RuntimeId);
+            var refreshed = this.sceneEditor.GetSelectedEditable();
+            if (refreshed != null)
+                this.sceneEditorTransformEdit.Bind(refreshed, this.sceneEditorSelection.Generation + 1u);
+        }
+
+        ImGui.SameLine();
+        ImGui.BeginDisabled(disabled);
+        if (ImGui.Button("保存当前 Transform 到配置"))
+            this.sceneEditor.SaveSelectedTransform(this.sceneEditorTransformEdit.ToWorldTransform());
+        ImGui.EndDisabled();
+    }
+
+    private void DrawSceneEditorNativePanel(SceneEditableRef selected)
+    {
+        ImGui.Separator();
+        ImGui.TextWrapped(selected.TransformEditable
+            ? "Native game object - experimental transform editing is enabled by unsafe/native writes."
+            : "Native game object - readonly Phase 3 panel.");
+        ImGui.TextWrapped($"ObjectKind: {selected.ObjectKind}");
+        if (!string.IsNullOrWhiteSpace(selected.DataId))
+            ImGui.TextWrapped($"DataId: {selected.DataId}");
+        if (selected.ObjectIndex >= 0)
+            ImGui.TextWrapped($"ObjectIndex: {selected.ObjectIndex}");
+        ImGui.TextWrapped($"World Position: {FormatVector(selected.Transform.WorldPosition)}");
+        var rotationText = string.IsNullOrWhiteSpace(selected.RotationText)
+            ? FormatVector(RadiansVectorToDegrees(selected.Transform.WorldEulerRadians))
+            : selected.RotationText;
+        ImGui.TextWrapped($"World Rotation: {rotationText}");
+        ImGui.TextWrapped($"World Scale: {FormatVector(selected.Transform.WorldScale)}");
+
+        switch (selected.Kind)
+        {
+            case SceneEditableKind.NativeBgPart:
+                ImGui.TextWrapped($"mdl: {selected.MdlPath}");
+                if (ImGui.Button("Copy mdl path"))
+                    ImGui.SetClipboardText(selected.MdlPath);
+                break;
+            case SceneEditableKind.Player:
+            case SceneEditableKind.NativeActor:
+                ImGui.TextWrapped(selected.Kind == SceneEditableKind.Player
+                    ? "Selected target is LocalPlayer. Transform editing is always disabled."
+                    : selected.TransformEditable
+                        ? "Selected target is a native NPC/actor. Experimental transform editing is enabled."
+                        : "Selected target is a native NPC/actor. Enable unsafe/native writes to move it.");
+                this.DrawNativeActorGlamourerSavePanel(selected);
+                break;
+            case SceneEditableKind.NativeLight:
+                ImGui.TextWrapped("Native Light is readonly in this phase.");
+                if (!string.IsNullOrWhiteSpace(selected.LightInfo))
+                    ImGui.TextWrapped(selected.LightInfo);
+                break;
+        }
+
+        if (!string.IsNullOrWhiteSpace(selected.NativeInfo))
+            ImGui.TextDisabled(selected.NativeInfo);
+    }
+
+    private void DrawNativeActorGlamourerSavePanel(SceneEditableRef selected)
+    {
+        ImGui.Separator();
+        ImGui.TextWrapped("Glamourer Design");
+        ImGui.InputText("Design name", ref this.sceneEditorGlamourerDesignName, 128);
+        if (ImGui.Button("Save Glamourer Design"))
+        {
+            this.sceneEditorGlamourerDesignStatus =
+                "Glamourer save-design IPC is not safely bound in this build; target was left unchanged.";
+        }
+
+        ImGui.TextDisabled(this.sceneEditorGlamourerDesignStatus);
+    }
 
     private void DrawNpcManagement()
     {
@@ -621,14 +1001,20 @@ public sealed class MainWindow : Window
         {
             var actor = this.realNpcSpawn.SpawnUnique(selectedNpc);
             if (actor != null)
+            {
                 this.selectedActorRuntimeId = actor.RuntimeId;
+                this.SelectSceneEditableFromMainUi(SceneEditableKind.LocalActor, actor.RuntimeId);
+            }
         }
         ImGui.SameLine();
         if (ImGui.Button("生成一个新 Actor") && selectedNpc != null)
         {
             var actor = this.realNpcSpawn.SpawnNew(selectedNpc);
             if (actor != null)
+            {
                 this.selectedActorRuntimeId = actor.RuntimeId;
+                this.SelectSceneEditableFromMainUi(SceneEditableKind.LocalActor, actor.RuntimeId);
+            }
         }
         ImGui.EndDisabled();
         ImGui.SameLine();
@@ -668,7 +1054,10 @@ public sealed class MainWindow : Window
             ImGui.PushID(actor.RuntimeId);
             ImGui.TableSetColumnIndex(0);
             if (ImGui.Selectable("选中", string.Equals(this.selectedActorRuntimeId, actor.RuntimeId, StringComparison.Ordinal)))
+            {
                 this.selectedActorRuntimeId = actor.RuntimeId;
+                this.SelectSceneEditableFromMainUi(SceneEditableKind.LocalActor, actor.RuntimeId);
+            }
             ImGui.TableSetColumnIndex(1);
             ImGui.TextWrapped(ShortId(actor.RuntimeId));
             ImGui.TableSetColumnIndex(2);
@@ -738,26 +1127,39 @@ public sealed class MainWindow : Window
         if (actor.TransformEditPosition == Vector3.Zero && actor.LastKnownPosition != Vector3.Zero)
             actor.TransformEditPosition = actor.LastKnownPosition;
 
+        var transformChanged = false;
         var editPosition = actor.TransformEditPosition;
-        if (ImGui.InputFloat("World Position X", ref editPosition.X)) actor.TransformEditPosition = editPosition;
-        if (ImGui.InputFloat("World Position Y", ref editPosition.Y)) actor.TransformEditPosition = editPosition;
-        if (ImGui.InputFloat("World Position Z", ref editPosition.Z)) actor.TransformEditPosition = editPosition;
+        if (ImGui.InputFloat("World Position X", ref editPosition.X)) { actor.TransformEditPosition = editPosition; transformChanged = true; }
+        if (ImGui.InputFloat("World Position Y", ref editPosition.Y)) { actor.TransformEditPosition = editPosition; transformChanged = true; }
+        if (ImGui.InputFloat("World Position Z", ref editPosition.Z)) { actor.TransformEditPosition = editPosition; transformChanged = true; }
 
         var rotationDegrees = new Vector3(
             RadiansToDegrees(actor.TransformEditRotationEuler.X),
             RadiansToDegrees(actor.TransformEditRotationEuler.Y),
             RadiansToDegrees(actor.TransformEditRotationEuler.Z));
         if (ImGui.InputFloat("World Pitch X (deg)", ref rotationDegrees.X))
+        {
             actor.TransformEditRotationEuler = new Vector3(DegreesToRadians(rotationDegrees.X), actor.TransformEditRotationEuler.Y, actor.TransformEditRotationEuler.Z);
+            transformChanged = true;
+        }
         if (ImGui.InputFloat("World Yaw Y (deg)", ref rotationDegrees.Y))
+        {
             actor.TransformEditRotationEuler = new Vector3(actor.TransformEditRotationEuler.X, DegreesToRadians(rotationDegrees.Y), actor.TransformEditRotationEuler.Z);
+            transformChanged = true;
+        }
         if (ImGui.InputFloat("World Roll Z (deg)", ref rotationDegrees.Z))
+        {
             actor.TransformEditRotationEuler = new Vector3(actor.TransformEditRotationEuler.X, actor.TransformEditRotationEuler.Y, DegreesToRadians(rotationDegrees.Z));
+            transformChanged = true;
+        }
 
         var editScale = actor.TransformEditScale;
-        if (ImGui.InputFloat("World Scale X", ref editScale.X)) actor.TransformEditScale = Vector3.Max(editScale, new Vector3(0.01f));
-        if (ImGui.InputFloat("World Scale Y", ref editScale.Y)) actor.TransformEditScale = Vector3.Max(editScale, new Vector3(0.01f));
-        if (ImGui.InputFloat("World Scale Z", ref editScale.Z)) actor.TransformEditScale = Vector3.Max(editScale, new Vector3(0.01f));
+        if (ImGui.InputFloat("World Scale X", ref editScale.X)) { actor.TransformEditScale = Vector3.Max(editScale, new Vector3(0.01f)); transformChanged = true; }
+        if (ImGui.InputFloat("World Scale Y", ref editScale.Y)) { actor.TransformEditScale = Vector3.Max(editScale, new Vector3(0.01f)); transformChanged = true; }
+        if (ImGui.InputFloat("World Scale Z", ref editScale.Z)) { actor.TransformEditScale = Vector3.Max(editScale, new Vector3(0.01f)); transformChanged = true; }
+
+        if (transformChanged && !this.IsInGpose())
+            this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
 
         ImGui.TextWrapped($"world readback position：{FormatVector(actor.LastKnownPosition)}");
         ImGui.TextWrapped($"world readback rotation：pitch {RadiansToDegrees(actor.LastKnownRotationEuler.X):F1}, yaw {RadiansToDegrees(actor.LastKnownRotationEuler.Y):F1}, roll {RadiansToDegrees(actor.LastKnownRotationEuler.Z):F1}");
@@ -1267,11 +1669,13 @@ public sealed class MainWindow : Window
         if (remaining.Count == 0)
         {
             this.selectedActorRuntimeId = string.Empty;
+            this.sceneEditorSelection.Clear(SceneEditorSelectionSource.MainUi);
             return;
         }
 
         var nextIndex = Math.Clamp(selectedIndex < 0 ? 0 : selectedIndex, 0, remaining.Count - 1);
         this.selectedActorRuntimeId = remaining[nextIndex].RuntimeId;
+        this.SelectSceneEditableFromMainUi(SceneEditableKind.LocalActor, this.selectedActorRuntimeId);
         if (!deleted)
             this.realNpcSpawn.SetMessage($"删除 Actor 失败或只完成了本地移除：{actor.LastError}");
     }
@@ -1309,14 +1713,15 @@ public sealed class MainWindow : Window
             ImGui.Checkbox("我确认启用危险 FullLayoutWithCollision 模式", ref this.confirmFullLayoutCollisionMode);
         }
 
+        this.SyncSceneEditorBgPartCopyMode();
         this.DrawBgPartSelectionControls();
-        this.DrawLayoutTemplateControls();
+        this.DrawLocalLayoutCreateSingleCopyControls();
 
         var candidate = this.GetSelectedBgPart();
         var mode = this.localLayoutFullCollisionMode ? LocalLayoutTransformMode.FullLayoutWithCollision : LocalLayoutTransformMode.VisualOnly;
         var fullLayoutBlocked = this.localLayoutFullCollisionMode && !this.confirmFullLayoutCollisionMode;
         ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || this.localLayoutObjects.IsCreateQueueActive || !this.realNpcSpawn.EnableUnsafeNativeWrites || candidate == null || !this.runtime.PlayerPosition.HasValue || fullLayoutBlocked);
-        if (ImGui.Button(this.localLayoutFullCollisionMode ? "从候选创建本地物件（FullLayoutWithCollision，危险）" : "从候选创建本地物件（VisualOnly，推荐）"))
+        if (false && ImGui.Button(this.localLayoutFullCollisionMode ? "从候选创建本地物件（FullLayoutWithCollision，危险）" : "从候选创建本地物件（VisualOnly，推荐）"))
         {
             var desiredScale = this.layoutCopyUseTemplateScale && candidate != null
                 ? candidate.Scale
@@ -1332,7 +1737,10 @@ public sealed class MainWindow : Window
                 this.layoutCopyDefaultRotationEuler,
                 desiredScale);
             if (created != null)
+            {
                 this.selectedLocalLayoutObjectId = created.Id;
+                this.SelectSceneEditableFromMainUi(SceneEditableKind.LocalBgPart, created.Id);
+            }
         }
         ImGui.EndDisabled();
 
@@ -1344,6 +1752,7 @@ public sealed class MainWindow : Window
                 unsafeEnabled: this.realNpcSpawn.EnableUnsafeNativeWrites,
                 fullLayoutConfirmed: this.confirmFullLayoutCollisionMode);
             this.selectedLocalLayoutObjectId = string.Empty;
+            this.sceneEditorSelection.Clear(SceneEditorSelectionSource.MainUi);
         }
         ImGui.EndDisabled();
         ImGui.SameLine();
@@ -1413,6 +1822,11 @@ public sealed class MainWindow : Window
                 this.layoutManualBasePosition = this.runtime.PlayerPosition ?? candidate.Position;
         }
         ImGui.EndDisabled();
+        if (HideLegacyCreateManyUi())
+        {
+            ImGui.TextDisabled("旧的批量创建入口已隐藏；请在画面编辑小面板里选中 BgPart 后使用“Copy 1”。");
+            return;
+        }
         ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "创建复制体");
         ImGui.InputInt("创建数量 N", ref this.layoutCopyCount);
         this.layoutCopyCount = Math.Clamp(this.layoutCopyCount, 1, 100);
@@ -1497,9 +1911,83 @@ public sealed class MainWindow : Window
             ImGui.TextWrapped(this.localLayoutObjects.LastCreateManyDryRunPreview);
 
         ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || this.localLayoutObjects.IsCreateQueueActive || !this.realNpcSpawn.EnableUnsafeNativeWrites || template == null || !hasBasePosition || fullLayoutBlocked);
-        if (ImGui.Button(mode == LocalLayoutTransformMode.VisualOnly ? "创建 N 个 VisualOnly 复制体" : "创建 N 个 FullLayoutWithCollision 复制体"))
+        if (false && ImGui.Button(mode == LocalLayoutTransformMode.VisualOnly ? "创建 N 个 VisualOnly 复制体" : "创建 N 个 FullLayoutWithCollision 复制体"))
             this.CreateMany(template, allBgParts, this.layoutCopyCount, basePosition, mode);
         ImGui.EndDisabled();
+    }
+
+    private void DrawLocalLayoutCreateSingleCopyControls()
+    {
+        var selectedEditable = this.sceneEditor.GetSelectedEditable();
+        var selectedEditableIsBgPart = selectedEditable?.Kind is SceneEditableKind.LocalBgPart or SceneEditableKind.NativeBgPart;
+        var sourceSlot = selectedEditableIsBgPart ? null : this.GetSelectedBgPart();
+        var hasSource = selectedEditableIsBgPart || sourceSlot != null;
+        var mode = this.localLayoutFullCollisionMode
+            ? LocalLayoutTransformMode.FullLayoutWithCollision
+            : LocalLayoutTransformMode.VisualOnly;
+        var fullLayoutBlocked = this.localLayoutFullCollisionMode && !this.confirmFullLayoutCollisionMode;
+
+        ImGui.Separator();
+        ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "创建 1 个复制体");
+        ImGui.TextWrapped(selectedEditableIsBgPart
+            ? $"Source: SceneEditor {selectedEditable!.Kind} / {selectedEditable.DisplayName}"
+            : sourceSlot == null
+                ? "Source: none. 请先在画面编辑中选择 BgPart，或在 BgPart Slot Pool 选中 BgPart。"
+                : $"Source: {sourceSlot.ResourcePath} @ {sourceSlot.Address}");
+        ImGui.TextWrapped($"New copy mode: {mode}");
+
+        var disabled = this.localLayoutObjects.IsBusy ||
+                       this.localLayoutObjects.IsCreateQueueActive ||
+                       !this.realNpcSpawn.EnableUnsafeNativeWrites ||
+                       !hasSource ||
+                       fullLayoutBlocked;
+        ImGui.BeginDisabled(disabled);
+        if (ImGui.Button("创建 1 个复制体##LocalLayoutCreateOne"))
+        {
+            if (selectedEditableIsBgPart && selectedEditable != null)
+                this.TryCreateSingleBgPartCopy(selectedEditable, "LocalLayoutPage");
+            else
+                this.TryCreateSingleBgPartCopy(sourceSlot, "LocalLayoutPage");
+        }
+        ImGui.EndDisabled();
+
+        if (disabled)
+        {
+            if (!this.realNpcSpawn.EnableUnsafeNativeWrites)
+                ImGui.TextDisabled("需要启用 Unsafe/native 写入。");
+            else if (fullLayoutBlocked)
+                ImGui.TextDisabled("FullLayoutWithCollision 需要勾选危险确认。");
+            else if (!hasSource)
+                ImGui.TextDisabled("请先选择一个 BgPart source。");
+        }
+
+        ImGui.TextDisabled(this.sceneEditor.LastQuickActionStatus);
+    }
+
+    private bool TryCreateSingleBgPartCopy(SceneEditableRef source, string context)
+    {
+        this.SyncSceneEditorBgPartCopyMode();
+        var ok = this.sceneEditor.TryCopyOneBgPart(source, new Vector3(0.6f, 0f, 0.6f));
+        this.SyncCreatedLocalBgPartSelectionFromSceneEditor(context);
+        return ok;
+    }
+
+    private bool TryCreateSingleBgPartCopy(LayoutProbeInstance? source, string context)
+    {
+        this.SyncSceneEditorBgPartCopyMode();
+        var ok = this.sceneEditor.TryCopyOneBgPart(source, new Vector3(0.6f, 0f, 0.6f));
+        this.SyncCreatedLocalBgPartSelectionFromSceneEditor(context);
+        return ok;
+    }
+
+    private void SyncCreatedLocalBgPartSelectionFromSceneEditor(string context)
+    {
+        if (this.sceneEditorSelection.SelectedKind == SceneEditableKind.LocalBgPart &&
+            !string.IsNullOrWhiteSpace(this.sceneEditorSelection.SelectedRuntimeId))
+        {
+            this.selectedLocalLayoutObjectId = this.sceneEditorSelection.SelectedRuntimeId;
+            this.SelectSceneEditableFromMainUi(SceneEditableKind.LocalBgPart, this.selectedLocalLayoutObjectId);
+        }
     }
 
     private void CreateMany(LayoutProbeInstance? template, IReadOnlyList<LayoutProbeInstance> slots, int count, Vector3 basePosition, LocalLayoutTransformMode mode)
@@ -1523,7 +2011,10 @@ public sealed class MainWindow : Window
             this.runtime.PlayerPosition);
         var last = created.LastOrDefault();
         if (last != null)
+        {
             this.selectedLocalLayoutObjectId = last.Id;
+            this.SelectSceneEditableFromMainUi(SceneEditableKind.LocalBgPart, last.Id);
+        }
     }
 
     private void DrawBgPartSelectionControls()
@@ -1639,7 +2130,10 @@ public sealed class MainWindow : Window
             ImGui.PushID(instance.Id);
             ImGui.TableSetColumnIndex(0);
             if (ImGui.Selectable("选中", string.Equals(this.selectedLocalLayoutObjectId, instance.Id, StringComparison.Ordinal)))
+            {
                 this.selectedLocalLayoutObjectId = instance.Id;
+                this.SelectSceneEditableFromMainUi(SceneEditableKind.LocalBgPart, instance.Id);
+            }
             ImGui.TableSetColumnIndex(1);
             ImGui.TextWrapped(instance.InstanceId);
             ImGui.TableSetColumnIndex(2);
@@ -1704,7 +2198,10 @@ public sealed class MainWindow : Window
         {
             this.localLayoutObjects.Delete(deleteId);
             if (string.Equals(this.selectedLocalLayoutObjectId, deleteId, StringComparison.Ordinal))
+            {
                 this.selectedLocalLayoutObjectId = string.Empty;
+                this.sceneEditorSelection.Clear(SceneEditorSelectionSource.MainUi);
+            }
         }
     }
 
@@ -2117,6 +2614,7 @@ public sealed class MainWindow : Window
         ImGui.EndDisabled();
         var selectedWriteMode = selected.TransformMode;
         var fullLayoutNeedsConfirmation = selectedWriteMode == LocalLayoutTransformMode.FullLayoutWithCollision && !this.confirmFullLayoutCollisionMode;
+        var disabled = this.localLayoutObjects.IsBusy || !this.realNpcSpawn.EnableUnsafeNativeWrites || selected.IsDuplicate || selected.IsRestored || selected.IsRenderInvalid || fullLayoutNeedsConfirmation;
         ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), selectedWriteMode == LocalLayoutTransformMode.VisualOnly
             ? "当前写入路径：Graphics.Scene.Object"
             : "当前写入路径：LayoutInstance transform");
@@ -2124,18 +2622,23 @@ public sealed class MainWindow : Window
             ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "危险模式需要二次确认。");
 
         ImGui.TextWrapped("World Transform：普通本体场景物体的 Position / Rotation / Scale 均为场景绝对值，不叠加 carrier/local rotation。");
+        ImGui.BeginDisabled(disabled);
+        var transformChanged = false;
         var editPosition = selected.CurrentPosition;
-        if (ImGui.InputFloat("World Position X", ref editPosition.X)) selected.CurrentPosition = editPosition;
-        if (ImGui.InputFloat("World Position Y", ref editPosition.Y)) selected.CurrentPosition = editPosition;
-        if (ImGui.InputFloat("World Position Z", ref editPosition.Z)) selected.CurrentPosition = editPosition;
+        if (ImGui.InputFloat("World Position X", ref editPosition.X)) { selected.CurrentPosition = editPosition; transformChanged = true; }
+        if (ImGui.InputFloat("World Position Y", ref editPosition.Y)) { selected.CurrentPosition = editPosition; transformChanged = true; }
+        if (ImGui.InputFloat("World Position Z", ref editPosition.Z)) { selected.CurrentPosition = editPosition; transformChanged = true; }
         var rotationDegrees = new Vector3(RadiansToDegrees(selected.CurrentRotationEuler.X), RadiansToDegrees(selected.CurrentRotationEuler.Y), RadiansToDegrees(selected.CurrentRotationEuler.Z));
-        if (ImGui.InputFloat("World Pitch X (deg)", ref rotationDegrees.X)) selected.CurrentRotationEuler = new Vector3(DegreesToRadians(rotationDegrees.X), selected.CurrentRotationEuler.Y, selected.CurrentRotationEuler.Z);
-        if (ImGui.InputFloat("World Yaw Y (deg)", ref rotationDegrees.Y)) selected.CurrentRotationEuler = new Vector3(selected.CurrentRotationEuler.X, DegreesToRadians(rotationDegrees.Y), selected.CurrentRotationEuler.Z);
-        if (ImGui.InputFloat("World Roll Z (deg)", ref rotationDegrees.Z)) selected.CurrentRotationEuler = new Vector3(selected.CurrentRotationEuler.X, selected.CurrentRotationEuler.Y, DegreesToRadians(rotationDegrees.Z));
+        if (ImGui.InputFloat("World Pitch X (deg)", ref rotationDegrees.X)) { selected.CurrentRotationEuler = new Vector3(DegreesToRadians(rotationDegrees.X), selected.CurrentRotationEuler.Y, selected.CurrentRotationEuler.Z); transformChanged = true; }
+        if (ImGui.InputFloat("World Yaw Y (deg)", ref rotationDegrees.Y)) { selected.CurrentRotationEuler = new Vector3(selected.CurrentRotationEuler.X, DegreesToRadians(rotationDegrees.Y), selected.CurrentRotationEuler.Z); transformChanged = true; }
+        if (ImGui.InputFloat("World Roll Z (deg)", ref rotationDegrees.Z)) { selected.CurrentRotationEuler = new Vector3(selected.CurrentRotationEuler.X, selected.CurrentRotationEuler.Y, DegreesToRadians(rotationDegrees.Z)); transformChanged = true; }
         var editScale = selected.CurrentScale;
-        if (ImGui.InputFloat("World Scale X", ref editScale.X)) selected.CurrentScale = Vector3.Max(editScale, new Vector3(0.01f));
-        if (ImGui.InputFloat("World Scale Y", ref editScale.Y)) selected.CurrentScale = Vector3.Max(editScale, new Vector3(0.01f));
-        if (ImGui.InputFloat("World Scale Z", ref editScale.Z)) selected.CurrentScale = Vector3.Max(editScale, new Vector3(0.01f));
+        if (ImGui.InputFloat("World Scale X", ref editScale.X)) { selected.CurrentScale = Vector3.Max(editScale, new Vector3(0.01f)); transformChanged = true; }
+        if (ImGui.InputFloat("World Scale Y", ref editScale.Y)) { selected.CurrentScale = Vector3.Max(editScale, new Vector3(0.01f)); transformChanged = true; }
+        if (ImGui.InputFloat("World Scale Z", ref editScale.Z)) { selected.CurrentScale = Vector3.Max(editScale, new Vector3(0.01f)); transformChanged = true; }
+        if (transformChanged)
+            this.localLayoutObjects.ApplyVisualTransform(selected.Id, selected.CurrentPosition, selected.CurrentRotationEuler, selected.CurrentScale);
+        ImGui.EndDisabled();
         EditString("custom mdl path", selected.CustomModelPath, 512, value => selected.CustomModelPath = value);
         ImGui.TextWrapped($"render invalid：{selected.IsRenderInvalid}");
         ImGui.TextWrapped($"transform disabled reason：{selected.TransformWriteDisabledReason}");
@@ -2156,7 +2659,6 @@ public sealed class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(selected.GraphicsSafetyDump))
             ImGui.TextWrapped($"Graphics 安全状态：{selected.GraphicsSafetyDump}");
 
-        var disabled = this.localLayoutObjects.IsBusy || !this.realNpcSpawn.EnableUnsafeNativeWrites || selected.IsDuplicate || selected.IsRestored || selected.IsRenderInvalid || fullLayoutNeedsConfirmation;
         if (selected.IsRenderInvalid)
             ImGui.TextColored(new Vector4(1f, 0.35f, 0.25f, 1f), "当前实例 render 已失效，不能再写 Graphics.Scene.Object transform。");
         ImGui.BeginDisabled(disabled);
@@ -2195,6 +2697,7 @@ public sealed class MainWindow : Window
         {
             this.localLayoutObjects.Delete(selected.Id);
             this.selectedLocalLayoutObjectId = string.Empty;
+            this.sceneEditorSelection.Clear(SceneEditorSelectionSource.MainUi);
         }
         ImGui.EndDisabled();
 
@@ -2203,6 +2706,7 @@ public sealed class MainWindow : Window
         {
             this.localLayoutObjects.ForceRemoveInstance(selected.Id);
             this.selectedLocalLayoutObjectId = string.Empty;
+            this.sceneEditorSelection.Clear(SceneEditorSelectionSource.MainUi);
         }
         ImGui.EndDisabled();
     }
@@ -2224,6 +2728,7 @@ public sealed class MainWindow : Window
         {
             var instance = this.localLights.CreateDebugPointAt(this.runtime.PlayerPosition ?? Vector3.Zero);
             this.selectedLocalLightId = instance.Id;
+            this.SelectSceneEditableFromMainUi(SceneEditableKind.LocalLight, instance.Id);
         }
 
         ImGui.SameLine();
@@ -2231,6 +2736,7 @@ public sealed class MainWindow : Window
         {
             var instance = this.localLights.Create(LocalLightKind.Point, "Point Light", this.runtime.PlayerPosition ?? Vector3.Zero, Vector3.Zero, Vector3.One);
             this.selectedLocalLightId = instance.Id;
+            this.SelectSceneEditableFromMainUi(SceneEditableKind.LocalLight, instance.Id);
         }
 
         ImGui.SameLine();
@@ -2238,6 +2744,7 @@ public sealed class MainWindow : Window
         {
             var instance = this.localLights.Create(LocalLightKind.Spot, "Spot Light", this.runtime.PlayerPosition ?? Vector3.Zero, Vector3.Zero, Vector3.One);
             this.selectedLocalLightId = instance.Id;
+            this.SelectSceneEditableFromMainUi(SceneEditableKind.LocalLight, instance.Id);
         }
 
         ImGui.SameLine();
@@ -2245,6 +2752,7 @@ public sealed class MainWindow : Window
         {
             var instance = this.localLights.Create(LocalLightKind.Area, "Area Light", this.runtime.PlayerPosition ?? Vector3.Zero, Vector3.Zero, Vector3.One);
             this.selectedLocalLightId = instance.Id;
+            this.SelectSceneEditableFromMainUi(SceneEditableKind.LocalLight, instance.Id);
         }
 
         if (!unsafeEnabled)
@@ -2255,6 +2763,7 @@ public sealed class MainWindow : Window
         {
             this.localLights.RequestDeleteAll();
             this.selectedLocalLightId = string.Empty;
+            this.sceneEditorSelection.Clear(SceneEditorSelectionSource.MainUi);
         }
 
         ImGui.Separator();
@@ -2277,7 +2786,10 @@ public sealed class MainWindow : Window
                 var label = $"{light.Name} | {light.LightKind} | {(light.IsNativeCreated ? "native" : "no native")}##{light.Id}";
                 var selected = string.Equals(light.Id, this.selectedLocalLightId, StringComparison.OrdinalIgnoreCase);
                 if (ImGui.Selectable(label, selected))
+                {
                     this.selectedLocalLightId = light.Id;
+                    this.SelectSceneEditableFromMainUi(SceneEditableKind.LocalLight, light.Id);
+                }
                 if (selected)
                     ImGui.SetItemDefaultFocus();
             }
@@ -2323,15 +2835,29 @@ public sealed class MainWindow : Window
 
             ImGui.Separator();
             ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "Transform");
+            var transformChanged = false;
+            ImGui.BeginDisabled(!unsafeEnabled);
             var position = selectedLight.Position;
             if (ImGui.InputFloat3("Position X/Y/Z", ref position))
+            {
                 selectedLight.Position = position;
+                transformChanged = true;
+            }
             var rotationDegrees = RadiansVectorToDegrees(selectedLight.Rotation);
             if (ImGui.InputFloat3("Rotation Pitch/Yaw/Roll (deg)", ref rotationDegrees))
+            {
                 selectedLight.Rotation = DegreesVectorToRadians(rotationDegrees);
+                transformChanged = true;
+            }
             var scale = selectedLight.Scale;
             if (ImGui.InputFloat3("Scale X/Y/Z", ref scale))
+            {
                 selectedLight.Scale = scale;
+                transformChanged = true;
+            }
+            if (transformChanged)
+                this.localLights.RequestApply(selectedLight.Id);
+            ImGui.EndDisabled();
 
             if (ImGui.Button("移动到玩家当前位置"))
             {
@@ -2388,6 +2914,7 @@ public sealed class MainWindow : Window
             {
                 this.localLights.RequestDelete(selectedLight.Id);
                 this.selectedLocalLightId = string.Empty;
+                this.sceneEditorSelection.Clear(SceneEditorSelectionSource.MainUi);
             }
 
             if (!unsafeEnabled)
@@ -2497,29 +3024,10 @@ public sealed class MainWindow : Window
             ImGui.TextUnformatted(preferredCount > 0 ? $"是 ({preferredCount})" : "否");
             ImGui.TableSetColumnIndex(9);
             var templateSlot = slots.OrderBy(slot => slot.Address).FirstOrDefault();
-            ImGui.BeginDisabled(templateSlot == null);
-            if (ImGui.Button("设为模板"))
-            {
-                this.templateBgPartAddress = templateSlot!.Address;
-                this.layoutBatchCustomMdlPath = templateSlot.ResourcePath;
-            }
-            ImGui.EndDisabled();
-            ImGui.SameLine();
-            ImGui.BeginDisabled(templateSlot == null || !this.runtime.PlayerPosition.HasValue || !this.realNpcSpawn.EnableUnsafeNativeWrites || this.localLayoutObjects.IsBusy || this.localLayoutObjects.IsCreateQueueActive);
+            var fullLayoutBlocked = this.localLayoutFullCollisionMode && !this.confirmFullLayoutCollisionMode;
+            ImGui.BeginDisabled(templateSlot == null || !this.realNpcSpawn.EnableUnsafeNativeWrites || this.localLayoutObjects.IsBusy || this.localLayoutObjects.IsCreateQueueActive || fullLayoutBlocked);
             if (ImGui.Button("创建 1 个复制体"))
-            {
-                var created = this.localLayoutObjects.CreateCopyFromTemplate(
-                    templateSlot,
-                    this.AllBgParts(),
-                    this.runtime.PlayerPosition!.Value,
-                    LocalLayoutTransformMode.VisualOnly,
-                    CarrierAllocationPolicy.PreferredListThenAnyValid,
-                    this.realNpcSpawn.EnableUnsafeNativeWrites,
-                    fullLayoutConfirmed: true,
-                    defaultRotationEuler: this.layoutCopyDefaultRotationEuler,
-                    defaultScale: this.layoutCopyUseTemplateScale && templateSlot != null ? templateSlot.Scale : this.layoutCopyDefaultScale);
-                if (created != null) this.selectedLocalLayoutObjectId = created.Id;
-            }
+                this.TryCreateSingleBgPartCopy(templateSlot, "BgPartSlotPool");
             ImGui.EndDisabled();
             ImGui.PopID();
         }
@@ -3052,6 +3560,9 @@ public sealed class MainWindow : Window
             vector = new Vector3(x, y, z);
         return changed;
     }
+
+    private static bool HideLegacyCreateManyUi()
+        => true;
 
     private static void EditVector3DataDegrees(string label, Vector3Data data)
     {
