@@ -214,7 +214,32 @@ public sealed class SceneEditorOverlayWindow : Window
                 ImGui.TextDisabled(editable.ObjectKind);
             if (!string.IsNullOrWhiteSpace(editable.DataId))
                 ImGui.TextDisabled($"DataId {editable.DataId}");
+
+            var nativeRecord = this.sceneEditor.GetNativeModificationRecord(editable);
+            if (!editable.IsPlayer)
+            {
+                if (nativeRecord?.IsHidden == true)
+                {
+                    if (ImGui.Button("Restore##MiniNativeRestore"))
+                        this.sceneEditor.RestoreNativeModification(nativeRecord.RecordId);
+                }
+                else
+                {
+                    ImGui.BeginDisabled(!this.sceneEditor.AllowNativeTransformWrites);
+                    if (ImGui.Button("Hide##MiniNativeHide"))
+                        this.sceneEditor.HideNativeObject(editable);
+                    ImGui.EndDisabled();
+                    if (ImGui.IsItemHovered() && !this.sceneEditor.AllowNativeTransformWrites)
+                        ImGui.SetTooltip("Enable the existing unsafe/native write confirmation before hiding native objects.");
+                }
+
+                ImGui.SameLine();
+                ImGui.TextDisabled(nativeRecord == null ? "not recorded" : nativeRecord.Status);
+            }
         }
+
+        if (editable.Kind == SceneEditableKind.LocalActor)
+            this.DrawMiniActorActions(editable);
 
         if (editable.Kind is SceneEditableKind.LocalBgPart or SceneEditableKind.NativeBgPart)
             this.DrawMiniBgPartActions(editable);
@@ -223,6 +248,9 @@ public sealed class SceneEditorOverlayWindow : Window
             this.DrawMiniTransformEditor(editable);
         else
             DrawReadOnlyTransform(editable);
+
+        if (editable.Kind == SceneEditableKind.LocalLight)
+            this.DrawMiniLocalLightControls(editable);
 
         ImGui.End();
     }
@@ -265,6 +293,119 @@ public sealed class SceneEditorOverlayWindow : Window
             this.sceneEditor.TryProtectBgPart(editable);
     }
 
+    private void DrawMiniActorActions(SceneEditableRef editable)
+    {
+        var actor = this.sceneEditor.GetLocalActor(editable.RuntimeId);
+        if (actor == null)
+            return;
+
+        ImGui.Separator();
+        ImGui.TextDisabled("Actor");
+        var lookAt = actor.LookAtPlayerEnabled;
+        if (ImGui.Checkbox("Look at player##MiniActorLookAt", ref lookAt))
+        {
+            actor.LookAtPlayerEnabled = lookAt;
+            this.sceneEditor.UpdateLocalActorLookAt(actor.RuntimeId, actor.LookAtPlayerEnabled, actor.LookAtRadius);
+        }
+
+        var radius = actor.LookAtRadius <= 0.1f ? 8f : actor.LookAtRadius;
+        if (DrawCompactFloatControl("Look radius##MiniActorLookRadius", ref radius, 0.1f, 0.1f, 1f, 0.1f, 80f))
+        {
+            actor.LookAtRadius = MathF.Max(0.1f, radius);
+            this.sceneEditor.UpdateLocalActorLookAt(actor.RuntimeId, actor.LookAtPlayerEnabled, actor.LookAtRadius);
+        }
+
+        var animation = (int)Math.Min(actor.CurrentAnimationId == 0 ? actor.DefaultAnimationId : actor.CurrentAnimationId, int.MaxValue);
+        if (DrawCompactIntControl("Animation ID##MiniActorAnimation", ref animation, 1, 0, int.MaxValue))
+            actor.CurrentAnimationId = (uint)Math.Max(0, animation);
+
+        if (ImGui.Button("Play##MiniActorPlay"))
+            this.sceneEditor.PlayLocalActorAnimation(actor.RuntimeId, actor.CurrentAnimationId);
+        ImGui.SameLine();
+        if (ImGui.Button("Idle##MiniActorIdle"))
+            this.sceneEditor.StopLocalActorAnimation(actor.RuntimeId);
+    }
+
+    private void DrawMiniLocalLightControls(SceneEditableRef editable)
+    {
+        var light = this.sceneEditor.GetLocalLight(editable.RuntimeId);
+        if (light == null)
+            return;
+
+        ImGui.Separator();
+        ImGui.TextDisabled("Local Light");
+        var changed = false;
+        var color = light.ColorRgb;
+        changed |= DrawCompactVector3("RGB##MiniLightRgb", ref color, 0.1f, 0f, 1f);
+        light.ColorRgb = Vector3.Clamp(color, Vector3.Zero, Vector3.One);
+
+        var intensity = light.Intensity;
+        if (DrawCompactFloatControl("Intensity##MiniLightIntensity", ref intensity, 0.1f, 0.01f, 1f, 0f, float.MaxValue))
+        {
+            light.Intensity = MathF.Max(0f, intensity);
+            changed = true;
+        }
+
+        var range = light.Range;
+        if (DrawCompactFloatControl("Range##MiniLightRange", ref range, 0.1f, 0.01f, 1f, 0f, float.MaxValue))
+        {
+            light.Range = MathF.Max(0f, range);
+            changed = true;
+        }
+
+        var falloff = light.Falloff;
+        if (DrawCompactFloatControl("Falloff##MiniLightFalloff", ref falloff, 0.1f, 0.01f, 1f, 0f, float.MaxValue))
+        {
+            light.Falloff = MathF.Max(0f, falloff);
+            changed = true;
+        }
+
+        var spot = light.LightAngle;
+        if (DrawCompactFloatControl("SpotAngle##MiniLightSpot", ref spot, 0.1f, 0.01f, 1f, 0f, 90f))
+        {
+            light.LightAngle = Math.Clamp(spot, 0f, 90f);
+            changed = true;
+        }
+
+        var falloffAngle = light.FalloffAngle;
+        if (DrawCompactFloatControl("FalloffAngle##MiniLightFalloffAngle", ref falloffAngle, 0.1f, 0.01f, 1f, 0f, 90f))
+        {
+            light.FalloffAngle = Math.Clamp(falloffAngle, 0f, 90f);
+            changed = true;
+        }
+
+        var areaX = light.AreaAngleX;
+        if (DrawCompactFloatControl("Area X##MiniLightAreaX", ref areaX, 0.1f, 0.01f, 1f, 0f, 90f))
+        {
+            light.AreaAngleX = Math.Clamp(areaX, 0f, 90f);
+            changed = true;
+        }
+
+        var areaY = light.AreaAngleY;
+        if (DrawCompactFloatControl("Area Y##MiniLightAreaY", ref areaY, 0.1f, 0.01f, 1f, 0f, 90f))
+        {
+            light.AreaAngleY = Math.Clamp(areaY, 0f, 90f);
+            changed = true;
+        }
+
+        var specular = light.EnableSpecular;
+        if (ImGui.Checkbox("Specular highlights##MiniLightSpecular", ref specular))
+        {
+            light.EnableSpecular = specular;
+            changed = true;
+        }
+
+        var shadows = light.EnableDynamicShadows;
+        if (ImGui.Checkbox("Dynamic shadows##MiniLightShadows", ref shadows))
+        {
+            light.EnableDynamicShadows = shadows;
+            changed = true;
+        }
+
+        if (changed)
+            this.sceneEditor.RequestLocalLightApply(light.Id);
+    }
+
     private void DrawMiniTransformEditor(SceneEditableRef editable)
     {
         this.panelTransformState.Bind(editable, this.sceneEditor.TransformGeneration);
@@ -272,21 +413,21 @@ public sealed class SceneEditorOverlayWindow : Window
         var changed = false;
 
         var position = this.panelTransformState.PositionInput;
-        if (InputVector3("World Position##MiniPanel", ref position))
+        if (DrawCompactVector3("World Position##MiniPanel", ref position, 0.1f))
         {
             this.panelTransformState.PositionInput = position;
             changed = true;
         }
 
         var eulerDegrees = RadiansToDegrees(this.panelTransformState.EulerInput);
-        if (InputVector3("World Rotation##MiniPanel", ref eulerDegrees))
+        if (DrawCompactVector3("World Rotation##MiniPanel", ref eulerDegrees, 0.1f))
         {
             this.panelTransformState.EulerInput = DegreesToRadians(eulerDegrees);
             changed = true;
         }
 
         var scale = this.panelTransformState.ScaleInput;
-        if (InputVector3("World Scale##MiniPanel", ref scale))
+        if (DrawCompactVector3("World Scale##MiniPanel", ref scale, 0.1f, 0.01f, float.MaxValue))
         {
             this.panelTransformState.ScaleInput = WorldTransformUtil.NormalizeScale(scale);
             changed = true;
@@ -304,6 +445,94 @@ public sealed class SceneEditorOverlayWindow : Window
         ImGui.SameLine();
         if (ImGui.Button("Save to config##MiniSaveTransform"))
             this.sceneEditor.ApplyWorldTransform(editable.Kind, editable.RuntimeId, this.panelTransformState.ToWorldTransform());
+    }
+
+    private static bool DrawCompactVector3(string label, ref Vector3 vector, float step, float min = float.MinValue, float max = float.MaxValue)
+    {
+        var changed = false;
+        ImGui.TextUnformatted(LabelText(label));
+        ImGui.SameLine();
+        var x = vector.X;
+        changed |= DrawCompactFloatControl($"X##{label}", ref x, step, step * 0.1f, step * 10f, min, max);
+        var y = vector.Y;
+        changed |= DrawCompactFloatControl($"Y##{label}", ref y, step, step * 0.1f, step * 10f, min, max);
+        var z = vector.Z;
+        changed |= DrawCompactFloatControl($"Z##{label}", ref z, step, step * 0.1f, step * 10f, min, max);
+        if (changed)
+            vector = new Vector3(x, y, z);
+        return changed;
+    }
+
+    private static bool DrawCompactFloatControl(string label, ref float value, float step = 0.1f, float shiftStep = 0.01f, float ctrlStep = 1f, float min = float.MinValue, float max = float.MaxValue)
+    {
+        var changed = false;
+        var io = ImGui.GetIO();
+        var effectiveStep = io.KeyCtrl ? ctrlStep : io.KeyShift ? shiftStep : step;
+        ImGui.PushID(label);
+        ImGui.TextUnformatted(LabelText(label));
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(74f);
+        var local = value;
+        if (ImGui.InputFloat("##value", ref local, 0f, 0f, "%.3f"))
+        {
+            value = Math.Clamp(local, min, max);
+            changed = true;
+        }
+
+        ImGui.SameLine();
+        if (ImGui.SmallButton("-"))
+        {
+            value = Math.Clamp(value - effectiveStep, min, max);
+            changed = true;
+        }
+
+        ImGui.SameLine();
+        if (ImGui.SmallButton("+"))
+        {
+            value = Math.Clamp(value + effectiveStep, min, max);
+            changed = true;
+        }
+
+        ImGui.PopID();
+        return changed;
+    }
+
+    private static bool DrawCompactIntControl(string label, ref int value, int step, int min, int max)
+    {
+        var changed = false;
+        ImGui.PushID(label);
+        ImGui.TextUnformatted(LabelText(label));
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(74f);
+        var local = value;
+        if (ImGui.InputInt("##value", ref local, 0))
+        {
+            value = Math.Clamp(local, min, max);
+            changed = true;
+        }
+
+        ImGui.SameLine();
+        if (ImGui.SmallButton("-"))
+        {
+            value = Math.Clamp(value - step, min, max);
+            changed = true;
+        }
+
+        ImGui.SameLine();
+        if (ImGui.SmallButton("+"))
+        {
+            value = Math.Clamp(value + step, min, max);
+            changed = true;
+        }
+
+        ImGui.PopID();
+        return changed;
+    }
+
+    private static string LabelText(string label)
+    {
+        var index = label.IndexOf("##", StringComparison.Ordinal);
+        return index < 0 ? label : label[..index];
     }
 
     private static void DrawReadOnlyTransform(SceneEditableRef editable)
@@ -648,6 +877,7 @@ public sealed class SceneEditorOverlayWindow : Window
         {
             SceneEditableKind.LocalActor => ActorColor,
             SceneEditableKind.NativeActor => ActorColor,
+            SceneEditableKind.EventNpc => ActorColor,
             SceneEditableKind.Player => ActorColor,
             SceneEditableKind.LocalBgPart => BgPartColor,
             SceneEditableKind.NativeBgPart => BgPartColor,

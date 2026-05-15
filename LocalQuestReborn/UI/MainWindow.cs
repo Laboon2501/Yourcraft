@@ -204,6 +204,12 @@ public sealed class MainWindow : Window
             ImGui.EndTabItem();
         }
 
+        if (ImGui.BeginTabItem("隐藏列表"))
+        {
+            this.DrawSceneEditorHiddenList();
+            ImGui.EndTabItem();
+        }
+
         if (ImGui.BeginTabItem("BgPart Slot Pool"))
         {
             this.DrawBgPartPool();
@@ -442,6 +448,123 @@ public sealed class MainWindow : Window
             this.localLayoutFullCollisionMode && this.confirmFullLayoutCollisionMode;
     }
 
+    private void DrawSceneEditorHiddenList()
+    {
+        this.SyncSceneEditorBgPartCopyMode();
+        var records = this.sceneEditor.NativeModificationRecords.ToList();
+        ImGui.TextWrapped($"Hidden/native modification records: {records.Count}");
+        ImGui.TextDisabled(this.sceneEditor.LastStatus);
+
+        var selected = this.sceneEditor.GetSelectedEditable();
+        var selectedRecord = selected == null ? null : this.sceneEditor.GetNativeModificationRecord(selected);
+        ImGui.BeginDisabled(selectedRecord == null);
+        if (ImGui.Button("恢复选中"))
+            this.sceneEditor.RestoreNativeModification(selectedRecord!.RecordId);
+        ImGui.EndDisabled();
+        ImGui.SameLine();
+        if (ImGui.Button("恢复全部隐藏对象"))
+            this.sceneEditor.RestoreAllHiddenNativeObjects();
+        ImGui.SameLine();
+        if (ImGui.Button("恢复全部游戏原生修改"))
+            this.sceneEditor.RestoreAllNativeModifications();
+        ImGui.SameLine();
+        if (ImGui.Button("恢复全部原生 NPC / EventNPC 修改"))
+            this.RestoreSceneEditorRecords(records.Where(item => item.IsModified && item.Kind is SceneEditableKind.NativeActor or SceneEditableKind.EventNpc));
+        if (ImGui.Button("恢复全部原生 BgPart 修改"))
+            this.RestoreSceneEditorRecords(records.Where(item => item.IsModified && item.Kind == SceneEditableKind.NativeBgPart));
+        ImGui.SameLine();
+        if (ImGui.Button("恢复全部原生 Light 修改"))
+            this.RestoreSceneEditorRecords(records.Where(item => item.IsModified && item.Kind == SceneEditableKind.NativeLight));
+        ImGui.SameLine();
+        if (ImGui.Button("清理失效记录"))
+            this.sceneEditor.CleanupInactiveNativeModificationRecords();
+
+        ImGui.Separator();
+        this.DrawSceneEditorRecordSection("隐藏 BgPart", records.Where(item => item.IsHidden && item.Kind == SceneEditableKind.NativeBgPart));
+        this.DrawSceneEditorRecordSection("隐藏 Light", records.Where(item => item.IsHidden && item.Kind == SceneEditableKind.NativeLight));
+        this.DrawSceneEditorRecordSection("隐藏 NPC / EventNPC", records.Where(item => item.IsHidden && item.Kind is SceneEditableKind.NativeActor or SceneEditableKind.EventNpc));
+        ImGui.Separator();
+        ImGui.TextWrapped("游戏原生修改");
+        this.DrawSceneEditorRecordSection("原生 NPC / EventNPC 修改", records.Where(item => item.IsModified && item.Kind is SceneEditableKind.NativeActor or SceneEditableKind.EventNpc));
+        this.DrawSceneEditorRecordSection("原生 BgPart 修改", records.Where(item => item.IsModified && item.Kind == SceneEditableKind.NativeBgPart));
+        this.DrawSceneEditorRecordSection("原生 Light 修改", records.Where(item => item.IsModified && item.Kind == SceneEditableKind.NativeLight));
+    }
+
+    private void RestoreSceneEditorRecords(IEnumerable<SceneEditorNativeModificationRecord> records)
+    {
+        foreach (var record in records.Select(item => item.RecordId).ToList())
+            this.sceneEditor.RestoreNativeModification(record);
+    }
+
+    private void DrawSceneEditorRecordSection(string title, IEnumerable<SceneEditorNativeModificationRecord> source)
+    {
+        var rows = source.ToList();
+        if (!ImGui.CollapsingHeader($"{title} ({rows.Count})", ImGuiTreeNodeFlags.DefaultOpen))
+            return;
+
+        if (rows.Count == 0)
+        {
+            ImGui.TextDisabled("No records.");
+            return;
+        }
+
+        if (!ImGui.BeginTable($"SceneEditorRecords-{title}", 10, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 240f)))
+            return;
+
+        ImGui.TableSetupColumn("type");
+        ImGui.TableSetupColumn("name");
+        ImGui.TableSetupColumn("object");
+        ImGui.TableSetupColumn("mdl");
+        ImGui.TableSetupColumn("territory");
+        ImGui.TableSetupColumn("stable key");
+        ImGui.TableSetupColumn("original");
+        ImGui.TableSetupColumn("current");
+        ImGui.TableSetupColumn("status");
+        ImGui.TableSetupColumn("actions");
+        ImGui.TableHeadersRow();
+
+        string? restoreId = null;
+        string? deleteId = null;
+        foreach (var record in rows)
+        {
+            ImGui.TableNextRow();
+            ImGui.PushID(record.RecordId);
+            ImGui.TableSetColumnIndex(0);
+            ImGui.TextUnformatted(record.Kind.ToString());
+            ImGui.TableSetColumnIndex(1);
+            ImGui.TextWrapped(record.DisplayName);
+            ImGui.TableSetColumnIndex(2);
+            ImGui.TextWrapped($"idx={record.ObjectIndexAtRecordTime}; data={record.DataId}");
+            ImGui.TableSetColumnIndex(3);
+            ImGui.TextWrapped(string.IsNullOrWhiteSpace(record.MdlPath) ? "unknown" : record.MdlPath);
+            ImGui.TableSetColumnIndex(4);
+            ImGui.TextUnformatted(record.TerritoryId.ToString());
+            ImGui.TableSetColumnIndex(5);
+            ImGui.TextWrapped(record.StableKey);
+            ImGui.TableSetColumnIndex(6);
+            ImGui.TextWrapped($"P {FormatVector(ToVector3(record.OriginalPosition))}\nR {FormatVector(RadiansVectorToDegrees(ToVector3(record.OriginalRotationEuler)))}\nS {FormatVector(ToVector3(record.OriginalScale))}");
+            ImGui.TableSetColumnIndex(7);
+            ImGui.TextWrapped($"P {FormatVector(ToVector3(record.CurrentPosition))}\nR {FormatVector(RadiansVectorToDegrees(ToVector3(record.CurrentRotationEuler)))}\nS {FormatVector(ToVector3(record.CurrentScale))}");
+            ImGui.TableSetColumnIndex(8);
+            ImGui.TextWrapped($"{record.Status}\nreason={record.Reason}\nhidden={record.IsHidden}; modified={record.IsModified}");
+            if (!string.IsNullOrWhiteSpace(record.PreferredModifyStatus))
+                ImGui.TextWrapped(record.PreferredModifyStatus);
+            ImGui.TableSetColumnIndex(9);
+            if (ImGui.Button("Restore"))
+                restoreId = record.RecordId;
+            if (ImGui.Button("Delete record"))
+                deleteId = record.RecordId;
+            ImGui.PopID();
+        }
+
+        ImGui.EndTable();
+
+        if (restoreId != null)
+            this.sceneEditor.RestoreNativeModification(restoreId);
+        if (deleteId != null)
+            this.sceneEditor.RemoveNativeModificationRecord(deleteId);
+    }
+
     private void DrawSceneEditorModeButtons(SceneEditableRef selected)
     {
         if (!selected.TransformEditable)
@@ -604,6 +727,28 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"World Rotation: {rotationText}");
         ImGui.TextWrapped($"World Scale: {FormatVector(selected.Transform.WorldScale)}");
 
+        var nativeRecord = this.sceneEditor.GetNativeModificationRecord(selected);
+        if (selected.IsNativeGameObject && selected.Kind != SceneEditableKind.Player)
+        {
+            ImGui.TextDisabled(nativeRecord == null
+                ? "Native modification record: none"
+                : $"Native modification record: {nativeRecord.Status}; hidden={nativeRecord.IsHidden}; modified={nativeRecord.IsModified}");
+            if (nativeRecord?.IsHidden == true)
+            {
+                if (ImGui.Button("恢复此原生对象"))
+                    this.sceneEditor.RestoreNativeModification(nativeRecord.RecordId);
+            }
+            else
+            {
+                ImGui.BeginDisabled(!this.sceneEditor.AllowNativeTransformWrites);
+                if (ImGui.Button("隐藏此原生对象"))
+                    this.sceneEditor.HideNativeObject(selected);
+                ImGui.EndDisabled();
+                if (ImGui.IsItemHovered() && !this.sceneEditor.AllowNativeTransformWrites)
+                    ImGui.SetTooltip("Enable the existing unsafe/native write confirmation before hiding native objects.");
+            }
+        }
+
         switch (selected.Kind)
         {
             case SceneEditableKind.NativeBgPart:
@@ -613,8 +758,11 @@ public sealed class MainWindow : Window
                 break;
             case SceneEditableKind.Player:
             case SceneEditableKind.NativeActor:
+            case SceneEditableKind.EventNpc:
                 ImGui.TextWrapped(selected.Kind == SceneEditableKind.Player
                     ? "Selected target is LocalPlayer. Transform editing is always disabled."
+                    : selected.Kind == SceneEditableKind.EventNpc
+                        ? "Selected target is an EventNPC/interactable NPC. Restore it from the hidden list if you hide or move it."
                     : selected.TransformEditable
                         ? "Selected target is a native NPC/actor. Experimental transform editing is enabled."
                         : "Selected target is a native NPC/actor. Enable unsafe/native writes to move it.");

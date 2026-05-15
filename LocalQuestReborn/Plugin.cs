@@ -164,6 +164,9 @@ public sealed class Plugin : IDalamudPlugin
             objectTable,
             this.layoutProbe,
             () => this.runtime.PlayerPosition,
+            this.configuration,
+            () => this.runtime.TerritoryType,
+            () => this.pluginInterface.SavePluginConfig(this.configuration),
             log);
         this.bgPartVisualProbe = new BgPartVisualTransformProbeService();
         this.rotationMatrixExperiment = new RotationMatrixExperimentService(this.bgPartVisualProbe);

@@ -27,5 +27,7 @@ public sealed class Configuration : IPluginConfiguration
 
     public List<PreferredModifyBgPartResourcePath> PreferredModifyBgPartResourcePaths { get; set; } = [];
 
+    public List<SceneEditorNativeModificationRecord> SceneEditorNativeModifications { get; set; } = [];
+
     public List<LocalLightInstance> LocalLights { get; set; } = [];
 }
