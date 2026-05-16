@@ -12,7 +12,7 @@ public sealed class QuestTrackerWindow : Window
     private readonly QuestStateService state;
 
     public QuestTrackerWindow(Configuration configuration, QuestStateService state)
-        : base("任务追踪##Tracker", ImGuiWindowFlags.NoDecoration | ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoSavedSettings | ImGuiWindowFlags.AlwaysAutoResize)
+        : base("Yourcraft Quest Tracker##YourcraftTracker", ImGuiWindowFlags.NoDecoration | ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoSavedSettings | ImGuiWindowFlags.AlwaysAutoResize)
     {
         this.configuration = configuration;
         this.state = state;
@@ -43,7 +43,7 @@ public sealed class QuestTrackerWindow : Window
 
             if (progress.Status == QuestStatus.ReadyToComplete)
             {
-                ImGui.BulletText("返回交付 NPC");
+                ImGui.BulletText(Localization.T("返回交付 NPC", "Return to the quest NPC"));
             }
             else
             {

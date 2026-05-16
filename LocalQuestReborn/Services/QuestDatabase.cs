@@ -134,8 +134,8 @@ public sealed class QuestDatabase
         var pack = new QuestPack
         {
             PackId = packId,
-            PackName = string.IsNullOrWhiteSpace(packName) ? "LocalQuestReborn 当前任务包" : packName.Trim(),
-            Author = string.IsNullOrWhiteSpace(author) ? "LocalQuestReborn" : author.Trim(),
+            PackName = string.IsNullOrWhiteSpace(packName) ? "Yourcraft 当前任务包" : packName.Trim(),
+            Author = string.IsNullOrWhiteSpace(author) ? "Yourcraft" : author.Trim(),
             Version = "1.0.0",
             Description = description ?? "从当前 quests.json 导出的任务包。",
             Npcs = CloneViaJson(this.Npcs),
@@ -162,8 +162,8 @@ public sealed class QuestDatabase
         var pack = new QuestPack
         {
             PackId = packId,
-            PackName = string.IsNullOrWhiteSpace(packName) ? "LocalQuestReborn 当前任务包" : packName.Trim(),
-            Author = string.IsNullOrWhiteSpace(author) ? "LocalQuestReborn" : author.Trim(),
+            PackName = string.IsNullOrWhiteSpace(packName) ? "Yourcraft 当前任务包" : packName.Trim(),
+            Author = string.IsNullOrWhiteSpace(author) ? "Yourcraft" : author.Trim(),
             Version = "1.0.0",
             Description = description ?? "从当前 quests.json 导出的任务包。",
             Npcs = CloneViaJson(this.Npcs),
@@ -305,7 +305,7 @@ public sealed class QuestDatabase
         var npc = new CustomNpc
         {
             Id = $"local-npc-{timestamp}",
-            Name = "本地 NPC",
+            Name = "Yourcraft Actor",
             TerritoryType = ToTerritoryType(territoryType),
             Position = ToVector3Data(playerPosition),
             InteractRadius = 5f,
@@ -328,7 +328,7 @@ public sealed class QuestDatabase
             StartDialogue =
             [
                 "你能看见我吗？",
-                "如果能，那说明本地 NPC 系统已经工作了。",
+                "如果能，那说明 Yourcraft Actor 系统已经工作了。",
             ],
             AcceptText = "接受测试任务",
             Objectives =
@@ -346,9 +346,9 @@ public sealed class QuestDatabase
             ],
             CompleteDialogue =
             [
-                "很好，本地 NPC 与任务对话都已经连通。",
+                "很好，Yourcraft Actor 与任务对话都已经连通。",
             ],
-            RewardsText = "奖励：本地 NPC 系统测试通过。",
+            RewardsText = "奖励：Yourcraft Actor 系统测试通过。",
         };
 
         this.Quests.Add(quest);

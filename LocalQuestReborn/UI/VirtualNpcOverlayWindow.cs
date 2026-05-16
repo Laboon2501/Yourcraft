@@ -10,7 +10,7 @@ public sealed class VirtualNpcOverlayWindow : Window
     private readonly QuestRuntimeService runtime;
 
     public VirtualNpcOverlayWindow(QuestRuntimeService runtime)
-        : base("本地 NPC 站牌##VirtualNpcOverlay", ImGuiWindowFlags.NoDecoration | ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoSavedSettings | ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoFocusOnAppearing)
+        : base("Yourcraft Actor Overlay##YourcraftVirtualActorOverlay", ImGuiWindowFlags.NoDecoration | ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoSavedSettings | ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoFocusOnAppearing)
     {
         this.runtime = runtime;
         this.IsOpen = true;
@@ -37,7 +37,7 @@ public sealed class VirtualNpcOverlayWindow : Window
         var nearestInteractable = this.runtime.NearbyNpc;
 
         ImGui.PushTextWrapPos(310f);
-        ImGui.TextColored(new Vector4(0.96f, 0.78f, 0.28f, 1f), "本地 NPC");
+        ImGui.TextColored(new Vector4(0.96f, 0.78f, 0.28f, 1f), Localization.T("Yourcraft Actor", "Yourcraft Actor"));
 
         foreach (var item in npcs)
         {
@@ -55,12 +55,14 @@ public sealed class VirtualNpcOverlayWindow : Window
             ImGui.SameLine();
             ImGui.TextColored(color, npc.Name);
 
-            var distanceText = item.XZDistance == null ? "距离：不可用" : $"距离：{item.XZDistance.Value:F1}m";
+            var distanceText = item.XZDistance == null
+                ? Localization.T("距离：不可用", "Distance: unavailable")
+                : Localization.T($"距离：{item.XZDistance.Value:F1}m", $"Distance: {item.XZDistance.Value:F1}m");
             if (isNear || item.IsInteractable)
             {
                 ImGui.TextUnformatted(distanceText);
                 if (isNearestInteractable)
-                    ImGui.TextColored(new Vector4(0.45f, 1f, 0.55f, 1f), $"/lqr talk 与 {npc.Name} 交谈");
+                    ImGui.TextColored(new Vector4(0.45f, 1f, 0.55f, 1f), Localization.T($"/lqr talk 与 {npc.Name} 交谈", $"/lqr talk to speak with {npc.Name}"));
             }
             else
             {

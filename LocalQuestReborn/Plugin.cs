@@ -17,7 +17,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly IClientState clientState;
     private readonly IFramework framework;
     private readonly IPluginLog log;
-    private readonly WindowSystem windowSystem = new("本地 NPC 实验室");
+    private readonly WindowSystem windowSystem = new("Yourcraft");
 
     private readonly Configuration configuration;
     private readonly QuestDatabase database;
@@ -109,6 +109,7 @@ public sealed class Plugin : IDalamudPlugin
         this.log = log;
 
         this.configuration = this.pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        Localization.CurrentLanguage = Localization.Normalize(this.configuration.UiLanguage);
         this.database = new QuestDatabase(pluginInterface, log);
         this.runtime = new QuestRuntimeService(clientState, objectTable, this.database);
         this.experimentalNpc = new ExperimentalNpcService(log);
@@ -201,7 +202,7 @@ public sealed class Plugin : IDalamudPlugin
 
         this.commandManager.AddHandler(CommandName, new CommandInfo(this.OnCommand)
         {
-            HelpMessage = "打开本地 NPC 实验室。子命令：reload 重新读取 NPC 配置。",
+            HelpMessage = "Open Yourcraft. Subcommand: reload refreshes the saved configuration.",
         });
 
         this.InitializeDefaultRuntimeSettings();
@@ -211,7 +212,7 @@ public sealed class Plugin : IDalamudPlugin
         this.pluginInterface.UiBuilder.OpenMainUi += this.OpenMainUi;
         this.pluginInterface.UiBuilder.OpenConfigUi += this.OpenConfigUi;
 
-        this.log.Information("LocalQuestReborn initialized");
+        this.log.Information("Yourcraft initialized");
     }
 
     private void InitializeDefaultRuntimeSettings()
@@ -282,7 +283,7 @@ public sealed class Plugin : IDalamudPlugin
         this.database.Reload();
         this.realNpcSpawn.CleanupActorsForMissingNpcs();
         this.propRuntime.CleanupPropsForMissingConfigs();
-        this.log.Information("Reloaded LocalQuestReborn NPC database");
+        this.log.Information("Reloaded Yourcraft configuration");
     }
 
     private void OnFrameworkUpdate(IFramework framework)

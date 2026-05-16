@@ -11,7 +11,7 @@ public sealed class ActionTimelinePickerWindow : Window
     private readonly ActorAnimationPickerService picker;
 
     public ActionTimelinePickerWindow(ActorAnimationPickerService picker)
-        : base("动作 / 表情选择器##LocalQuestRebornActionTimelinePicker")
+        : base("Yourcraft Action Picker##YourcraftActionTimelinePicker")
     {
         this.picker = picker;
         this.SizeConstraints = new WindowSizeConstraints
@@ -26,17 +26,19 @@ public sealed class ActionTimelinePickerWindow : Window
         var request = this.picker.CurrentRequest;
         if (request == null)
         {
-            ImGui.TextDisabled("没有活动的选择目标。");
-            if (ImGui.Button("关闭"))
+            ImGui.TextDisabled(T("没有活动的选择目标。", "No active picker target."));
+            if (ImGui.Button(T("关闭", "Close")))
                 this.IsOpen = false;
             return;
         }
 
         ImGui.TextUnformatted(request.Title);
-        ImGui.TextDisabled("选择后会写入输入框；仍可手动输入任意 ActionTimelineId。");
+        ImGui.TextDisabled(T(
+            "选择后会写入输入框；仍可手动输入任意 ActionTimelineId。",
+            "Selecting an entry writes it to the field; manual ActionTimelineId input is still supported."));
 
         var mode = request.PickerMode;
-        if (ImGui.BeginCombo("列表模式", mode.ToString()))
+        if (ImGui.BeginCombo(T("列表模式", "List Mode"), mode.ToString()))
         {
             foreach (var value in Enum.GetValues<ActorAnimationPickerMode>())
             {
@@ -55,13 +57,13 @@ public sealed class ActionTimelinePickerWindow : Window
         }
 
         var search = this.picker.SearchText;
-        if (ImGui.InputText("搜索", ref search, 160))
+        if (ImGui.InputText(T("搜索", "Search"), ref search, 160))
             this.picker.SearchText = search;
         ImGui.SameLine();
-        if (ImGui.Button("刷新列表"))
+        if (ImGui.Button(T("刷新列表", "Refresh")))
             this.picker.Refresh();
         ImGui.SameLine();
-        if (ImGui.Button("关闭"))
+        if (ImGui.Button(T("关闭", "Close")))
         {
             this.picker.Close();
             this.IsOpen = false;
@@ -72,7 +74,9 @@ public sealed class ActionTimelinePickerWindow : Window
         ImGui.Separator();
 
         var entries = this.picker.Search();
-        ImGui.TextDisabled($"显示 {entries.Count} 条。ExpressionCandidates 如果无法可靠过滤，会显示候选和可搜索 ActionTimeline。");
+        ImGui.TextDisabled(T(
+            $"显示 {entries.Count} 条。ExpressionCandidates 如果无法可靠过滤，会显示候选和可搜索 ActionTimeline。",
+            $"Showing {entries.Count} entries. Expression candidates may include searchable ActionTimelines when filtering is uncertain."));
 
         if (!ImGui.BeginTable("ActionTimelinePickerTable", 7, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.ScrollY, new Vector2(0f, 360f)))
             return;
@@ -121,4 +125,6 @@ public sealed class ActionTimelinePickerWindow : Window
 
         ImGui.EndTable();
     }
+
+    private static string T(string chinese, string english) => Localization.T(chinese, english);
 }

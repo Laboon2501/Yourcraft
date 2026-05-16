@@ -1929,7 +1929,7 @@ public sealed class RealNpcSpawnService
     }
 
     private Vector3 GetDefaultActorSpawnPosition()
-        => this.TryReadLocalPlayerPosition(out var playerPosition) ? playerPosition + new Vector3(0f, 0f, 2f) : new Vector3(0f, 0f, 2f);
+        => this.TryReadLocalPlayerPosition(out var playerPosition) ? playerPosition : Vector3.Zero;
 
     private bool TryReadLocalPlayerPosition(out Vector3 position)
     {

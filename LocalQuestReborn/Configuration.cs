@@ -9,6 +9,8 @@ public sealed class Configuration : IPluginConfiguration
 {
     public int Version { get; set; } = 1;
 
+    public string UiLanguage { get; set; } = "zh";
+
     public Dictionary<string, QuestProgress> QuestProgresses { get; set; } = [];
 
     public bool ShowTracker { get; set; } = true;

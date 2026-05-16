@@ -14,7 +14,7 @@ public sealed class DialogueWindow : Window
     private string? lastQuestId;
 
     public DialogueWindow(QuestStateService state, InteractionService interaction)
-        : base("任务对话##Dialogue", ImGuiWindowFlags.NoSavedSettings | ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoCollapse)
+        : base("Yourcraft Dialogue##YourcraftDialogue", ImGuiWindowFlags.NoSavedSettings | ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoCollapse)
     {
         this.state = state;
         this.interaction = interaction;
@@ -77,7 +77,7 @@ public sealed class DialogueWindow : Window
         ImGui.SetCursorPosY(ImGui.GetWindowHeight() - 42f);
         if (!isLastLine)
         {
-            if (ImGui.Button("继续"))
+            if (ImGui.Button(Localization.T("继续", "Continue")))
                 this.lineIndex++;
         }
         else if (status == QuestStatus.NotAccepted)
@@ -90,19 +90,19 @@ public sealed class DialogueWindow : Window
         }
         else if (status == QuestStatus.ReadyToComplete)
         {
-            if (ImGui.Button("完成任务"))
+            if (ImGui.Button(Localization.T("完成任务", "Complete Quest")))
             {
                 this.state.CompleteQuest(quest);
                 this.interaction.CloseDialogue();
             }
         }
-        else if (ImGui.Button("关闭"))
+        else if (ImGui.Button(Localization.T("关闭", "Close")))
         {
             this.interaction.CloseDialogue();
         }
 
         ImGui.SameLine();
-        if (ImGui.Button("关闭##DialogueClose"))
+        if (ImGui.Button(Localization.T("关闭", "Close") + "##DialogueClose"))
             this.interaction.CloseDialogue();
     }
 

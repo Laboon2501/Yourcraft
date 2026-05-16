@@ -11,7 +11,7 @@ public sealed class InteractionHintWindow : Window
     private readonly InteractionService interaction;
 
     public InteractionHintWindow(Configuration configuration, InteractionService interaction)
-        : base("交互提示##Hint", ImGuiWindowFlags.NoDecoration | ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoSavedSettings | ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoFocusOnAppearing)
+        : base("Yourcraft Interaction Hint##YourcraftHint", ImGuiWindowFlags.NoDecoration | ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoSavedSettings | ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoFocusOnAppearing)
     {
         this.configuration = configuration;
         this.interaction = interaction;
@@ -37,6 +37,6 @@ public sealed class InteractionHintWindow : Window
         if (npc == null)
             return;
 
-        ImGui.TextColored(new Vector4(0.96f, 0.78f, 0.28f, 1f), $"按 /lqr talk 与 {npc.Name} 交谈");
+        ImGui.TextColored(new Vector4(0.96f, 0.78f, 0.28f, 1f), Localization.T($"按 /lqr talk 与 {npc.Name} 交谈", $"Use /lqr talk to speak with {npc.Name}"));
     }
 }

@@ -37,7 +37,7 @@ public sealed class SceneEditorOverlayWindow : Window
         IGameGui gameGui,
         SceneEditorService sceneEditor,
         SceneEditorSelectionService selection)
-        : base("Scene Editor Overlay##LocalQuestRebornSceneEditorOverlay",
+        : base("Yourcraft Scene Editor Overlay##YourcraftSceneEditorOverlay",
             ImGuiWindowFlags.NoDecoration |
             ImGuiWindowFlags.NoMove |
             ImGuiWindowFlags.NoSavedSettings |
@@ -212,7 +212,7 @@ public sealed class SceneEditorOverlayWindow : Window
             else if (!editable.TransformEditable)
                 ImGui.TextDisabled("Native target: read-only. Enable the existing unsafe native-write switch to move it.");
             else
-                ImGui.TextColored(new Vector4(1f, 0.68f, 0.2f, 1f), "Native transform editing is experimental.");
+                ImGui.TextColored(new Vector4(1f, 0.68f, 0.2f, 1f), "Native transform editing is enabled.");
 
             if (!string.IsNullOrWhiteSpace(editable.ObjectKind))
                 ImGui.TextDisabled(editable.ObjectKind);

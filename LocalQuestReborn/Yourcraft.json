@@ -1,0 +1,18 @@
+{
+  "Author": "Eunox",
+  "Name": "Yourcraft",
+  "Punchline": "Persistent actors and local scene editing for GPose.",
+  "Description": "Yourcraft creates and restores persistent actors, applies saved appearances, and edits local scene objects with GPose-aware rebuild support.",
+  "InternalName": "Yourcraft",
+  "AssemblyVersion": "0.1.0.0",
+  "TestingAssemblyVersion": "0.1.0.0",
+  "ApplicableVersion": "any",
+  "DalamudApiLevel": 15,
+  "LoadPriority": 0,
+  "Tags": [
+    "Yourcraft",
+    "Actor",
+    "Custom",
+    "Local"
+  ]
+}
