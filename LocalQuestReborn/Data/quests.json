@@ -187,7 +187,1052 @@
       }
     }
   ],
-  "ActorConfigs": [],
+  "ActorConfigs": [
+    {
+      "SchemaVersion": 2,
+      "ConfigId": "58a584e717384811910e3ee1f9a63f97",
+      "RuntimeId": "717846db8dd945d78741b3fe5b7ee2a5",
+      "SourceNpcPresetId": "",
+      "NpcNameSnapshot": "——MOD测试——",
+      "DisplayName": "——MOD测试——",
+      "Appearance": {
+        "sourceKind": "GlamourerDesign",
+        "sourceId": "8de7fecc-3482-4994-bc5e-07d8a1b0b540",
+        "sourceName": "——MOD测试——",
+        "sourcePath": "C:\\Users\\kiomo\\AppData\\Roaming\\XIVLauncherCN\\pluginConfigs\\Glamourer\\designs\\8de7fecc-3482-4994-bc5e-07d8a1b0b540.json",
+        "isHumanoid": true,
+        "spawnKind": "Character",
+        "sourceActorKind": "Character",
+        "objectKind": "BattleNpc",
+        "modelCharaId": 0,
+        "modelCharaOverrideId": 0,
+        "modelSkeletonId": 0,
+        "customize": {
+          "Race": 1,
+          "Sex": 0,
+          "BodyType": 1,
+          "Height": 50,
+          "Tribe": 1,
+          "Face": 5,
+          "HairStyle": 1,
+          "Highlights": 0,
+          "SkinColor": 10,
+          "EyeColorRight": 145,
+          "HairColor": 70,
+          "HighlightsColor": 0,
+          "FacialFeatures": 1,
+          "FacialFeaturesColor": 1,
+          "Eyebrows": 0,
+          "EyeColorLeft": 145,
+          "EyeShape": 0,
+          "Nose": 0,
+          "Jaw": 0,
+          "Lipstick": 0,
+          "LipColorFurPattern": 0,
+          "MuscleMass": 50,
+          "TailShape": 0,
+          "BustSize": 0,
+          "FacePaint": 0,
+          "FacePaintColor": 1,
+          "RawCustomizeBase64": ""
+        },
+        "equipment": {
+          "MainHand": {
+            "ModelSetId": 2012,
+            "Base": 2,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "OffHand": {
+            "ModelSetId": 2012,
+            "Base": 2,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Head": {
+            "ModelId": 834,
+            "Variant": 2,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Body": {
+            "ModelId": 0,
+            "Variant": 0,
+            "Stain0": 112,
+            "Stain1": 99
+          },
+          "Hands": {
+            "ModelId": 0,
+            "Variant": 0,
+            "Stain0": 92,
+            "Stain1": 99
+          },
+          "Legs": {
+            "ModelId": 279,
+            "Variant": 1,
+            "Stain0": 92,
+            "Stain1": 0
+          },
+          "Feet": {
+            "ModelId": 0,
+            "Variant": 0,
+            "Stain0": 112,
+            "Stain1": 99
+          },
+          "Ears": {
+            "ModelId": 153,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Neck": {
+            "ModelId": 153,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Wrists": {
+            "ModelId": 53,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "LeftRing": {
+            "ModelId": 53,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "RightRing": {
+            "ModelId": 53,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "HideWeapons": true,
+          "ApplyHeadgearVisibility": false,
+          "HideHeadgear": false
+        },
+        "summary": "Localized Glamourer design. spawnKind=Character, sourceActorKind=Character, objectKind=BattleNpc, humanoid=True, modelChara=0, modelSkeleton=0, customizeFields=13/26, equipmentSlots=12/12, headgearVisibility=not-set, missing=none, file=C:\\Users\\kiomo\\AppData\\Roaming\\XIVLauncherCN\\pluginConfigs\\Glamourer\\designs\\8de7fecc-3482-4994-bc5e-07d8a1b0b540.json"
+      },
+      "SpawnKind": "Character",
+      "SourceActorKind": "Character",
+      "TerritoryType": 1208,
+      "TerritoryName": "Territory 1208",
+      "WorldPosition": {
+        "X": 88.75317,
+        "Y": 0,
+        "Z": 192.97871
+      },
+      "WorldRotationEuler": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "WorldScale": {
+        "X": 1,
+        "Y": 1,
+        "Z": 1
+      },
+      "DefaultAnimationId": 0,
+      "CurrentAnimationId": 0,
+      "AnimationEnabled": false,
+      "AutoPlayDefaultAnimation": false,
+      "CurrentExpressionId": 0,
+      "CurrentExpressionLayer": "Facial",
+      "ExpressionBlendLoopEnabled": false,
+      "ExpressionBlendLoopIntervalSeconds": 0.5,
+      "CurrentLipTalkKey": "speak/stop",
+      "CurrentLipTalkId": 0,
+      "LipTalkLoopEnabled": false,
+      "LipTalkLoopIntervalSeconds": 0.5,
+      "LookAtPlayerEnabled": false,
+      "LookAtRadius": 8,
+      "EnableActionSequence": false,
+      "ActionSequenceLoop": false,
+      "ActionSequenceLoopDelay": 0,
+      "ActionSequence": [],
+      "PenumbraMode": "DoNotTouch",
+      "PenumbraCollectionId": null,
+      "PenumbraCollectionNameCache": "",
+      "AutoSpawn": true,
+      "SortOrder": 1,
+      "SpawnSequence": 1,
+      "Notes": ""
+    },
+    {
+      "SchemaVersion": 2,
+      "ConfigId": "ef6e60bdd9b64ad3bb3189c7d8d54bfa",
+      "RuntimeId": "3218cb8b6f68471695232e8ebb0ca37b",
+      "SourceNpcPresetId": "",
+      "NpcNameSnapshot": "——MOD测试——",
+      "DisplayName": "——MOD测试——",
+      "Appearance": {
+        "sourceKind": "GlamourerDesign",
+        "sourceId": "8de7fecc-3482-4994-bc5e-07d8a1b0b540",
+        "sourceName": "——MOD测试——",
+        "sourcePath": "C:\\Users\\kiomo\\AppData\\Roaming\\XIVLauncherCN\\pluginConfigs\\Glamourer\\designs\\8de7fecc-3482-4994-bc5e-07d8a1b0b540.json",
+        "isHumanoid": true,
+        "spawnKind": "Character",
+        "sourceActorKind": "Character",
+        "objectKind": "BattleNpc",
+        "modelCharaId": 0,
+        "modelCharaOverrideId": 0,
+        "modelSkeletonId": 0,
+        "customize": {
+          "Race": 1,
+          "Sex": 0,
+          "BodyType": 1,
+          "Height": 50,
+          "Tribe": 1,
+          "Face": 5,
+          "HairStyle": 1,
+          "Highlights": 0,
+          "SkinColor": 10,
+          "EyeColorRight": 145,
+          "HairColor": 70,
+          "HighlightsColor": 0,
+          "FacialFeatures": 1,
+          "FacialFeaturesColor": 1,
+          "Eyebrows": 0,
+          "EyeColorLeft": 145,
+          "EyeShape": 0,
+          "Nose": 0,
+          "Jaw": 0,
+          "Lipstick": 0,
+          "LipColorFurPattern": 0,
+          "MuscleMass": 50,
+          "TailShape": 0,
+          "BustSize": 0,
+          "FacePaint": 0,
+          "FacePaintColor": 1,
+          "RawCustomizeBase64": ""
+        },
+        "equipment": {
+          "MainHand": {
+            "ModelSetId": 2012,
+            "Base": 2,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "OffHand": {
+            "ModelSetId": 2012,
+            "Base": 2,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Head": {
+            "ModelId": 834,
+            "Variant": 2,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Body": {
+            "ModelId": 0,
+            "Variant": 0,
+            "Stain0": 112,
+            "Stain1": 99
+          },
+          "Hands": {
+            "ModelId": 0,
+            "Variant": 0,
+            "Stain0": 92,
+            "Stain1": 99
+          },
+          "Legs": {
+            "ModelId": 279,
+            "Variant": 1,
+            "Stain0": 92,
+            "Stain1": 0
+          },
+          "Feet": {
+            "ModelId": 0,
+            "Variant": 0,
+            "Stain0": 112,
+            "Stain1": 99
+          },
+          "Ears": {
+            "ModelId": 153,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Neck": {
+            "ModelId": 153,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Wrists": {
+            "ModelId": 53,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "LeftRing": {
+            "ModelId": 53,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "RightRing": {
+            "ModelId": 53,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "HideWeapons": true,
+          "ApplyHeadgearVisibility": false,
+          "HideHeadgear": false
+        },
+        "summary": "Localized Glamourer design. spawnKind=Character, sourceActorKind=Character, objectKind=BattleNpc, humanoid=True, modelChara=0, modelSkeleton=0, customizeFields=13/26, equipmentSlots=12/12, headgearVisibility=not-set, missing=none, file=C:\\Users\\kiomo\\AppData\\Roaming\\XIVLauncherCN\\pluginConfigs\\Glamourer\\designs\\8de7fecc-3482-4994-bc5e-07d8a1b0b540.json"
+      },
+      "SpawnKind": "Character",
+      "SourceActorKind": "Character",
+      "TerritoryType": 1208,
+      "TerritoryName": "Territory 1208",
+      "WorldPosition": {
+        "X": 88.75317,
+        "Y": 0,
+        "Z": 192.97871
+      },
+      "WorldRotationEuler": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "WorldScale": {
+        "X": 1,
+        "Y": 1,
+        "Z": 1
+      },
+      "DefaultAnimationId": 0,
+      "CurrentAnimationId": 0,
+      "AnimationEnabled": false,
+      "AutoPlayDefaultAnimation": false,
+      "CurrentExpressionId": 0,
+      "CurrentExpressionLayer": "Facial",
+      "ExpressionBlendLoopEnabled": false,
+      "ExpressionBlendLoopIntervalSeconds": 0.5,
+      "CurrentLipTalkKey": "speak/stop",
+      "CurrentLipTalkId": 0,
+      "LipTalkLoopEnabled": false,
+      "LipTalkLoopIntervalSeconds": 0.5,
+      "LookAtPlayerEnabled": false,
+      "LookAtRadius": 8,
+      "EnableActionSequence": false,
+      "ActionSequenceLoop": false,
+      "ActionSequenceLoopDelay": 0,
+      "ActionSequence": [],
+      "PenumbraMode": "DoNotTouch",
+      "PenumbraCollectionId": null,
+      "PenumbraCollectionNameCache": "",
+      "AutoSpawn": true,
+      "SortOrder": 2,
+      "SpawnSequence": 2,
+      "Notes": ""
+    },
+    {
+      "SchemaVersion": 2,
+      "ConfigId": "33804e47ff75409a853c0df7f1dd8f87",
+      "RuntimeId": "f25eb00cf4fb47e693f0e75ed8862995",
+      "SourceNpcPresetId": "",
+      "NpcNameSnapshot": "——MOD测试——",
+      "DisplayName": "——MOD测试——",
+      "Appearance": {
+        "sourceKind": "GlamourerDesign",
+        "sourceId": "8de7fecc-3482-4994-bc5e-07d8a1b0b540",
+        "sourceName": "——MOD测试——",
+        "sourcePath": "C:\\Users\\kiomo\\AppData\\Roaming\\XIVLauncherCN\\pluginConfigs\\Glamourer\\designs\\8de7fecc-3482-4994-bc5e-07d8a1b0b540.json",
+        "isHumanoid": true,
+        "spawnKind": "Character",
+        "sourceActorKind": "Character",
+        "objectKind": "BattleNpc",
+        "modelCharaId": 0,
+        "modelCharaOverrideId": 0,
+        "modelSkeletonId": 0,
+        "customize": {
+          "Race": 1,
+          "Sex": 0,
+          "BodyType": 1,
+          "Height": 50,
+          "Tribe": 1,
+          "Face": 5,
+          "HairStyle": 1,
+          "Highlights": 0,
+          "SkinColor": 10,
+          "EyeColorRight": 145,
+          "HairColor": 70,
+          "HighlightsColor": 0,
+          "FacialFeatures": 1,
+          "FacialFeaturesColor": 1,
+          "Eyebrows": 0,
+          "EyeColorLeft": 145,
+          "EyeShape": 0,
+          "Nose": 0,
+          "Jaw": 0,
+          "Lipstick": 0,
+          "LipColorFurPattern": 0,
+          "MuscleMass": 50,
+          "TailShape": 0,
+          "BustSize": 0,
+          "FacePaint": 0,
+          "FacePaintColor": 1,
+          "RawCustomizeBase64": ""
+        },
+        "equipment": {
+          "MainHand": {
+            "ModelSetId": 2012,
+            "Base": 2,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "OffHand": {
+            "ModelSetId": 2012,
+            "Base": 2,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Head": {
+            "ModelId": 834,
+            "Variant": 2,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Body": {
+            "ModelId": 0,
+            "Variant": 0,
+            "Stain0": 112,
+            "Stain1": 99
+          },
+          "Hands": {
+            "ModelId": 0,
+            "Variant": 0,
+            "Stain0": 92,
+            "Stain1": 99
+          },
+          "Legs": {
+            "ModelId": 279,
+            "Variant": 1,
+            "Stain0": 92,
+            "Stain1": 0
+          },
+          "Feet": {
+            "ModelId": 0,
+            "Variant": 0,
+            "Stain0": 112,
+            "Stain1": 99
+          },
+          "Ears": {
+            "ModelId": 153,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Neck": {
+            "ModelId": 153,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Wrists": {
+            "ModelId": 53,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "LeftRing": {
+            "ModelId": 53,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "RightRing": {
+            "ModelId": 53,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "HideWeapons": true,
+          "ApplyHeadgearVisibility": false,
+          "HideHeadgear": false
+        },
+        "summary": "Localized Glamourer design. spawnKind=Character, sourceActorKind=Character, objectKind=BattleNpc, humanoid=True, modelChara=0, modelSkeleton=0, customizeFields=13/26, equipmentSlots=12/12, headgearVisibility=not-set, missing=none, file=C:\\Users\\kiomo\\AppData\\Roaming\\XIVLauncherCN\\pluginConfigs\\Glamourer\\designs\\8de7fecc-3482-4994-bc5e-07d8a1b0b540.json"
+      },
+      "SpawnKind": "Character",
+      "SourceActorKind": "Character",
+      "TerritoryType": 1208,
+      "TerritoryName": "Territory 1208",
+      "WorldPosition": {
+        "X": 88.34138,
+        "Y": 0,
+        "Z": 157.33888
+      },
+      "WorldRotationEuler": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "WorldScale": {
+        "X": 1,
+        "Y": 1,
+        "Z": 1
+      },
+      "DefaultAnimationId": 0,
+      "CurrentAnimationId": 3775,
+      "AnimationEnabled": true,
+      "AutoPlayDefaultAnimation": false,
+      "CurrentExpressionId": 0,
+      "CurrentExpressionLayer": "Facial",
+      "ExpressionBlendLoopEnabled": false,
+      "ExpressionBlendLoopIntervalSeconds": 0.5,
+      "CurrentLipTalkKey": "speak/stop",
+      "CurrentLipTalkId": 0,
+      "LipTalkLoopEnabled": false,
+      "LipTalkLoopIntervalSeconds": 0.5,
+      "LookAtPlayerEnabled": false,
+      "LookAtRadius": 8,
+      "EnableActionSequence": false,
+      "ActionSequenceLoop": false,
+      "ActionSequenceLoopDelay": 0,
+      "ActionSequence": [],
+      "PenumbraMode": "DoNotTouch",
+      "PenumbraCollectionId": null,
+      "PenumbraCollectionNameCache": "",
+      "AutoSpawn": true,
+      "SortOrder": 1,
+      "SpawnSequence": 5,
+      "Notes": ""
+    },
+    {
+      "SchemaVersion": 2,
+      "ConfigId": "5bc1a75a46364dd19b760746342c395b",
+      "RuntimeId": "9529f572ca734971a571d9698fade824",
+      "SourceNpcPresetId": "",
+      "NpcNameSnapshot": "——MOD测试——",
+      "DisplayName": "——MOD测试——",
+      "Appearance": {
+        "sourceKind": "GlamourerDesign",
+        "sourceId": "8de7fecc-3482-4994-bc5e-07d8a1b0b540",
+        "sourceName": "——MOD测试——",
+        "sourcePath": "C:\\Users\\kiomo\\AppData\\Roaming\\XIVLauncherCN\\pluginConfigs\\Glamourer\\designs\\8de7fecc-3482-4994-bc5e-07d8a1b0b540.json",
+        "isHumanoid": false,
+        "spawnKind": "Demihuman",
+        "sourceActorKind": "Character",
+        "objectKind": "BattleNpc",
+        "modelCharaId": 0,
+        "modelCharaOverrideId": 586,
+        "modelSkeletonId": 0,
+        "customize": {
+          "Race": 1,
+          "Sex": 0,
+          "BodyType": 1,
+          "Height": 50,
+          "Tribe": 1,
+          "Face": 5,
+          "HairStyle": 1,
+          "Highlights": 0,
+          "SkinColor": 10,
+          "EyeColorRight": 145,
+          "HairColor": 70,
+          "HighlightsColor": 0,
+          "FacialFeatures": 1,
+          "FacialFeaturesColor": 1,
+          "Eyebrows": 0,
+          "EyeColorLeft": 145,
+          "EyeShape": 0,
+          "Nose": 0,
+          "Jaw": 0,
+          "Lipstick": 0,
+          "LipColorFurPattern": 0,
+          "MuscleMass": 50,
+          "TailShape": 0,
+          "BustSize": 0,
+          "FacePaint": 0,
+          "FacePaintColor": 1,
+          "RawCustomizeBase64": ""
+        },
+        "equipment": {
+          "MainHand": {
+            "ModelSetId": 2012,
+            "Base": 2,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "OffHand": {
+            "ModelSetId": 2012,
+            "Base": 2,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Head": {
+            "ModelId": 834,
+            "Variant": 2,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Body": {
+            "ModelId": 0,
+            "Variant": 0,
+            "Stain0": 112,
+            "Stain1": 99
+          },
+          "Hands": {
+            "ModelId": 0,
+            "Variant": 0,
+            "Stain0": 92,
+            "Stain1": 99
+          },
+          "Legs": {
+            "ModelId": 279,
+            "Variant": 1,
+            "Stain0": 92,
+            "Stain1": 0
+          },
+          "Feet": {
+            "ModelId": 0,
+            "Variant": 0,
+            "Stain0": 112,
+            "Stain1": 99
+          },
+          "Ears": {
+            "ModelId": 153,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Neck": {
+            "ModelId": 153,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Wrists": {
+            "ModelId": 53,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "LeftRing": {
+            "ModelId": 53,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "RightRing": {
+            "ModelId": 53,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "HideWeapons": true,
+          "ApplyHeadgearVisibility": false,
+          "HideHeadgear": false
+        },
+        "summary": "Localized Glamourer design. spawnKind=Character, sourceActorKind=Character, objectKind=BattleNpc, humanoid=True, modelChara=0, modelSkeleton=0, customizeFields=13/26, equipmentSlots=12/12, headgearVisibility=not-set, missing=none, file=C:\\Users\\kiomo\\AppData\\Roaming\\XIVLauncherCN\\pluginConfigs\\Glamourer\\designs\\8de7fecc-3482-4994-bc5e-07d8a1b0b540.json"
+      },
+      "SpawnKind": "Demihuman",
+      "SourceActorKind": "Character",
+      "TerritoryType": 1208,
+      "TerritoryName": "Territory 1208",
+      "WorldPosition": {
+        "X": 88.34138,
+        "Y": 0,
+        "Z": 157.33888
+      },
+      "WorldRotationEuler": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "WorldScale": {
+        "X": 1,
+        "Y": 1,
+        "Z": 1
+      },
+      "DefaultAnimationId": 0,
+      "CurrentAnimationId": 0,
+      "AnimationEnabled": false,
+      "AutoPlayDefaultAnimation": false,
+      "CurrentExpressionId": 0,
+      "CurrentExpressionLayer": "Facial",
+      "ExpressionBlendLoopEnabled": false,
+      "ExpressionBlendLoopIntervalSeconds": 0.5,
+      "CurrentLipTalkKey": "speak/stop",
+      "CurrentLipTalkId": 0,
+      "LipTalkLoopEnabled": false,
+      "LipTalkLoopIntervalSeconds": 0.5,
+      "LookAtPlayerEnabled": false,
+      "LookAtRadius": 8,
+      "EnableActionSequence": false,
+      "ActionSequenceLoop": false,
+      "ActionSequenceLoopDelay": 0,
+      "ActionSequence": [],
+      "PenumbraMode": "DoNotTouch",
+      "PenumbraCollectionId": null,
+      "PenumbraCollectionNameCache": "",
+      "AutoSpawn": true,
+      "SortOrder": 2,
+      "SpawnSequence": 6,
+      "Notes": ""
+    },
+    {
+      "SchemaVersion": 2,
+      "ConfigId": "5fb6bc5381c740c4a81187d140f822e4",
+      "RuntimeId": "ea54e78cea6b4d4aa190649f48b29b61",
+      "SourceNpcPresetId": "",
+      "NpcNameSnapshot": "——MOD测试——",
+      "DisplayName": "——MOD测试——",
+      "Appearance": {
+        "sourceKind": "GlamourerDesign",
+        "sourceId": "8de7fecc-3482-4994-bc5e-07d8a1b0b540",
+        "sourceName": "——MOD测试——",
+        "sourcePath": "C:\\Users\\kiomo\\AppData\\Roaming\\XIVLauncherCN\\pluginConfigs\\Glamourer\\designs\\8de7fecc-3482-4994-bc5e-07d8a1b0b540.json",
+        "isHumanoid": true,
+        "spawnKind": "Character",
+        "sourceActorKind": "Character",
+        "objectKind": "BattleNpc",
+        "modelCharaId": 0,
+        "modelCharaOverrideId": 0,
+        "modelSkeletonId": 0,
+        "customize": {
+          "Race": 1,
+          "Sex": 0,
+          "BodyType": 1,
+          "Height": 50,
+          "Tribe": 1,
+          "Face": 5,
+          "HairStyle": 1,
+          "Highlights": 0,
+          "SkinColor": 10,
+          "EyeColorRight": 145,
+          "HairColor": 70,
+          "HighlightsColor": 0,
+          "FacialFeatures": 1,
+          "FacialFeaturesColor": 1,
+          "Eyebrows": 0,
+          "EyeColorLeft": 145,
+          "EyeShape": 0,
+          "Nose": 0,
+          "Jaw": 0,
+          "Lipstick": 0,
+          "LipColorFurPattern": 0,
+          "MuscleMass": 50,
+          "TailShape": 0,
+          "BustSize": 0,
+          "FacePaint": 0,
+          "FacePaintColor": 1,
+          "RawCustomizeBase64": ""
+        },
+        "equipment": {
+          "MainHand": {
+            "ModelSetId": 2012,
+            "Base": 2,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "OffHand": {
+            "ModelSetId": 2012,
+            "Base": 2,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Head": {
+            "ModelId": 834,
+            "Variant": 2,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Body": {
+            "ModelId": 0,
+            "Variant": 0,
+            "Stain0": 112,
+            "Stain1": 99
+          },
+          "Hands": {
+            "ModelId": 0,
+            "Variant": 0,
+            "Stain0": 92,
+            "Stain1": 99
+          },
+          "Legs": {
+            "ModelId": 279,
+            "Variant": 1,
+            "Stain0": 92,
+            "Stain1": 0
+          },
+          "Feet": {
+            "ModelId": 0,
+            "Variant": 0,
+            "Stain0": 112,
+            "Stain1": 99
+          },
+          "Ears": {
+            "ModelId": 153,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Neck": {
+            "ModelId": 153,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Wrists": {
+            "ModelId": 53,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "LeftRing": {
+            "ModelId": 53,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "RightRing": {
+            "ModelId": 53,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "HideWeapons": true,
+          "ApplyHeadgearVisibility": false,
+          "HideHeadgear": false
+        },
+        "summary": "Localized Glamourer design. spawnKind=Character, sourceActorKind=Character, objectKind=BattleNpc, humanoid=True, modelChara=0, modelSkeleton=0, customizeFields=13/26, equipmentSlots=12/12, headgearVisibility=not-set, missing=none, file=C:\\Users\\kiomo\\AppData\\Roaming\\XIVLauncherCN\\pluginConfigs\\Glamourer\\designs\\8de7fecc-3482-4994-bc5e-07d8a1b0b540.json"
+      },
+      "SpawnKind": "Character",
+      "SourceActorKind": "Character",
+      "TerritoryType": 1208,
+      "TerritoryName": "Territory 1208",
+      "WorldPosition": {
+        "X": 92.89257,
+        "Y": 0,
+        "Z": 156.95073
+      },
+      "WorldRotationEuler": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "WorldScale": {
+        "X": 1,
+        "Y": 1,
+        "Z": 1
+      },
+      "DefaultAnimationId": 0,
+      "CurrentAnimationId": 3775,
+      "AnimationEnabled": true,
+      "AutoPlayDefaultAnimation": false,
+      "CurrentExpressionId": 0,
+      "CurrentExpressionLayer": "Facial",
+      "ExpressionBlendLoopEnabled": false,
+      "ExpressionBlendLoopIntervalSeconds": 0.5,
+      "CurrentLipTalkKey": "speak/stop",
+      "CurrentLipTalkId": 0,
+      "LipTalkLoopEnabled": false,
+      "LipTalkLoopIntervalSeconds": 0.5,
+      "LookAtPlayerEnabled": false,
+      "LookAtRadius": 8,
+      "EnableActionSequence": false,
+      "ActionSequenceLoop": false,
+      "ActionSequenceLoopDelay": 0,
+      "ActionSequence": [],
+      "PenumbraMode": "DoNotTouch",
+      "PenumbraCollectionId": null,
+      "PenumbraCollectionNameCache": "",
+      "AutoSpawn": true,
+      "SortOrder": 3,
+      "SpawnSequence": 7,
+      "Notes": ""
+    },
+    {
+      "SchemaVersion": 2,
+      "ConfigId": "97e8b12332014287be6481707c1d42a1",
+      "RuntimeId": "b5c30ecb8360420f94946f0d2f2b7213",
+      "SourceNpcPresetId": "",
+      "NpcNameSnapshot": "——MOD测试——",
+      "DisplayName": "——MOD测试——",
+      "Appearance": {
+        "sourceKind": "GlamourerDesign",
+        "sourceId": "8de7fecc-3482-4994-bc5e-07d8a1b0b540",
+        "sourceName": "——MOD测试——",
+        "sourcePath": "C:\\Users\\kiomo\\AppData\\Roaming\\XIVLauncherCN\\pluginConfigs\\Glamourer\\designs\\8de7fecc-3482-4994-bc5e-07d8a1b0b540.json",
+        "isHumanoid": false,
+        "spawnKind": "Demihuman",
+        "sourceActorKind": "Character",
+        "objectKind": "BattleNpc",
+        "modelCharaId": 0,
+        "modelCharaOverrideId": 586,
+        "modelSkeletonId": 0,
+        "customize": {
+          "Race": 1,
+          "Sex": 0,
+          "BodyType": 1,
+          "Height": 50,
+          "Tribe": 1,
+          "Face": 5,
+          "HairStyle": 1,
+          "Highlights": 0,
+          "SkinColor": 10,
+          "EyeColorRight": 145,
+          "HairColor": 70,
+          "HighlightsColor": 0,
+          "FacialFeatures": 1,
+          "FacialFeaturesColor": 1,
+          "Eyebrows": 0,
+          "EyeColorLeft": 145,
+          "EyeShape": 0,
+          "Nose": 0,
+          "Jaw": 0,
+          "Lipstick": 0,
+          "LipColorFurPattern": 0,
+          "MuscleMass": 50,
+          "TailShape": 0,
+          "BustSize": 0,
+          "FacePaint": 0,
+          "FacePaintColor": 1,
+          "RawCustomizeBase64": ""
+        },
+        "equipment": {
+          "MainHand": {
+            "ModelSetId": 2012,
+            "Base": 2,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "OffHand": {
+            "ModelSetId": 2012,
+            "Base": 2,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Head": {
+            "ModelId": 834,
+            "Variant": 2,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Body": {
+            "ModelId": 0,
+            "Variant": 0,
+            "Stain0": 112,
+            "Stain1": 99
+          },
+          "Hands": {
+            "ModelId": 0,
+            "Variant": 0,
+            "Stain0": 92,
+            "Stain1": 99
+          },
+          "Legs": {
+            "ModelId": 279,
+            "Variant": 1,
+            "Stain0": 92,
+            "Stain1": 0
+          },
+          "Feet": {
+            "ModelId": 0,
+            "Variant": 0,
+            "Stain0": 112,
+            "Stain1": 99
+          },
+          "Ears": {
+            "ModelId": 153,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Neck": {
+            "ModelId": 153,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Wrists": {
+            "ModelId": 53,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "LeftRing": {
+            "ModelId": 53,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "RightRing": {
+            "ModelId": 53,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "HideWeapons": true,
+          "ApplyHeadgearVisibility": false,
+          "HideHeadgear": false
+        },
+        "summary": "Localized Glamourer design. spawnKind=Character, sourceActorKind=Character, objectKind=BattleNpc, humanoid=True, modelChara=0, modelSkeleton=0, customizeFields=13/26, equipmentSlots=12/12, headgearVisibility=not-set, missing=none, file=C:\\Users\\kiomo\\AppData\\Roaming\\XIVLauncherCN\\pluginConfigs\\Glamourer\\designs\\8de7fecc-3482-4994-bc5e-07d8a1b0b540.json"
+      },
+      "SpawnKind": "Demihuman",
+      "SourceActorKind": "Character",
+      "TerritoryType": 1208,
+      "TerritoryName": "Territory 1208",
+      "WorldPosition": {
+        "X": 92.89257,
+        "Y": 0,
+        "Z": 156.95073
+      },
+      "WorldRotationEuler": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "WorldScale": {
+        "X": 1,
+        "Y": 1,
+        "Z": 1
+      },
+      "DefaultAnimationId": 0,
+      "CurrentAnimationId": 0,
+      "AnimationEnabled": false,
+      "AutoPlayDefaultAnimation": false,
+      "CurrentExpressionId": 0,
+      "CurrentExpressionLayer": "Facial",
+      "ExpressionBlendLoopEnabled": false,
+      "ExpressionBlendLoopIntervalSeconds": 0.5,
+      "CurrentLipTalkKey": "speak/stop",
+      "CurrentLipTalkId": 0,
+      "LipTalkLoopEnabled": false,
+      "LipTalkLoopIntervalSeconds": 0.5,
+      "LookAtPlayerEnabled": false,
+      "LookAtRadius": 8,
+      "EnableActionSequence": false,
+      "ActionSequenceLoop": false,
+      "ActionSequenceLoopDelay": 0,
+      "ActionSequence": [],
+      "PenumbraMode": "DoNotTouch",
+      "PenumbraCollectionId": null,
+      "PenumbraCollectionNameCache": "",
+      "AutoSpawn": true,
+      "SortOrder": 4,
+      "SpawnSequence": 8,
+      "Notes": ""
+    }
+  ],
   "Quests": [
     {
       "Id": "local-quest-1778431124",

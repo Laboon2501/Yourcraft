@@ -525,7 +525,15 @@ public sealed class MainWindow : Window
     }
 
     private string MapPresetDirectory
-        => Path.Combine(this.database.DataDirectory, "MapPresets");
+    {
+        get
+        {
+            var documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+            if (string.IsNullOrWhiteSpace(documents))
+                documents = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Documents");
+            return Path.Combine(documents, "YourcraftPreset");
+        }
+    }
 
     private IReadOnlyList<string> GetMapPresetFiles()
     {
@@ -539,9 +547,20 @@ public sealed class MainWindow : Window
     {
         Directory.CreateDirectory(this.MapPresetDirectory);
         var preset = this.BuildMapPreset(territory);
-        var path = Path.Combine(this.MapPresetDirectory, $"yourcraft-map-{territory}-{DateTimeOffset.Now:yyyyMMdd-HHmmss}.json");
+        var mapName = this.GetTerritoryDisplayName(territory);
+        if (string.IsNullOrWhiteSpace(mapName))
+            mapName = T("地图", "Map");
+        var fileName = $"{SanitizeFileName($"{mapName}({territory})")}-{DateTime.Now:yyyyMMdd-HHmmss}.json";
+        var path = Path.Combine(this.MapPresetDirectory, fileName);
         File.WriteAllText(path, JsonSerializer.Serialize(preset, MapPresetJsonOptions));
         return path;
+    }
+
+    private static string SanitizeFileName(string fileName)
+    {
+        var invalidChars = Path.GetInvalidFileNameChars();
+        var sanitized = new string(fileName.Select(ch => invalidChars.Contains(ch) ? '_' : ch).ToArray()).Trim();
+        return string.IsNullOrWhiteSpace(sanitized) ? "YourcraftPreset" : sanitized;
     }
 
     private MapModificationPreset BuildMapPreset(uint territory)
@@ -2887,10 +2906,6 @@ public sealed class MainWindow : Window
         this.SyncSceneEditorBgPartCopyMode();
         this.DrawBgPartSelectionControls();
 
-        ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || !this.realNpcSpawn.EnableUnsafeNativeWrites || this.localLayoutObjects.Instances.Count == 0);
-        if (ImGui.Button(T("恢复全部", "Restore All")))
-            this.OpenConfirmPopupAtMouse("ConfirmRestoreAllLocalLayoutObjects");
-        ImGui.EndDisabled();
         if (this.DrawConfirmPopup("ConfirmRestoreAllLocalLayoutObjects", T("确认恢复全部复制体？", "Restore all copied objects?")))
         {
             this.localLayoutObjects.RestoreAll(
@@ -3197,6 +3212,11 @@ public sealed class MainWindow : Window
             if (nearest != null)
                 this.SelectBgPartCandidate(nearest);
         }
+        ImGui.SameLine();
+        ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || !this.realNpcSpawn.EnableUnsafeNativeWrites || this.localLayoutObjects.Instances.Count == 0);
+        if (ImGui.Button(T("恢复全部", "Restore All")))
+            this.OpenConfirmPopupAtMouse("ConfirmRestoreAllLocalLayoutObjects");
+        ImGui.EndDisabled();
 
         var candidate = this.GetSelectedBgPart();
         ImGui.TextWrapped(candidate == null
