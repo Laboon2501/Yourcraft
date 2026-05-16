@@ -18,6 +18,8 @@ public sealed class ActorAnimationService
 
     public event Action<RuntimeActorInstance, uint, string>? TimelinePlayRequested;
 
+    public bool EnableActorTargetDebugLog { get; set; }
+
     public bool Play(RuntimeActorInstance actor, uint animationId, out string reason)
         => this.PlayTimeline(actor, animationId, out reason);
 
@@ -42,15 +44,8 @@ public sealed class ActorAnimationService
             return false;
         }
 
-        if (!TryValidateActorTarget(actor, out reason))
+        if (!this.TryResolveActorAddress(actor, "ExpressionTimeline", out var address, out reason))
         {
-            actor.LastAnimationError = reason;
-            return false;
-        }
-
-        if (!TryReadAddress(actor, out var address) || address == 0)
-        {
-            reason = $"Actor address unavailable: {actor.Address}";
             actor.LastAnimationError = reason;
             return false;
         }
@@ -94,15 +89,8 @@ public sealed class ActorAnimationService
             return false;
         }
 
-        if (!TryValidateActorTarget(actor, out reason))
+        if (!this.TryResolveActorAddress(actor, "LipTalk", out var address, out reason))
         {
-            actor.LastLipTalkError = reason;
-            return false;
-        }
-
-        if (!TryReadAddress(actor, out var address) || address == 0)
-        {
-            reason = $"Actor address unavailable: {actor.Address}";
             actor.LastLipTalkError = reason;
             return false;
         }
@@ -143,9 +131,8 @@ public sealed class ActorAnimationService
             return false;
         }
 
-        if (!TryReadAddress(actor, out var address) || address == 0)
+        if (!this.TryResolveActorAddress(actor, "SequenceVisibility", out var address, out reason))
         {
-            reason = $"Actor address unavailable: {actor.Address}";
             actor.LastAnimationError = reason;
             return false;
         }
@@ -202,7 +189,7 @@ public sealed class ActorAnimationService
             return false;
         }
 
-        if (!TryReadAddress(actor, out var address) || address == 0)
+        if (!this.TryResolveActorAddress(actor, updateDefaultAnimation ? "BaseTimeline" : "TransientTimeline", out var address, out reason))
         {
             reason = $"无法读取 actor Address：{actor.Address}";
             actor.LastAnimationError = reason;
@@ -251,7 +238,7 @@ public sealed class ActorAnimationService
             return false;
         }
 
-        if (!TryReadAddress(actor, out var address) || address == 0)
+        if (!this.TryResolveActorAddress(actor, "IdleTimeline", out var address, out reason))
         {
             reason = $"无法读取 actor Address：{actor.Address}";
             actor.LastAnimationError = reason;
@@ -286,39 +273,33 @@ public sealed class ActorAnimationService
         }
     }
 
-    private static bool TryReadAddress(RuntimeActorInstance actor, out nint address)
+    private bool TryResolveActorAddress(RuntimeActorInstance actor, string operation, out nint address, out string reason)
     {
-        address = 0;
-        var raw = actor.Address?.Trim() ?? string.Empty;
-        if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
-            ulong.TryParse(raw[2..], System.Globalization.NumberStyles.HexNumber, null, out var hex))
+        if (!this.brioAssemblyBridge.TryResolveRuntimeActorNativeTarget(actor, out address, out var objectIndex, out reason))
         {
-            address = (nint)hex;
-            return true;
-        }
-
-        if (ulong.TryParse(raw, out var value))
-        {
-            address = (nint)value;
-            return true;
-        }
-
-        return false;
-    }
-
-    private static bool TryValidateActorTarget(RuntimeActorInstance actor, out string reason)
-    {
-        var objectIndex = actor.LastKnownObjectIndex;
-        if (int.TryParse(actor.ObjectIndex, out var parsedIndex))
-            objectIndex = parsedIndex;
-
-        if (objectIndex <= 0)
-        {
-            reason = $"invalid Actor objectIndex={objectIndex}; refusing to write facial/lip data to objectIndex 0/local player.";
+            this.LogTargetDebug(actor, operation, $"failed: {reason}");
             return false;
         }
 
-        reason = string.Empty;
+        this.LogTargetDebug(actor, operation, $"ok: objectIndex={objectIndex}; address=0x{address:X}; {reason}");
         return true;
+    }
+
+    private void LogTargetDebug(RuntimeActorInstance actor, string operation, string details)
+    {
+        if (!this.EnableActorTargetDebugLog)
+            return;
+
+        this.log.Information(
+            "[ActorFacialLipTarget] operation={Operation} runtime={RuntimeId} config={ConfigId} name={Name} objectIndex={ObjectIndex} lastKnownObjectIndex={LastKnownObjectIndex} address={Address} target={Target} details={Details}",
+            operation,
+            actor.RuntimeId,
+            actor.ConfigId,
+            actor.DisplayName,
+            actor.ObjectIndex,
+            actor.LastKnownObjectIndex,
+            actor.Address,
+            actor.LastTransformTargetDebug,
+            details);
     }
 }

@@ -48,6 +48,7 @@ public sealed class RealNpcSpawnService
     private bool initialActorRefreshQueued;
     private bool lastObservedGpose;
     private bool lastSceneReady;
+    private bool enableActorTransformDebugLog;
     private int scheduledRebuildDelayTicks = -1;
     private string scheduledRebuildReason = string.Empty;
     private DateTime lastRebuildAttemptAt = DateTime.MinValue;
@@ -158,6 +159,15 @@ public sealed class RealNpcSpawnService
     public string GlamourerIpcProbeMessage => string.IsNullOrWhiteSpace(this.glamourerIpcProbe.LastProbeMessage)
         ? this.penumbraIpc.LastStatus
         : $"{this.glamourerIpcProbe.LastProbeMessage} | {this.penumbraIpc.LastStatus}";
+    public bool EnableActorTransformDebugLog
+    {
+        get => this.enableActorTransformDebugLog;
+        set
+        {
+            this.enableActorTransformDebugLog = value;
+            this.animationService.EnableActorTargetDebugLog = value;
+        }
+    }
 
     public void SetEventNpcHostService(EventNpcHostService service) => this.eventNpcHostService = service;
     public void SetMessage(string message) => this.LastMessage = message;
@@ -209,8 +219,8 @@ public sealed class RealNpcSpawnService
 
         var runtimeId = string.IsNullOrWhiteSpace(requestedRuntimeId) ? Guid.NewGuid().ToString("N") : requestedRuntimeId!;
         var position = overrideSpawnPosition ?? this.GetDefaultSpawnPosition(npc);
-        var rotation = overrideRotationEuler ?? ToVector3(npc.DefaultRotationEuler);
-        var scale = NormalizeScale(overrideScale ?? ToVector3(npc.DefaultScale, Vector3.One));
+        var rotation = NormalizeActorRotation(overrideRotationEuler ?? ToVector3(npc.DefaultRotationEuler));
+        var scale = NormalizeActorScale(overrideScale ?? ToVector3(npc.DefaultScale, Vector3.One));
         var config = this.CreateConfig(npc, runtimeId, position, rotation, scale, overrideSortOrder ?? this.GetNextSortOrder(npc.Id));
         if (!this.IsValidPersistentActorConfig(config, out var invalidReason))
         {
@@ -272,8 +282,8 @@ public sealed class RealNpcSpawnService
     {
         var runtimeId = Guid.NewGuid().ToString("N");
         var position = overrideSpawnPosition ?? this.GetDefaultActorSpawnPosition();
-        var rotation = overrideRotationEuler ?? Vector3.Zero;
-        var scale = NormalizeScale(overrideScale ?? Vector3.One);
+        var rotation = NormalizeActorRotation(overrideRotationEuler ?? Vector3.Zero);
+        var scale = NormalizeActorScale(overrideScale ?? Vector3.One);
         var config = this.CreateConfig(displayName, appearance, runtimeId, position, rotation, scale, overrideSortOrder ?? this.GetNextSortOrderForActor());
         this.database.ActorConfigs.Add(config);
         this.database.Save();
@@ -390,7 +400,7 @@ public sealed class RealNpcSpawnService
         }
 
         var scale = actor.TransformEditScale == Vector3.Zero ? Vector3.One : actor.TransformEditScale;
-        return this.ApplyActorTransform(runtimeId, position, actor.TransformEditRotationEuler, scale);
+        return this.ApplyAndSaveActorTransform(runtimeId, position, actor.TransformEditRotationEuler, scale);
     }
 
     public bool RefreshActorTransform(string runtimeId)
@@ -410,6 +420,12 @@ public sealed class RealNpcSpawnService
     public bool ApplyActorTransform(string runtimeId, Vector3 position, Vector3 rotationEuler, Vector3 scale)
         => this.ApplyActorTransformInternal(runtimeId, position, rotationEuler, scale, fromPendingFlush: false);
 
+    public bool ApplyAndSaveActorTransform(string runtimeId, Vector3 position, Vector3 rotationEuler, Vector3 scale)
+    {
+        this.SaveActorTransformSnapshot(runtimeId, position, rotationEuler, scale);
+        return this.ApplyActorTransform(runtimeId, position, rotationEuler, scale);
+    }
+
     private bool ApplyActorTransformInternal(string runtimeId, Vector3 position, Vector3 rotationEuler, Vector3 scale, bool fromPendingFlush)
     {
         var actor = this.registry.GetByRuntimeId(runtimeId);
@@ -423,15 +439,18 @@ public sealed class RealNpcSpawnService
             return false;
         }
 
-        var normalizedScale = NormalizeScale(scale);
-        actor.SpawnPosition = position;
-        actor.SpawnRotationEuler = rotationEuler;
+        var safePosition = ActorTransformUtil.SanitizePosition(position, actor.TransformEditPosition);
+        var normalizedRotation = NormalizeActorRotation(rotationEuler);
+        var normalizedScale = NormalizeActorScale(scale);
+        actor.SpawnPosition = safePosition;
+        actor.SpawnRotationEuler = normalizedRotation;
         actor.SpawnScale = normalizedScale;
         actor.HasSavedTransform = true;
+        this.LogActorTransformDebug(actor, fromPendingFlush ? "ApplyPendingStart" : "ApplyStart", $"requested position={safePosition}; yaw={normalizedRotation.Y:F4}; scale={normalizedScale.X:F4}");
 
         if (!this.IsRuntimeReady(actor))
         {
-            this.QueuePendingTransform(actor, position, rotationEuler, normalizedScale, "Runtime actor is not Ready; transform saved and queued.");
+            this.QueuePendingTransform(actor, safePosition, normalizedRotation, normalizedScale, "Runtime actor is not Ready; transform saved and queued.");
             this.LastMessage = actor.LastTransformError;
             return false;
         }
@@ -446,23 +465,24 @@ public sealed class RealNpcSpawnService
             }
             else
             {
-                this.QueuePendingTransform(actor, position, rotationEuler, normalizedScale, targetReason);
+                this.QueuePendingTransform(actor, safePosition, normalizedRotation, normalizedScale, targetReason);
             }
             actor.LastTransformError = targetReason;
             actor.LastTransformReadback = $"native readback unavailable: {targetReason}";
             this.LastMessage = actor.LastTransformError;
+            this.LogActorTransformDebug(actor, "ApplyTargetRejected", targetReason);
             return false;
         }
 
         this.TryRefreshActualActorTransform(actor, updateEditingTransform: false, out _);
         actor.LastMoveBeforePosition = actor.LastKnownPosition;
-        var brioSuccess = this.brioCapabilityBridge.TryApplyModelTransform(actor, position, rotationEuler, normalizedScale, out var brioReason);
-        var nativeSuccess = this.brioAssemblyBridge.TryApplyActorNativeRootTransform(actor, position, rotationEuler.Y, normalizedScale, out var nativeReason);
+        var brioSuccess = this.brioCapabilityBridge.TryApplyModelTransform(actor, safePosition, normalizedRotation, normalizedScale, out var brioReason);
+        var nativeSuccess = this.brioAssemblyBridge.TryApplyActorNativeRootTransform(actor, safePosition, normalizedRotation.Y, normalizedScale, out var nativeReason);
         var readbackSuccess = this.TryRefreshActualActorTransform(actor, updateEditingTransform: false, out var readbackReason);
         var mismatchReason = string.Empty;
         var success = nativeSuccess &&
             readbackSuccess &&
-            TransformReadbackMatches(actor, position, rotationEuler, normalizedScale, out mismatchReason);
+            TransformReadbackMatches(actor, safePosition, normalizedRotation, normalizedScale, out mismatchReason);
         var reason = $"brio={brioReason}; nativeRoot={nativeReason}; readback={readbackReason}";
         if (!success && !string.IsNullOrWhiteSpace(mismatchReason))
             reason = $"{reason}; mismatch={mismatchReason}";
@@ -479,37 +499,42 @@ public sealed class RealNpcSpawnService
         }
         else
         {
-            actor.PendingTransformPosition = position;
-            actor.PendingTransformRotationEuler = rotationEuler;
+            actor.PendingTransformPosition = safePosition;
+            actor.PendingTransformRotationEuler = normalizedRotation;
             actor.PendingTransformScale = normalizedScale;
             actor.PendingTransformRetryTicksRemaining = PostSpawnTransformRetryTicks;
             actor.HasPendingTransformApply = true;
         }
-        actor.LastMoveTargetPosition = position;
+        actor.LastMoveTargetPosition = safePosition;
         actor.LastMoveAfterPosition = actor.LastKnownPosition;
         actor.LastMoveActorValidAfter = actor.IsValid;
-        actor.LastMoveDistanceReasonable = Vector3.Distance(actor.LastKnownPosition, position) < 2.0f;
+        actor.LastMoveDistanceReasonable = Vector3.Distance(actor.LastKnownPosition, safePosition) < 2.0f;
         actor.LastTransformError = success ? string.Empty : reason;
         actor.LastTransformReadback = success
-            ? $"native position={actor.LastKnownPosition}; rotationEuler={actor.LastKnownRotationEuler}; scale={actor.LastKnownScale}; requested position={position}; rotationEuler={rotationEuler}; scale={normalizedScale}; yaw-only native rotation readback"
-            : $"native readback={(readbackSuccess ? $"position={actor.LastKnownPosition}; rotationEuler={actor.LastKnownRotationEuler}; scale={actor.LastKnownScale}" : "unavailable")}; requested position={position}; rotationEuler={rotationEuler}; scale={normalizedScale}; {reason}";
+            ? $"native position={actor.LastKnownPosition}; yaw={actor.LastKnownRotationEuler.Y:F4}; uniformScale={actor.LastKnownScale.X:F4}; requested position={safePosition}; yaw={normalizedRotation.Y:F4}; uniformScale={normalizedScale.X:F4}; yaw-only native rotation readback"
+            : $"native readback={(readbackSuccess ? $"position={actor.LastKnownPosition}; yaw={actor.LastKnownRotationEuler.Y:F4}; uniformScale={actor.LastKnownScale.X:F4}" : "unavailable")}; requested position={safePosition}; yaw={normalizedRotation.Y:F4}; uniformScale={normalizedScale.X:F4}; {reason}";
         actor.RuntimeTransformApplied = success;
         if (success)
             actor.LastSuccessfulTransformApplyAt = DateTime.UtcNow;
         this.LastMessage = success ? $"Applied WorldTransform to Actor {ShortId(runtimeId)}." : $"Transform apply failed: {reason}";
+        this.LogActorTransformDebug(actor, success ? "ApplySuccess" : "ApplyFailed", reason);
         return success;
     }
 
     private void QueuePendingTransform(RuntimeActorInstance actor, Vector3 position, Vector3 rotationEuler, Vector3 scale, string reason)
     {
+        var safePosition = ActorTransformUtil.SanitizePosition(position, actor.TransformEditPosition);
+        var normalizedRotation = NormalizeActorRotation(rotationEuler);
+        var normalizedScale = NormalizeActorScale(scale);
         actor.HasPendingTransformApply = true;
-        actor.PendingTransformPosition = position;
-        actor.PendingTransformRotationEuler = rotationEuler;
-        actor.PendingTransformScale = NormalizeScale(scale);
+        actor.PendingTransformPosition = safePosition;
+        actor.PendingTransformRotationEuler = normalizedRotation;
+        actor.PendingTransformScale = normalizedScale;
         actor.PendingTransformRetryTicksRemaining = Math.Max(actor.PendingTransformRetryTicksRemaining, PostSpawnTransformRetryTicks);
         actor.RuntimeTransformApplied = false;
         actor.LastTransformError = reason;
-        actor.LastTransformReadback = $"native readback unavailable; saved position={position}; rotationEuler={rotationEuler}; scale={actor.PendingTransformScale}";
+        actor.LastTransformReadback = $"native readback unavailable; saved position={safePosition}; yaw={normalizedRotation.Y:F4}; uniformScale={normalizedScale.X:F4}";
+        this.LogActorTransformDebug(actor, "QueuePendingTransform", reason);
     }
 
     private bool TryRefreshActualActorTransform(RuntimeActorInstance actor, bool updateEditingTransform, out string reason)
@@ -524,21 +549,23 @@ public sealed class RealNpcSpawnService
 
         if (this.brioAssemblyBridge.TryReadActorNativeTransform(actor, out var nativePosition, out var nativeRotationEuler, out var nativeScale, out var nativeReason))
         {
+            nativeRotationEuler = NormalizeActorRotation(nativeRotationEuler);
+            nativeScale = NormalizeActorScale(nativeScale);
             if (updateEditingTransform)
             {
                 actor.TransformEditPosition = nativePosition;
                 actor.TransformEditRotationEuler = nativeRotationEuler;
-                actor.TransformEditScale = nativeScale == Vector3.Zero ? Vector3.One : nativeScale;
+                actor.TransformEditScale = nativeScale;
             }
             actor.LastTransformError = string.Empty;
-            actor.LastTransformReadback = $"native position={nativePosition}; rotationEuler={nativeRotationEuler}; scale={nativeScale}; {nativeReason}";
+            actor.LastTransformReadback = $"native position={nativePosition}; yaw={nativeRotationEuler.Y:F4}; uniformScale={nativeScale.X:F4}; {nativeReason}";
             reason = actor.LastTransformReadback;
             return true;
         }
 
         if (this.brioCapabilityBridge.TryReadModelTransform(actor, updateEditingTransform, out var brioReason))
         {
-            actor.LastTransformReadback = $"brio runtime position={actor.LastKnownPosition}; rotationEuler={actor.LastKnownRotationEuler}; scale={actor.LastKnownScale}; native readback unavailable: {nativeReason}";
+            actor.LastTransformReadback = $"brio runtime position={actor.LastKnownPosition}; yaw={actor.LastKnownRotationEuler.Y:F4}; uniformScale={NormalizeActorScale(actor.LastKnownScale).X:F4}; native readback unavailable: {nativeReason}";
             reason = actor.LastTransformReadback;
             actor.LastTransformError = reason;
             return false;
@@ -552,18 +579,20 @@ public sealed class RealNpcSpawnService
 
     private static bool TransformReadbackMatches(RuntimeActorInstance actor, Vector3 position, Vector3 rotationEuler, Vector3 scale, out string reason)
     {
+        var normalizedRotation = NormalizeActorRotation(rotationEuler);
+        var normalizedScale = NormalizeActorScale(scale);
         var positionOk = Vector3.Distance(actor.LastKnownPosition, position) <= 0.35f;
-        var yawOk = MathF.Abs(NormalizeAngleDelta(actor.LastKnownRotationEuler.Y - rotationEuler.Y)) <= 0.075f;
-        var expectedNativeScale = new Vector3(MathF.Max(0.01f, scale.Y));
+        var yawOk = MathF.Abs(NormalizeAngleDelta(actor.LastKnownRotationEuler.Y - normalizedRotation.Y)) <= 0.075f;
+        var expectedNativeScale = normalizedScale;
         var scaleOk = Vector3.Distance(actor.LastKnownScale, expectedNativeScale) <= 0.05f;
 
         var parts = new List<string>();
         if (!positionOk)
             parts.Add($"position actual={actor.LastKnownPosition}, requested={position}");
         if (!yawOk)
-            parts.Add($"yaw actual={actor.LastKnownRotationEuler.Y:F4}, requested={rotationEuler.Y:F4}");
+            parts.Add($"yaw actual={actor.LastKnownRotationEuler.Y:F4}, requested={normalizedRotation.Y:F4}");
         if (!scaleOk)
-            parts.Add($"scale actual={actor.LastKnownScale}, requestedNativeUniform={expectedNativeScale}");
+            parts.Add($"uniformScale actual={actor.LastKnownScale}, requested={expectedNativeScale}");
 
         reason = string.Join("; ", parts);
         return positionOk && yawOk && scaleOk;
@@ -584,9 +613,15 @@ public sealed class RealNpcSpawnService
         if (int.TryParse(actor.ObjectIndex, out var parsedIndex))
             objectIndex = parsedIndex;
 
-        if (objectIndex <= 0)
+        if (objectIndex < 0)
         {
-            reason = $"invalid spawned Actor objectIndex={objectIndex}; refusing transform write to objectIndex 0/local player.";
+            reason = $"invalid spawned Actor objectIndex={objectIndex}; transform target has no resolved object table index.";
+            return false;
+        }
+
+        if (objectIndex == 0 && !TryParseAddress(actor.Address, out var address))
+        {
+            reason = "spawned Actor has objectIndex=0 and no valid address; refusing transform write.";
             return false;
         }
 
@@ -598,15 +633,18 @@ public sealed class RealNpcSpawnService
     {
         var config = this.GetConfig(runtimeId);
         var actor = this.registry.GetByRuntimeId(runtimeId);
-        var normalizedScale = NormalizeScale(scale);
-        this.SaveConfigTransform(config, position, rotationEuler, normalizedScale);
+        var safePosition = ActorTransformUtil.SanitizePosition(position, actor?.TransformEditPosition ?? Vector3.Zero);
+        var normalizedRotation = NormalizeActorRotation(rotationEuler);
+        var normalizedScale = NormalizeActorScale(scale);
+        this.SaveConfigTransform(config, safePosition, normalizedRotation, normalizedScale);
         if (actor != null)
         {
-            actor.TransformEditPosition = position;
-            actor.TransformEditRotationEuler = rotationEuler;
+            actor.TransformEditPosition = safePosition;
+            actor.TransformEditRotationEuler = normalizedRotation;
             actor.TransformEditScale = normalizedScale;
             actor.HasSavedTransform = true;
-            actor.SavedTransformSnapshot = $"position={position}; rotationEuler={rotationEuler}; scale={normalizedScale}";
+            actor.SavedTransformSnapshot = $"position={safePosition}; yaw={normalizedRotation.Y:F4}; uniformScale={normalizedScale.X:F4}";
+            this.LogActorTransformDebug(actor, "SaveTransform", actor.SavedTransformSnapshot);
         }
 
         this.LastMessage = $"Saved WorldTransform for Actor {ShortId(runtimeId)}.";
@@ -1140,8 +1178,8 @@ public sealed class RealNpcSpawnService
 
             actor.LastPendingTransformAttemptAt = now;
             var position = actor.PendingTransformPosition;
-            var rotation = actor.PendingTransformRotationEuler;
-            var scale = actor.PendingTransformScale == Vector3.Zero ? Vector3.One : actor.PendingTransformScale;
+            var rotation = NormalizeActorRotation(actor.PendingTransformRotationEuler);
+            var scale = NormalizeActorScale(actor.PendingTransformScale == Vector3.Zero ? Vector3.One : actor.PendingTransformScale);
             if (!this.ApplyActorTransformInternal(actor.RuntimeId, position, rotation, scale, fromPendingFlush: true) && !this.IsRuntimeReady(actor))
                 actor.HasPendingTransformApply = true;
         }
@@ -1229,7 +1267,10 @@ public sealed class RealNpcSpawnService
     private void ClearRuntimeForRebuild(string reason)
     {
         foreach (var actor in this.registry.GetAll().ToList())
+        {
+            this.LogActorTransformDebug(actor, "ClearRuntimeForRebuild", reason);
             this.DespawnRuntimeOnly(actor, reason);
+        }
         this.registry.Clear();
         this.MaterializeCurrentTerritoryShells(reason);
     }
@@ -1243,9 +1284,19 @@ public sealed class RealNpcSpawnService
                 continue;
 
             var actor = this.EnsureShell(config, this.database.GetNpcById(config.SourceNpcPresetId));
+            var shouldLogMaterialize = !string.Equals(actor.LastRebuildReason, reason, StringComparison.Ordinal) ||
+                actor.LastGposeState != (this.validityMonitorService.CurrentIsGposing ? "GPose" : "Normal");
+            var (position, rotation, scale) = GetConfigTransform(config);
+            actor.PendingTransformPosition = position;
+            actor.PendingTransformRotationEuler = rotation;
+            actor.PendingTransformScale = scale;
+            actor.PendingTransformRetryTicksRemaining = PostSpawnTransformRetryTicks;
+            actor.HasPendingTransformApply = true;
             actor.LastRebuildReason = reason;
             actor.LastSceneReadyState = reason;
             actor.LastGposeState = this.validityMonitorService.CurrentIsGposing ? "GPose" : "Normal";
+            if (shouldLogMaterialize)
+                this.LogActorTransformDebug(actor, "MaterializeShell", $"reason={reason}; saved position={position}; yaw={rotation.Y:F4}; uniformScale={scale.X:F4}");
             if (actor.LifecycleState != ActorLifecycleState.Ready && actor.LifecycleState != ActorLifecycleState.Spawning && actor.LifecycleState != ActorLifecycleState.BindingRuntime && actor.LifecycleState != ActorLifecycleState.SpawnFailed)
                 this.SetLifecycle(actor, ActorLifecycleState.SpawnPending, reason);
         }
@@ -1360,7 +1411,10 @@ public sealed class RealNpcSpawnService
             return shell;
         }
 
-        config.RuntimeId = string.IsNullOrWhiteSpace(config.RuntimeId) ? Guid.NewGuid().ToString("N") : config.RuntimeId;
+        if (string.IsNullOrWhiteSpace(config.RuntimeId))
+        {
+            config.RuntimeId = Guid.NewGuid().ToString("N");
+        }
         if (shell.CharacterObject != null)
             this.DespawnRuntimeOnly(shell, "respawn existing runtime handle");
 
@@ -1372,8 +1426,11 @@ public sealed class RealNpcSpawnService
 
         try
         {
-            var position = ToVector3(config.WorldPosition);
-            var rotation = ToVector3(config.WorldRotationEuler);
+            var (position, rotation, scale) = GetConfigTransform(config);
+            shell.PendingTransformPosition = position;
+            shell.PendingTransformRotationEuler = rotation;
+            shell.PendingTransformScale = scale;
+            this.LogActorTransformDebug(shell, "SpawnConfigStart", $"reason={reason}; saved position={position}; yaw={rotation.Y:F4}; uniformScale={scale.X:F4}");
             if (!this.brioAssemblyBridge.TrySpawnActor(config, out var spawned, out var spawnReason, position, rotation.Y))
             {
                 shell.LastError = spawnReason;
@@ -1393,6 +1450,11 @@ public sealed class RealNpcSpawnService
             spawned.SpawnRequestId = shell.SpawnRequestId;
             spawned.SpawnAttemptCount = shell.SpawnAttemptCount;
             spawned.LastSpawnAttemptAt = shell.LastSpawnAttemptAt;
+            spawned.PendingTransformPosition = position;
+            spawned.PendingTransformRotationEuler = rotation;
+            spawned.PendingTransformScale = scale;
+            spawned.HasPendingTransformApply = true;
+            spawned.PendingTransformRetryTicksRemaining = PostSpawnTransformRetryTicks;
             this.registry.Add(spawned);
             this.SetLifecycle(spawned, ActorLifecycleState.Spawned, spawnReason);
             this.SetLifecycle(spawned, ActorLifecycleState.BindingRuntime, "Native actor spawned; binding post-spawn pipeline.");
@@ -1424,6 +1486,35 @@ public sealed class RealNpcSpawnService
             }
 
             actor.PostSpawnPipelineStatus = drawReason;
+        }
+
+        if (!this.brioAssemblyBridge.TryReadActorTransformTargetIdentity(actor, out var targetIdentity, out var targetReason))
+        {
+            actor.BindingStartedAt ??= DateTime.UtcNow;
+            actor.BindingWaitTicks++;
+            this.SetLifecycle(actor, ActorLifecycleState.BindingRuntime, $"Waiting for transform target: {targetReason} tick {actor.BindingWaitTicks}/{RuntimeBindTimeoutTicks}.");
+            this.LogActorTransformDebug(actor, "BindTargetWaiting", targetReason);
+            if (actor.BindingWaitTicks >= RuntimeBindTimeoutTicks)
+                this.SetLifecycle(actor, ActorLifecycleState.Failed, $"Runtime actor transform target binding timed out: {targetReason}");
+            return;
+        }
+
+        if (!string.Equals(actor.TransformTargetIdentity, targetIdentity, StringComparison.Ordinal))
+        {
+            actor.TransformTargetIdentity = targetIdentity;
+            actor.TransformTargetStableTicks = 1;
+            actor.LastTransformTargetDebug = $"transform target changed/stabilizing: {targetIdentity}";
+            this.SetLifecycle(actor, ActorLifecycleState.BindingRuntime, $"Transform target stabilizing 1/2: {targetIdentity}");
+            this.LogActorTransformDebug(actor, "BindTargetChanged", targetIdentity);
+            return;
+        }
+
+        actor.TransformTargetStableTicks++;
+        actor.LastTransformTargetDebug = $"transform target stable {actor.TransformTargetStableTicks}/2: {targetIdentity}";
+        if (actor.TransformTargetStableTicks < 2)
+        {
+            this.SetLifecycle(actor, ActorLifecycleState.BindingRuntime, actor.LastTransformTargetDebug);
+            return;
         }
 
         if (this.IsRuntimeReady(actor))
@@ -1461,7 +1552,8 @@ public sealed class RealNpcSpawnService
             return false;
         }
 
-        var transformOk = this.ApplyActorTransform(actor.RuntimeId, ToVector3(config.WorldPosition), ToVector3(config.WorldRotationEuler), ToVector3(config.WorldScale, Vector3.One));
+        var (position, rotation, scale) = GetConfigTransform(config);
+        var transformOk = this.ApplyActorTransform(actor.RuntimeId, position, rotation, scale);
         if (!transformOk)
         {
             actor.RuntimeTransformApplied = false;
@@ -1525,9 +1617,7 @@ public sealed class RealNpcSpawnService
 
     private void PopulateActorFromConfig(RuntimeActorInstance actor, PersistentActorConfig config, CustomNpc? npc)
     {
-        var position = ToVector3(config.WorldPosition);
-        var rotation = ToVector3(config.WorldRotationEuler);
-        var scale = NormalizeScale(ToVector3(config.WorldScale, Vector3.One));
+        var (position, rotation, scale) = GetConfigTransform(config);
         actor.RuntimeId = config.RuntimeId;
         actor.ConfigId = config.ConfigId;
         actor.NpcId = config.SourceNpcPresetId;
@@ -1554,7 +1644,7 @@ public sealed class RealNpcSpawnService
         actor.TransformEditScale = scale;
         actor.LastKnownPosition = position;
         actor.LastKnownRotationEuler = rotation;
-        actor.LastKnownRotation = Quaternion.CreateFromYawPitchRoll(rotation.Y, rotation.X, rotation.Z);
+        actor.LastKnownRotation = Quaternion.CreateFromYawPitchRoll(rotation.Y, 0f, 0f);
         actor.LastKnownScale = scale;
         actor.HasSavedTransform = true;
         actor.DefaultAnimationId = config.DefaultAnimationId;
@@ -1607,8 +1697,8 @@ public sealed class RealNpcSpawnService
             TerritoryType = territory,
             TerritoryName = $"Territory {territory}",
             WorldPosition = ToData(position),
-            WorldRotationEuler = ToData(rotationEuler),
-            WorldScale = ToData(NormalizeScale(scale)),
+            WorldRotationEuler = ToData(NormalizeActorRotation(rotationEuler)),
+            WorldScale = ToData(NormalizeActorScale(scale)),
             DefaultAnimationId = npc.DefaultAnimationId,
             CurrentAnimationId = npc.DefaultAnimationId,
             AnimationEnabled = npc.AutoPlayDefaultAnimation && npc.DefaultAnimationId != 0,
@@ -1646,8 +1736,8 @@ public sealed class RealNpcSpawnService
             TerritoryType = territory,
             TerritoryName = $"Territory {territory}",
             WorldPosition = ToData(position),
-            WorldRotationEuler = ToData(rotationEuler),
-            WorldScale = ToData(NormalizeScale(scale)),
+            WorldRotationEuler = ToData(NormalizeActorRotation(rotationEuler)),
+            WorldScale = ToData(NormalizeActorScale(scale)),
             AutoSpawn = true,
             SortOrder = sortOrder,
             SpawnSequence = ++this.nextRuntimeActorSequence,
@@ -1679,9 +1769,9 @@ public sealed class RealNpcSpawnService
         if (config == null)
             return;
 
-        config.WorldPosition = ToData(position);
-        config.WorldRotationEuler = ToData(rotationEuler);
-        config.WorldScale = ToData(NormalizeScale(scale));
+        config.WorldPosition = ToData(ActorTransformUtil.SanitizePosition(position, ToVector3(config.WorldPosition)));
+        config.WorldRotationEuler = ToData(NormalizeActorRotation(rotationEuler));
+        config.WorldScale = ToData(NormalizeActorScale(scale));
         this.database.Save();
     }
 
@@ -1708,6 +1798,8 @@ public sealed class RealNpcSpawnService
         actor.HasBoundNativeActor = false;
         actor.HasBoundDrawObject = false;
         actor.HasPendingTransformApply = false;
+        actor.TransformTargetIdentity = string.Empty;
+        actor.TransformTargetStableTicks = 0;
         actor.ExpressionBlendLoopEnabled = false;
         actor.LipTalkLoopEnabled = false;
         this.SetLifecycle(actor, ActorLifecycleState.Despawned, reason);
@@ -1817,11 +1909,22 @@ public sealed class RealNpcSpawnService
         if (config.SchemaVersion != PersistentActorConfig.CurrentSchemaVersion)
             return;
 
-        config.RuntimeId = string.IsNullOrWhiteSpace(config.RuntimeId) ? Guid.NewGuid().ToString("N") : config.RuntimeId;
+        var changed = false;
+        if (string.IsNullOrWhiteSpace(config.RuntimeId))
+        {
+            config.RuntimeId = Guid.NewGuid().ToString("N");
+            changed = true;
+        }
         if (string.IsNullOrWhiteSpace(config.DisplayName))
+        {
             config.DisplayName = string.IsNullOrWhiteSpace(config.NpcNameSnapshot) ? config.Appearance.SourceName : config.NpcNameSnapshot;
+            changed = true;
+        }
         if (string.IsNullOrWhiteSpace(config.DisplayName))
+        {
             config.DisplayName = "Actor";
+            changed = true;
+        }
         var appearance = config.Appearance ?? new ActorAppearanceData();
         var spawnKind = appearance.ModelCharaOverrideId == 0
             ? InferSourceSpawnKind(appearance)
@@ -1830,12 +1933,41 @@ public sealed class RealNpcSpawnService
                 : appearance.SpawnKind != ActorSpawnKind.Unknown
                     ? appearance.SpawnKind
                     : InferSourceSpawnKind(appearance);
-        config.SpawnKind = spawnKind;
-        appearance.SpawnKind = spawnKind;
-        appearance.IsHumanoid = spawnKind == ActorSpawnKind.Character;
+        if (config.SpawnKind != spawnKind)
+        {
+            config.SpawnKind = spawnKind;
+            changed = true;
+        }
+        if (appearance.SpawnKind != spawnKind)
+        {
+            appearance.SpawnKind = spawnKind;
+            changed = true;
+        }
+        var humanoid = spawnKind == ActorSpawnKind.Character;
+        if (appearance.IsHumanoid != humanoid)
+        {
+            appearance.IsHumanoid = humanoid;
+            changed = true;
+        }
         if (string.IsNullOrWhiteSpace(config.SourceActorKind))
+        {
             config.SourceActorKind = appearance.SourceActorKind;
-        config.WorldScale = ToData(NormalizeScale(ToVector3(config.WorldScale, Vector3.One)));
+            changed = true;
+        }
+        var normalizedRotation = NormalizeActorRotation(ToVector3(config.WorldRotationEuler));
+        var normalizedScale = NormalizeActorScale(ToVector3(config.WorldScale, Vector3.One));
+        if (ToVector3(config.WorldRotationEuler) != normalizedRotation)
+        {
+            config.WorldRotationEuler = ToData(normalizedRotation);
+            changed = true;
+        }
+        if (ToVector3(config.WorldScale, Vector3.One) != normalizedScale)
+        {
+            config.WorldScale = ToData(normalizedScale);
+            changed = true;
+        }
+        if (changed)
+            this.database.Save();
     }
 
     private static ActorSpawnKind NormalizeSpawnKindForModelOverride(ActorSpawnKind current, ActorAppearanceData appearance, uint modelCharaOverrideId)
@@ -1990,11 +2122,68 @@ public sealed class RealNpcSpawnService
     private static Vector3Data ToData(Vector3 value)
         => new() { X = value.X, Y = value.Y, Z = value.Z };
 
-    private static Vector3 NormalizeScale(Vector3 scale)
-        => new(
-            MathF.Max(0.01f, float.IsFinite(scale.X) ? scale.X : 1f),
-            MathF.Max(0.01f, float.IsFinite(scale.Y) ? scale.Y : 1f),
-            MathF.Max(0.01f, float.IsFinite(scale.Z) ? scale.Z : 1f));
+    private static (Vector3 Position, Vector3 RotationEuler, Vector3 Scale) GetConfigTransform(PersistentActorConfig config)
+        => (
+            ToVector3(config.WorldPosition),
+            NormalizeActorRotation(ToVector3(config.WorldRotationEuler)),
+            NormalizeActorScale(ToVector3(config.WorldScale, Vector3.One)));
+
+    private static Vector3 NormalizeActorRotation(Vector3 rotationEuler)
+        => ActorTransformUtil.NormalizeRotation(rotationEuler);
+
+    private static Vector3 NormalizeActorScale(Vector3 scale)
+        => ActorTransformUtil.NormalizeScale(scale);
+
+    private static bool TryParseAddress(string? rawAddress, out nint address)
+    {
+        address = 0;
+        var raw = rawAddress?.Trim() ?? string.Empty;
+        if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
+            ulong.TryParse(raw[2..], System.Globalization.NumberStyles.HexNumber, null, out var hex))
+        {
+            address = (nint)hex;
+            return true;
+        }
+
+        if (ulong.TryParse(raw, out var value))
+        {
+            address = (nint)value;
+            return true;
+        }
+
+        return false;
+    }
+
+    private void LogActorTransformDebug(RuntimeActorInstance actor, string stage, string details)
+    {
+        var firstActor = this.registry.GetAll().FirstOrDefault()?.RuntimeId == actor.RuntimeId;
+        var config = this.GetConfig(actor.RuntimeId);
+        var saved = config == null
+            ? "config=missing"
+            : $"savedPos={ToVector3(config.WorldPosition)}; savedYaw={NormalizeActorRotation(ToVector3(config.WorldRotationEuler)).Y:F4}; savedScale={NormalizeActorScale(ToVector3(config.WorldScale, Vector3.One)).X:F4}";
+        actor.LastTransformTargetDebug = $"{stage}; first={firstActor}; target={actor.TransformTargetIdentity}; {details}";
+        if (!this.EnableActorTransformDebugLog)
+            return;
+
+        this.log.Information(
+            "[ActorTransform] stage={Stage} runtime={RuntimeId} config={ConfigId} first={FirstActor} state={State} index={ObjectIndex} address={Address} target={Target} editPos={EditPosition} editYaw={EditYaw} editScale={EditScale} lastPos={LastPosition} lastYaw={LastYaw} lastScale={LastScale} {Saved} details={Details}",
+            stage,
+            actor.RuntimeId,
+            actor.ConfigId,
+            firstActor,
+            actor.LifecycleState,
+            actor.ObjectIndex,
+            actor.Address,
+            actor.TransformTargetIdentity,
+            actor.TransformEditPosition,
+            NormalizeActorRotation(actor.TransformEditRotationEuler).Y,
+            NormalizeActorScale(actor.TransformEditScale).X,
+            actor.LastKnownPosition,
+            NormalizeActorRotation(actor.LastKnownRotationEuler).Y,
+            NormalizeActorScale(actor.LastKnownScale).X,
+            saved,
+            details);
+    }
 
     private static string BuildDisplayName(CustomNpc? npc)
     {

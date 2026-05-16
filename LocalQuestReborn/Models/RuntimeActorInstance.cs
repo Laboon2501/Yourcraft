@@ -112,6 +112,12 @@ public sealed class RuntimeActorInstance
 
     public string SavedTransformSnapshot { get; set; } = string.Empty;
 
+    public string TransformTargetIdentity { get; set; } = string.Empty;
+
+    public int TransformTargetStableTicks { get; set; }
+
+    public string LastTransformTargetDebug { get; set; } = string.Empty;
+
     public bool IsValid { get; set; }
 
     public string LastError { get; set; } = string.Empty;

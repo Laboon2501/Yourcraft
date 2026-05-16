@@ -77,7 +77,7 @@ public sealed class BrioCapabilityBridgeService
             actor.TransformEditPosition = worldPosition;
             actor.LastKnownScale = normalizedScale;
             actor.TransformEditScale = normalizedScale;
-            actor.LastTransformReadback = $"position={worldPosition}; rotationEuler={actor.LastKnownRotationEuler}; scale={normalizedScale}";
+            actor.LastTransformReadback = $"position={worldPosition}; yaw={actor.LastKnownRotationEuler.Y:F4}; uniformScale={normalizedScale.X:F4}";
             actor.LastTransformError = string.Empty;
             actor.LastMoveMethod = "Native root + Brio ModelPosing.Transform sync";
             this.LastMoveMethod = actor.LastMoveMethod;
@@ -120,7 +120,7 @@ public sealed class BrioCapabilityBridgeService
             if (TryGetTransformFieldOrProperty(transform, "Rotation", out Quaternion rotation))
             {
                 actor.LastKnownRotation = Normalize(rotation);
-                actor.LastKnownRotationEuler = QuaternionToEuler(actor.LastKnownRotation);
+                actor.LastKnownRotationEuler = NormalizeRotation(QuaternionToEuler(actor.LastKnownRotation));
             }
             if (TryGetTransformFieldOrProperty(transform, "Scale", out Vector3 scale))
                 actor.LastKnownScale = NormalizeScale(scale);
@@ -131,7 +131,7 @@ public sealed class BrioCapabilityBridgeService
                 actor.TransformEditRotationEuler = actor.LastKnownRotationEuler;
                 actor.TransformEditScale = actor.LastKnownScale == Vector3.Zero ? Vector3.One : actor.LastKnownScale;
             }
-            actor.LastTransformReadback = $"position={actor.LastKnownPosition}; rotationEuler={actor.LastKnownRotationEuler}; scale={actor.LastKnownScale}";
+            actor.LastTransformReadback = $"position={actor.LastKnownPosition}; yaw={actor.LastKnownRotationEuler.Y:F4}; uniformScale={actor.LastKnownScale.X:F4}";
             actor.LastTransformError = string.Empty;
             reason = $"Read Brio ModelPosing.Transform: {actor.LastTransformReadback}";
             return true;
@@ -163,25 +163,26 @@ public sealed class BrioCapabilityBridgeService
             if (transform == null)
                 return this.Fail(actor, "Unable to create Brio Transform.", out reason);
 
+            var normalizedRotationEuler = NormalizeRotation(rotationEuler);
             var normalizedScale = NormalizeScale(scale);
-            var rotation = Normalize(Quaternion.CreateFromYawPitchRoll(rotationEuler.Y, rotationEuler.X, rotationEuler.Z));
+            var rotation = Normalize(Quaternion.CreateFromYawPitchRoll(normalizedRotationEuler.Y, 0f, 0f));
             SetTransformFieldOrProperty(transform, "Position", position);
             SetTransformFieldOrProperty(transform, "Rotation", rotation);
             SetTransformFieldOrProperty(transform, "Scale", normalizedScale);
             transformProperty.SetValue(modelPosing, transform);
 
-            var nativeReason = this.TryApplyNativeRootTransform(actor, position, rotationEuler.Y, normalizedScale, out var nativeApplyReason)
+            var nativeReason = this.TryApplyNativeRootTransform(actor, position, normalizedRotationEuler.Y, normalizedScale, out var nativeApplyReason)
                 ? nativeApplyReason
                 : $"native root skipped: {nativeApplyReason}";
 
             actor.LastKnownPosition = position;
             actor.LastKnownRotation = rotation;
-            actor.LastKnownRotationEuler = rotationEuler;
+            actor.LastKnownRotationEuler = normalizedRotationEuler;
             actor.LastKnownScale = normalizedScale;
             actor.TransformEditPosition = position;
-            actor.TransformEditRotationEuler = rotationEuler;
+            actor.TransformEditRotationEuler = normalizedRotationEuler;
             actor.TransformEditScale = normalizedScale;
-            actor.LastTransformReadback = $"position={position}; rotationEuler={rotationEuler}; scale={normalizedScale}";
+            actor.LastTransformReadback = $"position={position}; yaw={normalizedRotationEuler.Y:F4}; uniformScale={normalizedScale.X:F4}";
             actor.LastTransformError = string.Empty;
             actor.LastMoveMethod = "Native root + Brio ModelPosing.Transform";
             this.LastMoveMethod = actor.LastMoveMethod;
@@ -409,10 +410,10 @@ public sealed class BrioCapabilityBridgeService
     }
 
     private static Vector3 NormalizeScale(Vector3 scale)
-        => new(
-            MathF.Max(0.01f, float.IsFinite(scale.X) ? scale.X : 1f),
-            MathF.Max(0.01f, float.IsFinite(scale.Y) ? scale.Y : 1f),
-            MathF.Max(0.01f, float.IsFinite(scale.Z) ? scale.Z : 1f));
+        => ActorTransformUtil.NormalizeScale(scale);
+
+    private static Vector3 NormalizeRotation(Vector3 rotationEuler)
+        => ActorTransformUtil.NormalizeRotation(rotationEuler);
 
     private static Quaternion Normalize(Quaternion rotation)
     {

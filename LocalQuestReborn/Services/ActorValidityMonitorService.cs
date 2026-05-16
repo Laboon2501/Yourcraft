@@ -119,10 +119,36 @@ public sealed class ActorValidityMonitorService
         position = actor.LastKnownPosition;
         reason = string.Empty;
 
+        var actorAddress = NormalizeAddress(actor.Address);
+        if (!string.IsNullOrWhiteSpace(actorAddress))
+        {
+            foreach (var obj in this.objectTable)
+            {
+                if (obj == null)
+                    continue;
+
+                var address = NormalizeAddress(ReadStringMember(obj, "Address"));
+                if (string.IsNullOrWhiteSpace(address) || !string.Equals(actorAddress, address, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (ReadVector3Member(obj, "Position", out position))
+                    return true;
+
+                reason = "Actor invalid: matched by address, but Position is unavailable.";
+                return false;
+            }
+        }
+
         if (string.IsNullOrWhiteSpace(actor.ObjectIndex) || !int.TryParse(actor.ObjectIndex, out var objectIndex))
         {
             reason = "Actor 已失效，ObjectIndex 不可用。";
             return false;
+        }
+
+        if (objectIndex == 0 && !string.IsNullOrWhiteSpace(actorAddress))
+        {
+            reason = "Actor validity kept by spawned address; objectIndex=0 is not used as a LocalPlayer fallback.";
+            return true;
         }
 
         var found = false;
@@ -137,8 +163,8 @@ public sealed class ActorValidityMonitorService
 
             found = true;
             var address = ReadStringMember(obj, "Address");
-            if (!string.IsNullOrWhiteSpace(actor.Address) && !string.IsNullOrWhiteSpace(address) &&
-                !string.Equals(NormalizeAddress(actor.Address), NormalizeAddress(address), StringComparison.OrdinalIgnoreCase))
+            if (!string.IsNullOrWhiteSpace(actorAddress) && !string.IsNullOrWhiteSpace(address) &&
+                !string.Equals(actorAddress, NormalizeAddress(address), StringComparison.OrdinalIgnoreCase))
             {
                 reason = "Actor 已失效，可能由 GPose 切换清理：Address 不再匹配。";
                 return false;
@@ -226,5 +252,15 @@ public sealed class ActorValidityMonitorService
     }
 
     private static string NormalizeAddress(string raw)
-        => raw.Trim().Replace("0x", string.Empty, StringComparison.OrdinalIgnoreCase).TrimStart('0');
+    {
+        if (string.IsNullOrWhiteSpace(raw) ||
+            raw.Contains("unavailable", StringComparison.OrdinalIgnoreCase) ||
+            raw.Contains("不可", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Empty;
+        }
+
+        var normalized = raw.Trim().Replace("0x", string.Empty, StringComparison.OrdinalIgnoreCase).TrimStart('0');
+        return normalized.Any(Uri.IsHexDigit) ? normalized : string.Empty;
+    }
 }

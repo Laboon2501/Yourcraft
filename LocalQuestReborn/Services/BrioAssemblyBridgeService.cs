@@ -689,7 +689,7 @@ public sealed class BrioAssemblyBridgeService
             return false;
         }
 
-        if (!TryValidateSpawnedActorIndex(instance, out reason))
+        if (!this.TryValidateSpawnedActorTarget(instance, out reason))
             return false;
 
         if (instance.IsStale || instance.CharacterObject == null)
@@ -728,7 +728,7 @@ public sealed class BrioAssemblyBridgeService
             return false;
         }
 
-        if (!TryValidateSpawnedActorIndex(instance, out reason))
+        if (!this.TryValidateSpawnedActorTarget(instance, out reason))
             return false;
 
         if (instance.IsStale || instance.CharacterObject == null)
@@ -818,7 +818,7 @@ public sealed class BrioAssemblyBridgeService
         rotationEuler = Vector3.Zero;
         scale = Vector3.One;
 
-        if (!TryValidateSpawnedActorIndex(instance, out reason))
+        if (!this.TryValidateSpawnedActorTarget(instance, out reason))
             return false;
 
         if (instance.IsStale || instance.CharacterObject == null)
@@ -836,23 +836,76 @@ public sealed class BrioAssemblyBridgeService
         try
         {
             var native = (Character*)address;
-            position = native->GameObject.Position;
+            var rootPosition = native->GameObject.Position;
             var yaw = native->GameObject.Rotation;
             rotationEuler = new Vector3(0f, yaw, 0f);
             var nativeScale = MathF.Max(0.01f, native->GameObject.Scale);
             scale = new Vector3(nativeScale, nativeScale, nativeScale);
+            var drawObject = native->GameObject.DrawObject;
+            if (drawObject != null)
+            {
+                var draw = (SceneObject*)drawObject;
+                position = draw->Position;
+                var drawScale = NormalizeActorScale(draw->Scale);
+                scale = drawScale;
+            }
+            else
+            {
+                position = rootPosition;
+            }
 
             instance.LastKnownPosition = position;
             instance.LastKnownRotationEuler = rotationEuler;
             instance.LastKnownRotation = Quaternion.CreateFromYawPitchRoll(yaw, 0f, 0f);
             instance.LastKnownScale = scale;
-            reason = $"native readback ok; yaw-only rotation readback. objectIndex={instance.ObjectIndex}, address={instance.Address}";
+            reason = $"native readback ok; yaw-only rotation readback. objectIndex={instance.ObjectIndex}, address={instance.Address}, rootPosition={rootPosition}, visualPosition={position}";
             return true;
         }
         catch (Exception ex)
         {
             reason = ex.Message;
             this.log.Warning(ex, "Native transform readback failed. RuntimeId={RuntimeId}, Address={Address}", instance.RuntimeId, instance.Address);
+            return false;
+        }
+    }
+
+    public unsafe bool TryReadActorTransformTargetIdentity(RuntimeActorInstance instance, out string identity, out string reason)
+    {
+        identity = string.Empty;
+        if (!this.TryValidateSpawnedActorTarget(instance, out reason))
+            return false;
+
+        if (instance.IsStale || instance.CharacterObject == null)
+        {
+            reason = "actor stale or CharacterObject unavailable.";
+            return false;
+        }
+
+        if (!TryReadAddress(instance.CharacterObject, out var address) || address == 0)
+        {
+            reason = $"unable to read valid Address. Address={ReadProperty(instance.CharacterObject, "Address")}";
+            return false;
+        }
+
+        try
+        {
+            var native = (Character*)address;
+            var battle = (BattleChara*)address;
+            var drawObject = native->GameObject.DrawObject;
+            if (drawObject == null)
+            {
+                reason = $"draw object unavailable for transform target. objectIndex={instance.ObjectIndex}, address={instance.Address}, objectKind={battle->ObjectKind}";
+                return false;
+            }
+
+            identity = $"objectIndex={instance.ObjectIndex}; address=0x{address:X}; draw=0x{(nint)drawObject:X}; objectKind={battle->ObjectKind}";
+            reason = identity;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            reason = ex.Message;
+            this.log.Warning(ex, "Failed to read Actor transform target identity. RuntimeId={RuntimeId}, Address={Address}", instance.RuntimeId, instance.Address);
             return false;
         }
     }
@@ -873,6 +926,43 @@ public sealed class BrioAssemblyBridgeService
 
         this.FillInstanceFromCharacter(instance, instance.CharacterObject);
         return instance.IsValid;
+    }
+
+    public bool TryResolveRuntimeActorNativeTarget(RuntimeActorInstance instance, out nint address, out int objectIndex, out string reason)
+    {
+        address = 0;
+        objectIndex = -1;
+
+        if (instance.IsStale)
+        {
+            reason = "spawned Actor is stale; native target must be rebound before facial/lip writes.";
+            return false;
+        }
+
+        if (instance.CharacterObject == null)
+        {
+            reason = "spawned Actor CharacterObject unavailable; native target is not bound.";
+            return false;
+        }
+
+        this.FillInstanceFromCharacter(instance, instance.CharacterObject);
+
+        if (!this.TryValidateSpawnedActorTarget(instance, out reason))
+            return false;
+
+        var actorAddressText = ReadProperty(instance.CharacterObject, "Address");
+        if (!TryReadAddress(instance.CharacterObject, out address) || address == 0)
+        {
+            reason = $"spawned Actor native address unavailable. objectIndex={instance.ObjectIndex}; address={actorAddressText}";
+            return false;
+        }
+
+        objectIndex = int.TryParse(instance.ObjectIndex, out var parsedIndex) ? parsedIndex : instance.LastKnownObjectIndex;
+        var localPlayer = this.objectTable.LocalPlayer;
+        var localIndex = localPlayer == null ? "unavailable" : ReadProperty(localPlayer, "ObjectIndex");
+        var localAddress = localPlayer == null ? "unavailable" : ReadProperty(localPlayer, "Address");
+        reason = $"resolved Actor native target. objectIndex={objectIndex}; address=0x{address:X}; localPlayerIndex={localIndex}; localPlayerAddress={localAddress}; target={instance.LastTransformTargetDebug}";
+        return true;
     }
 
     public bool SpawnSelectedNpcReflection(CustomNpc npc, out string reason)
@@ -1500,23 +1590,47 @@ public sealed class BrioAssemblyBridgeService
         => $"X {position.X:F2}, Y {position.Y:F2}, Z {position.Z:F2}";
 
     private static Vector3 NormalizeActorScale(Vector3 scale)
-    {
-        if (!IsFiniteVector(scale) || scale == Vector3.Zero)
-            return Vector3.One;
+        => ActorTransformUtil.NormalizeScale(scale);
 
-        var uniform = MathF.Max(0.01f, scale.Y);
-        return new Vector3(uniform, uniform, uniform);
-    }
-
-    private static bool TryValidateSpawnedActorIndex(RuntimeActorInstance instance, out string reason)
+    private bool TryValidateSpawnedActorTarget(RuntimeActorInstance instance, out string reason)
     {
         var objectIndex = instance.LastKnownObjectIndex;
         if (int.TryParse(instance.ObjectIndex, out var parsedIndex))
             objectIndex = parsedIndex;
 
-        if (objectIndex <= 0)
+        if (instance.CharacterObject == null)
         {
-            reason = $"invalid spawned Actor objectIndex={objectIndex}; objectIndex 0/local player is not a valid Actor target.";
+            reason = "spawned Actor CharacterObject unavailable.";
+            return false;
+        }
+
+        var localPlayer = this.objectTable.LocalPlayer;
+        if (localPlayer != null)
+        {
+            if (ReferenceEquals(instance.CharacterObject, localPlayer))
+            {
+                reason = "spawned Actor target equals LocalPlayer reference.";
+                return false;
+            }
+
+            var actorAddress = ReadProperty(instance.CharacterObject, "Address");
+            var localAddress = ReadProperty(localPlayer, "Address");
+            if (AddressMatches(actorAddress, localAddress))
+            {
+                reason = $"spawned Actor target address equals LocalPlayer address={localAddress}.";
+                return false;
+            }
+        }
+
+        if (objectIndex < 0)
+        {
+            reason = $"invalid spawned Actor objectIndex={objectIndex}; no transform target index was resolved.";
+            return false;
+        }
+
+        if (objectIndex == 0 && !TryReadAddress(instance.CharacterObject, out var address))
+        {
+            reason = "spawned Actor objectIndex=0 has no valid generated actor address.";
             return false;
         }
 
@@ -1556,14 +1670,6 @@ public sealed class BrioAssemblyBridgeService
             return true;
         }
 
-        var characterIndex = ReadProperty(character, "ObjectIndex");
-        var localIndex = ReadProperty(localPlayer, "ObjectIndex");
-        if (ObjectIndexMatches(characterIndex, localIndex))
-        {
-            reason = $"returned object index equals LocalPlayer index={localIndex}";
-            return true;
-        }
-
         var characterAddress = ReadProperty(character, "Address");
         var localAddress = ReadProperty(localPlayer, "Address");
         if (AddressMatches(characterAddress, localAddress))
@@ -1572,6 +1678,8 @@ public sealed class BrioAssemblyBridgeService
             return true;
         }
 
+        var characterIndex = ReadProperty(character, "ObjectIndex");
+        var localIndex = ReadProperty(localPlayer, "ObjectIndex");
         reason = $"spawnedIndex={characterIndex}, localIndex={localIndex}, spawnedAddress={characterAddress}, localAddress={localAddress}";
         return false;
     }

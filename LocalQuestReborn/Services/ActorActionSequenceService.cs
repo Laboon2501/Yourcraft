@@ -357,8 +357,9 @@ public sealed class ActorActionSequenceService
         if (runtime.HasSequenceOrigin)
             return;
 
-        var scale = actor.TransformEditScale == Vector3.Zero ? Vector3.One : actor.TransformEditScale;
-        runtime.SequenceOriginTransform = WorldTransform.FromEuler(actor.TransformEditPosition, actor.TransformEditRotationEuler, scale);
+        var rotation = ActorTransformUtil.NormalizeRotation(actor.TransformEditRotationEuler);
+        var scale = ActorTransformUtil.NormalizeScale(actor.TransformEditScale == Vector3.Zero ? Vector3.One : actor.TransformEditScale);
+        runtime.SequenceOriginTransform = WorldTransform.FromEuler(actor.TransformEditPosition, rotation, scale);
         runtime.HasSequenceOrigin = true;
     }
 
@@ -377,12 +378,12 @@ public sealed class ActorActionSequenceService
         runtime.CurrentSequenceMoveOffset = position - runtime.SequenceOriginTransform.WorldPosition;
         var rotationEuler = runtime.SequenceOriginTransform.WorldEulerRadians;
         if (step.MoveAffectsRotation)
-            rotationEuler = new Vector3(rotationEuler.X, DegreesToRadians(step.MoveYawDegrees), rotationEuler.Z);
+            rotationEuler = new Vector3(0f, DegreesToRadians(step.MoveYawDegrees), 0f);
         else if (step.MoveFaceDirection && !actor.LookAtPlayerEnabled)
         {
             var direction = runtime.MoveEndWorldPosition - runtime.MoveStartWorldPosition;
             if (direction.LengthSquared() > 0.0001f)
-                rotationEuler = new Vector3(rotationEuler.X, MathF.Atan2(direction.X, direction.Z), rotationEuler.Z);
+                rotationEuler = new Vector3(0f, MathF.Atan2(direction.X, direction.Z), 0f);
         }
 
         this.ApplyRuntimeSequenceTransform(actor, position, rotationEuler, runtime.SequenceOriginTransform.WorldScale, out var reason);
@@ -408,11 +409,11 @@ public sealed class ActorActionSequenceService
     private bool ApplyRuntimeSequenceTransform(RuntimeActorInstance actor, Vector3 position, Vector3 rotationEuler, Vector3 scale, out string reason)
     {
         var configPosition = actor.TransformEditPosition;
-        var configRotation = actor.TransformEditRotationEuler;
-        var configScale = actor.TransformEditScale == Vector3.Zero ? Vector3.One : actor.TransformEditScale;
+        var configRotation = ActorTransformUtil.NormalizeRotation(actor.TransformEditRotationEuler);
+        var configScale = ActorTransformUtil.NormalizeScale(actor.TransformEditScale == Vector3.Zero ? Vector3.One : actor.TransformEditScale);
         var spawnPosition = actor.SpawnPosition;
-        var spawnRotation = actor.SpawnRotationEuler;
-        var spawnScale = actor.SpawnScale;
+        var spawnRotation = ActorTransformUtil.NormalizeRotation(actor.SpawnRotationEuler);
+        var spawnScale = ActorTransformUtil.NormalizeScale(actor.SpawnScale);
         var hasSaved = actor.HasSavedTransform;
 
         var success = this.transformBridge.TryApplyModelTransform(actor, position, rotationEuler, scale, out reason);

@@ -326,8 +326,8 @@ public sealed unsafe class SceneEditorService
             foreach (var actor in this.actors.Actors)
             {
                 var position = actor.TransformEditPosition != Vector3.Zero ? actor.TransformEditPosition : actor.LastKnownPosition;
-                var rotation = actor.TransformEditRotationEuler != Vector3.Zero ? actor.TransformEditRotationEuler : actor.LastKnownRotationEuler;
-                var scale = actor.TransformEditScale == Vector3.Zero ? actor.LastKnownScale : actor.TransformEditScale;
+                var rotation = ActorTransformUtil.NormalizeRotation(actor.TransformEditRotationEuler != Vector3.Zero ? actor.TransformEditRotationEuler : actor.LastKnownRotationEuler);
+                var scale = ActorTransformUtil.NormalizeScale(actor.TransformEditScale == Vector3.Zero ? actor.LastKnownScale : actor.TransformEditScale);
                 items.Add(new SceneEditableRef(
                     actor.RuntimeId,
                     SceneEditableKind.LocalActor,
@@ -429,23 +429,28 @@ public sealed unsafe class SceneEditorService
 
     public bool ApplyWorldTransform(SceneEditableKind kind, string runtimeId, WorldTransform transform)
     {
-        var scale = WorldTransformUtil.NormalizeScale(transform.WorldScale);
+        var scale = kind == SceneEditableKind.LocalActor
+            ? ActorTransformUtil.NormalizeScale(transform.WorldScale)
+            : WorldTransformUtil.NormalizeScale(transform.WorldScale);
+        var rotation = kind == SceneEditableKind.LocalActor
+            ? ActorTransformUtil.NormalizeRotation(transform.WorldEulerRadians)
+            : transform.WorldEulerRadians;
         this.log.Debug("[SceneEditor] ApplyWorldTransform kind={Kind} id={Id} pos={Position} rot={Rotation} scale={Scale}",
             kind,
             runtimeId,
             transform.WorldPosition,
-            transform.WorldEulerRadians,
+            rotation,
             scale);
 
         switch (kind)
         {
             case SceneEditableKind.LocalActor:
-                var actorResult = this.actors.ApplyActorTransform(runtimeId, transform.WorldPosition, transform.WorldEulerRadians, scale);
+                var actorResult = this.actors.ApplyActorTransform(runtimeId, transform.WorldPosition, rotation, scale);
                 this.LastStatus = this.actors.LastMessage;
                 if (actorResult)
                 {
-                    this.actors.PersistActorWorldTransformToNpc(runtimeId, transform.WorldPosition, transform.WorldEulerRadians, scale);
-                    this.SyncLocalActorRecord(runtimeId, transform.WorldPosition, transform.WorldEulerRadians, scale);
+                    this.actors.PersistActorWorldTransformToNpc(runtimeId, transform.WorldPosition, rotation, scale);
+                    this.SyncLocalActorRecord(runtimeId, transform.WorldPosition, rotation, scale);
                     this.TransformGeneration++;
                     this.MarkPersistDirty("LocalActor transform");
                 }
@@ -614,7 +619,11 @@ public sealed unsafe class SceneEditorService
         switch (selected.Kind)
         {
             case SceneEditableKind.LocalActor:
-                this.actors.SaveActorTransformSnapshot(selected.RuntimeId, transform.WorldPosition, transform.WorldEulerRadians, transform.WorldScale);
+                this.actors.SaveActorTransformSnapshot(
+                    selected.RuntimeId,
+                    transform.WorldPosition,
+                    ActorTransformUtil.NormalizeRotation(transform.WorldEulerRadians),
+                    ActorTransformUtil.NormalizeScale(transform.WorldScale));
                 this.LastStatus = this.actors.LastMessage;
                 return true;
             case SceneEditableKind.LocalBgPart:
@@ -1257,8 +1266,8 @@ public sealed unsafe class SceneEditorService
             }
 
             var position = record.WorldPosition;
-            var rotation = record.WorldRotationEuler;
-            var scale = WorldTransformUtil.NormalizeScale(record.WorldScale);
+            var rotation = ActorTransformUtil.NormalizeRotation(record.WorldRotationEuler);
+            var scale = ActorTransformUtil.NormalizeScale(record.WorldScale);
             var key = $"{record.NpcId}|{record.SortOrder}|{MathF.Round(position.X, 2)}|{MathF.Round(position.Y, 2)}|{MathF.Round(position.Z, 2)}";
             if (!queuedKeys.Add(key))
             {
@@ -1706,8 +1715,8 @@ public sealed unsafe class SceneEditorService
     private bool CopyLocalActorToRecord(RuntimeActorInstance actor, SceneEditorLocalActorRecord record, uint territory)
     {
         var position = actor.HasSavedTransform ? actor.TransformEditPosition : actor.SpawnPosition;
-        var rotation = actor.HasSavedTransform ? actor.TransformEditRotationEuler : actor.SpawnRotationEuler;
-        var scale = WorldTransformUtil.NormalizeScale(actor.HasSavedTransform ? actor.TransformEditScale : actor.SpawnScale);
+        var rotation = ActorTransformUtil.NormalizeRotation(actor.HasSavedTransform ? actor.TransformEditRotationEuler : actor.SpawnRotationEuler);
+        var scale = ActorTransformUtil.NormalizeScale(actor.HasSavedTransform ? actor.TransformEditScale : actor.SpawnScale);
         var sortOrder = actor.SortOrder == int.MaxValue ? this.LocalActorRecords.IndexOf(record) : actor.SortOrder;
         var changed =
             record.NpcId != actor.NpcId ||
@@ -1750,6 +1759,8 @@ public sealed unsafe class SceneEditorService
         if (actor == null)
             return;
 
+        var normalizedRotation = ActorTransformUtil.NormalizeRotation(rotationEuler);
+        var normalizedScale = ActorTransformUtil.NormalizeScale(scale);
         var record = this.LocalActorRecords.FirstOrDefault(item => string.Equals(item.RuntimeId, runtimeId, StringComparison.OrdinalIgnoreCase));
         if (record == null)
         {
@@ -1768,11 +1779,11 @@ public sealed unsafe class SceneEditorService
         record.SortOrder = actor.SortOrder;
         record.Enabled = true;
         record.WorldPosition = position;
-        record.WorldRotationEuler = rotationEuler;
-        record.WorldScale = WorldTransformUtil.NormalizeScale(scale);
+        record.WorldRotationEuler = normalizedRotation;
+        record.WorldScale = normalizedScale;
         record.LastSavedAt = DateTime.UtcNow;
         record.RestoreStatus = "Saved";
-        this.log.Information("[ActorRestore] saved local actor record runtime={RuntimeId} npc={NpcId} order={Order} pos={Position} rot={Rotation} scale={Scale}", runtimeId, record.NpcId, record.SortOrder, position, rotationEuler, record.WorldScale);
+        this.log.Information("[ActorRestore] saved local actor record runtime={RuntimeId} npc={NpcId} order={Order} pos={Position} yaw={Yaw} scale={Scale}", runtimeId, record.NpcId, record.SortOrder, position, normalizedRotation.Y, record.WorldScale);
     }
 
     private void SyncLocalBgPartSnapshots()
