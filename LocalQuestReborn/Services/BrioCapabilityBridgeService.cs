@@ -1,4 +1,4 @@
-using Dalamud.Plugin.Services;
+﻿using Dalamud.Plugin.Services;
 using LocalQuestReborn.Models;
 using System.Numerics;
 using System.Reflection;
@@ -17,7 +17,7 @@ public sealed class BrioCapabilityBridgeService
 
     public string LastMoveError { get; private set; } = string.Empty;
 
-    public string LastMoveMethod { get; private set; } = "未移动";
+    public string LastMoveMethod { get; private set; } = "Not moved";
 
     public IReadOnlyList<string> DebugTypeNames { get; private set; } = [];
 
@@ -26,7 +26,7 @@ public sealed class BrioCapabilityBridgeService
         var assembly = FindBrioAssembly();
         if (assembly == null)
         {
-            this.DebugTypeNames = ["未发现 Brio assembly。"];
+            this.DebugTypeNames = ["Brio assembly not found."];
             return;
         }
 
@@ -43,8 +43,7 @@ public sealed class BrioCapabilityBridgeService
 
     public bool TryMoveActor(RuntimeActorInstance actor, Vector3 position, out string reason)
     {
-        reason = "Brio Capability 移动失败，需 native SetPosition 路径。已禁用 capability-only 移动，避免 actor 消失。";
-        return this.Fail(actor, reason);
+        return this.TryApplyModelTransform(actor, position, actor.TransformEditRotationEuler, actor.TransformEditScale, out reason);
     }
 
     public bool TrySyncTransformAfterNativeMove(RuntimeActorInstance actor, Vector3 worldPosition, out string reason)
@@ -52,36 +51,47 @@ public sealed class BrioCapabilityBridgeService
         try
         {
             if (actor.CharacterObject == null)
-            {
-                reason = "characterObject 不可用。";
-                return this.Fail(actor, reason);
-            }
+                return this.Fail(actor, "Character object is unavailable.", out reason);
 
             if (!this.TryGetModelPosing(actor, out var modelPosing, out reason) || modelPosing == null)
                 return this.Fail(actor, reason);
 
             var transformProperty = modelPosing.GetType().GetProperty("Transform", BindingFlags.Instance | BindingFlags.Public);
             if (transformProperty == null || !transformProperty.CanWrite)
-                return this.Fail(actor, "ModelPosing.Transform 不可写。", out reason);
+                return this.Fail(actor, "ModelPosing.Transform is not writable.", out reason);
 
             var transform = transformProperty.GetValue(modelPosing) ?? Activator.CreateInstance(transformProperty.PropertyType);
             if (transform == null)
-                return this.Fail(actor, "无法创建 Brio Transform。", out reason);
+                return this.Fail(actor, "Unable to create Brio Transform.", out reason);
 
+            var normalizedScale = NormalizeScale(actor.TransformEditScale == Vector3.Zero ? Vector3.One : actor.TransformEditScale);
             SetTransformFieldOrProperty(transform, "Position", worldPosition);
+            SetTransformFieldOrProperty(transform, "Scale", normalizedScale);
             transformProperty.SetValue(modelPosing, transform);
 
-            actor.LastMoveMethod = "Native SetPosition + Brio Transform 同步";
+            var nativeReason = this.TryApplyNativeRootTransform(actor, worldPosition, actor.TransformEditRotationEuler.Y, normalizedScale, out var nativeApplyReason)
+                ? nativeApplyReason
+                : $"native root skipped: {nativeApplyReason}";
+
+            actor.LastKnownPosition = worldPosition;
+            actor.TransformEditPosition = worldPosition;
+            actor.LastKnownScale = normalizedScale;
+            actor.TransformEditScale = normalizedScale;
+            actor.LastTransformReadback = $"position={worldPosition}; rotationEuler={actor.LastKnownRotationEuler}; scale={normalizedScale}";
+            actor.LastTransformError = string.Empty;
+            actor.LastMoveMethod = "Native root + Brio ModelPosing.Transform sync";
             this.LastMoveMethod = actor.LastMoveMethod;
             this.LastMoveError = string.Empty;
-            reason = "已在 native SetPosition 后同步 Brio PosingCapability.Transform.Position。";
+            reason = $"Synced Brio ModelPosing.Transform; {nativeReason}; {actor.LastTransformReadback}";
             return true;
         }
         catch (Exception ex)
         {
             this.log.Error(ex, "Failed to sync Brio transform after native move. RuntimeId={RuntimeId}", actor.RuntimeId);
-            reason = $"Brio Transform 同步失败：{ex.Message}";
-            this.LastMoveMethod = "Native SetPosition";
+            reason = $"Brio transform sync failed: {ex.Message}";
+            actor.LastTransformError = reason;
+            actor.LastMoveMethod = "Failed";
+            this.LastMoveMethod = "Failed";
             this.LastMoveError = reason;
             return false;
         }
@@ -92,7 +102,7 @@ public sealed class BrioCapabilityBridgeService
         try
         {
             if (actor.CharacterObject == null)
-                return this.Fail(actor, "characterObject 不可用。", out reason);
+                return this.Fail(actor, "Character object is unavailable.", out reason);
 
             if (!this.TryGetModelPosing(actor, out var modelPosing, out reason) || modelPosing == null)
                 return this.Fail(actor, reason);
@@ -100,7 +110,7 @@ public sealed class BrioCapabilityBridgeService
             var transformProperty = modelPosing.GetType().GetProperty("Transform", BindingFlags.Instance | BindingFlags.Public);
             var transform = transformProperty?.GetValue(modelPosing);
             if (transform == null)
-                return this.Fail(actor, "ModelPosing.Transform 不可读取。", out reason);
+                return this.Fail(actor, "ModelPosing.Transform is unavailable.", out reason);
 
             if (TryGetTransformFieldOrProperty(transform, "Position", out Vector3 position))
                 actor.LastKnownPosition = position;
@@ -114,16 +124,16 @@ public sealed class BrioCapabilityBridgeService
 
             actor.TransformEditPosition = actor.LastKnownPosition;
             actor.TransformEditRotationEuler = actor.LastKnownRotationEuler;
-            actor.TransformEditScale = actor.LastKnownScale;
+            actor.TransformEditScale = actor.LastKnownScale == Vector3.Zero ? Vector3.One : actor.LastKnownScale;
             actor.LastTransformReadback = $"position={actor.LastKnownPosition}; rotationEuler={actor.LastKnownRotationEuler}; scale={actor.LastKnownScale}";
             actor.LastTransformError = string.Empty;
-            reason = $"已读取 Brio ModelPosing.Transform：{actor.LastTransformReadback}";
+            reason = $"Read Brio ModelPosing.Transform: {actor.LastTransformReadback}";
             return true;
         }
         catch (Exception ex)
         {
             this.log.Error(ex, "Failed to read Brio model transform. RuntimeId={RuntimeId}", actor.RuntimeId);
-            reason = $"读取 Brio Transform 失败：{ex.Message}";
+            reason = $"Read Brio transform failed: {ex.Message}";
             actor.LastTransformError = reason;
             return false;
         }
@@ -134,18 +144,18 @@ public sealed class BrioCapabilityBridgeService
         try
         {
             if (actor.CharacterObject == null)
-                return this.Fail(actor, "characterObject 不可用。", out reason);
+                return this.Fail(actor, "Character object is unavailable.", out reason);
 
             if (!this.TryGetModelPosing(actor, out var modelPosing, out reason) || modelPosing == null)
                 return this.Fail(actor, reason);
 
             var transformProperty = modelPosing.GetType().GetProperty("Transform", BindingFlags.Instance | BindingFlags.Public);
             if (transformProperty == null || !transformProperty.CanWrite)
-                return this.Fail(actor, "ModelPosing.Transform 不可写。", out reason);
+                return this.Fail(actor, "ModelPosing.Transform is not writable.", out reason);
 
             var transform = transformProperty.GetValue(modelPosing) ?? Activator.CreateInstance(transformProperty.PropertyType);
             if (transform == null)
-                return this.Fail(actor, "无法创建 Brio Transform。", out reason);
+                return this.Fail(actor, "Unable to create Brio Transform.", out reason);
 
             var normalizedScale = NormalizeScale(scale);
             var rotation = Normalize(Quaternion.CreateFromYawPitchRoll(rotationEuler.Y, rotationEuler.X, rotationEuler.Z));
@@ -153,6 +163,10 @@ public sealed class BrioCapabilityBridgeService
             SetTransformFieldOrProperty(transform, "Rotation", rotation);
             SetTransformFieldOrProperty(transform, "Scale", normalizedScale);
             transformProperty.SetValue(modelPosing, transform);
+
+            var nativeReason = this.TryApplyNativeRootTransform(actor, position, rotationEuler.Y, normalizedScale, out var nativeApplyReason)
+                ? nativeApplyReason
+                : $"native root skipped: {nativeApplyReason}";
 
             actor.LastKnownPosition = position;
             actor.LastKnownRotation = rotation;
@@ -163,16 +177,16 @@ public sealed class BrioCapabilityBridgeService
             actor.TransformEditScale = normalizedScale;
             actor.LastTransformReadback = $"position={position}; rotationEuler={rotationEuler}; scale={normalizedScale}";
             actor.LastTransformError = string.Empty;
-            actor.LastMoveMethod = "Native SetPosition + Brio ModelPosing.Transform";
+            actor.LastMoveMethod = "Native root + Brio ModelPosing.Transform";
             this.LastMoveMethod = actor.LastMoveMethod;
             this.LastMoveError = string.Empty;
-            reason = $"已应用 Brio ModelPosing.Transform：{actor.LastTransformReadback}";
+            reason = $"Applied Brio ModelPosing.Transform; {nativeReason}; {actor.LastTransformReadback}";
             return true;
         }
         catch (Exception ex)
         {
             this.log.Error(ex, "Failed to apply Brio model transform. RuntimeId={RuntimeId}", actor.RuntimeId);
-            reason = $"应用 Brio Transform 失败：{ex.Message}";
+            reason = $"Apply Brio transform failed: {ex.Message}";
             actor.LastTransformError = reason;
             this.LastMoveError = reason;
             return false;
@@ -187,7 +201,7 @@ public sealed class BrioCapabilityBridgeService
         var brioAssembly = FindBrioAssembly();
         if (brioAssembly == null)
         {
-            reason = "未发现 Brio assembly。";
+            reason = "Brio assembly not found.";
             return false;
         }
 
@@ -209,7 +223,7 @@ public sealed class BrioCapabilityBridgeService
 
         if (setSelectedEntity == null)
         {
-            reason = "未找到 EntityManager.SetSelectedEntity(characterObject) 可用重载。";
+            reason = "EntityManager.SetSelectedEntity(characterObject) overload was not found.";
             return false;
         }
 
@@ -219,7 +233,7 @@ public sealed class BrioCapabilityBridgeService
             .FirstOrDefault(type => type.FullName?.EndsWith(".PosingCapability", StringComparison.OrdinalIgnoreCase) == true);
         if (posingCapabilityType == null)
         {
-            reason = "未找到 PosingCapability 类型。";
+            reason = "PosingCapability type was not found.";
             return false;
         }
 
@@ -228,7 +242,7 @@ public sealed class BrioCapabilityBridgeService
             .FirstOrDefault(method => method.Name == "TryGetCapabilityFromSelectedEntity" && method.IsGenericMethodDefinition);
         if (tryGetCapability == null)
         {
-            reason = "未找到 TryGetCapabilityFromSelectedEntity<T>。";
+            reason = "TryGetCapabilityFromSelectedEntity<T> was not found.";
             return false;
         }
 
@@ -236,7 +250,7 @@ public sealed class BrioCapabilityBridgeService
         var result = tryGetCapability.MakeGenericMethod(posingCapabilityType).Invoke(entityManager, args);
         if (result is not bool gotCapability || !gotCapability || args[0] == null)
         {
-            reason = $"无法从选中 Entity 获取 PosingCapability。result={result ?? "null"}";
+            reason = $"Unable to get PosingCapability from selected entity. result={result ?? "null"}";
             return false;
         }
 
@@ -244,7 +258,7 @@ public sealed class BrioCapabilityBridgeService
         modelPosing = posing.GetType().GetProperty("ModelPosing", BindingFlags.Instance | BindingFlags.Public)?.GetValue(posing);
         if (modelPosing == null)
         {
-            reason = "PosingCapability.ModelPosing 不可用。";
+            reason = "PosingCapability.ModelPosing is unavailable.";
             return false;
         }
 
@@ -264,7 +278,7 @@ public sealed class BrioCapabilityBridgeService
             brioAssembly.GetTypes().FirstOrDefault(type => type.FullName?.EndsWith(".EntityManager", StringComparison.OrdinalIgnoreCase) == true);
         if (brioType == null || entityManagerType == null)
         {
-            reason = $"无法找到 Brio.Brio 或 EntityManager。Brio.Brio={brioType != null}, EntityManager={entityManagerType != null}";
+            reason = $"Unable to resolve Brio services. Brio.Brio={brioType != null}, EntityManager={entityManagerType != null}";
             return null;
         }
 
@@ -272,7 +286,7 @@ public sealed class BrioCapabilityBridgeService
             .FirstOrDefault(method => method.Name == "TryGetService" && method.IsGenericMethodDefinition);
         if (tryGetService == null)
         {
-            reason = "未找到 Brio.Brio.TryGetService<T>。";
+            reason = "Brio.Brio.TryGetService<T> was not found.";
             return null;
         }
 
@@ -281,7 +295,7 @@ public sealed class BrioCapabilityBridgeService
         if (result is bool success && success && args[0] != null)
             return args[0];
 
-        reason = "Brio.Brio.TryGetService<EntityManager> 返回 false 或 null。";
+        reason = "Brio.Brio.TryGetService<EntityManager> returned false/null.";
         return null;
     }
 
@@ -299,6 +313,58 @@ public sealed class BrioCapabilityBridgeService
     {
         outReason = reason;
         return this.Fail(actor, reason);
+    }
+
+    private unsafe bool TryApplyNativeRootTransform(RuntimeActorInstance actor, Vector3 position, float yawRadians, Vector3 scale, out string reason)
+    {
+        if (!TryParseAddress(actor.Address, out var address) || address == 0)
+        {
+            reason = $"actor address unavailable: {actor.Address}";
+            return false;
+        }
+
+        if (!float.IsFinite(yawRadians))
+        {
+            reason = $"invalid yaw radians: {yawRadians}";
+            return false;
+        }
+
+        try
+        {
+            var native = (FFXIVClientStructs.FFXIV.Client.Game.Character.Character*)address;
+            native->GameObject.SetPosition(position.X, position.Y, position.Z);
+            native->GameObject.SetRotation(yawRadians);
+            native->GameObject.RotationModified();
+            native->GameObject.Scale = MathF.Max(0.01f, scale.Y);
+            reason = "native root position/yaw/scale updated";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            reason = ex.Message;
+            this.log.Warning(ex, "Failed to apply native root transform. RuntimeId={RuntimeId}, Address={Address}", actor.RuntimeId, actor.Address);
+            return false;
+        }
+    }
+
+    private static bool TryParseAddress(string? rawAddress, out nint address)
+    {
+        address = 0;
+        var raw = rawAddress?.Trim() ?? string.Empty;
+        if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
+            ulong.TryParse(raw[2..], System.Globalization.NumberStyles.HexNumber, null, out var hex))
+        {
+            address = (nint)hex;
+            return true;
+        }
+
+        if (ulong.TryParse(raw, out var value))
+        {
+            address = (nint)value;
+            return true;
+        }
+
+        return false;
     }
 
     private static void SetTransformFieldOrProperty(object transform, string name, object value)

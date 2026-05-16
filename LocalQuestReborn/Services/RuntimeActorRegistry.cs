@@ -6,6 +6,8 @@ public sealed class RuntimeActorRegistry
 {
     private readonly Dictionary<string, RuntimeActorInstance> instances = new(StringComparer.OrdinalIgnoreCase);
 
+    public int Count => this.instances.Count;
+
     public void Add(RuntimeActorInstance instance)
         => this.instances[instance.RuntimeId] = instance;
 

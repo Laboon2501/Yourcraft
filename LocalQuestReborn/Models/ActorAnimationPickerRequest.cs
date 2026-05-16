@@ -32,6 +32,15 @@ public sealed class ActorAnimationPickerRequest
             Title = "选择当前 Actor 动画 / ActionTimelineId",
         };
 
+    public static ActorAnimationPickerRequest ForActorExpression(string runtimeId, ActorAnimationPickerMode mode)
+        => new()
+        {
+            TargetKind = ActorAnimationPickerTargetKind.ActorExpression,
+            PickerMode = mode,
+            ActorRuntimeId = runtimeId,
+            Title = "选择当前 Actor 表情 / ExpressionTimelineId",
+        };
+
     public static ActorAnimationPickerRequest ForStepAnimation(string runtimeId, Guid stepId, ActorAnimationPickerMode mode)
         => new()
         {

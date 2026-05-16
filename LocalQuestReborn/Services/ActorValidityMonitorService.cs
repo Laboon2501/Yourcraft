@@ -73,6 +73,9 @@ public sealed class ActorValidityMonitorService
 
     private static bool IsPendingSpawnShell(RuntimeActorInstance actor)
     {
+        if (actor.LifecycleState != ActorLifecycleState.Ready && actor.CharacterObject == null)
+            return true;
+
         if (actor.CharacterObject != null || actor.IsReady)
             return false;
 

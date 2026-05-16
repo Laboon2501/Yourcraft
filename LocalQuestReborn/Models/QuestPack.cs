@@ -14,5 +14,7 @@ public sealed class QuestPack
 
     public List<CustomNpc> Npcs { get; set; } = [];
 
+    public List<PersistentActorConfig> ActorConfigs { get; set; } = [];
+
     public List<CustomQuest> Quests { get; set; } = [];
 }

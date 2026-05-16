@@ -6,6 +6,44 @@ public sealed class RuntimeActorInstance
 {
     public string RuntimeId { get; set; } = Guid.NewGuid().ToString("N");
 
+    public string ConfigId { get; set; } = string.Empty;
+
+    public ActorLifecycleState LifecycleState { get; set; } = ActorLifecycleState.ConfigOnly;
+
+    public string SpawnRequestId { get; set; } = string.Empty;
+
+    public DateTime LifecycleStateChangedAt { get; set; } = DateTime.UtcNow;
+
+    public DateTime? BindingStartedAt { get; set; }
+
+    public DateTime? LastRuntimeBindAt { get; set; }
+
+    public DateTime? LastSuccessfulTransformApplyAt { get; set; }
+
+    public DateTime? LastSuccessfulAppearanceApplyAt { get; set; }
+
+    public bool HasBoundNativeActor { get; set; }
+
+    public bool HasBoundDrawObject { get; set; }
+
+    public bool RuntimeAppearanceApplied { get; set; }
+
+    public bool RuntimeTransformApplied { get; set; }
+
+    public bool HasPendingTransformApply { get; set; }
+
+    public Vector3 PendingTransformPosition { get; set; }
+
+    public Vector3 PendingTransformRotationEuler { get; set; }
+
+    public Vector3 PendingTransformScale { get; set; } = Vector3.One;
+
+    public int BindingWaitTicks { get; set; }
+
+    public int SpawnAttemptCount { get; set; }
+
+    public DateTime LastSpawnAttemptAt { get; set; } = DateTime.MinValue;
+
     public string NpcId { get; set; } = string.Empty;
 
     public string TemplateNpcId { get; set; } = string.Empty;
@@ -94,6 +132,26 @@ public sealed class RuntimeActorInstance
 
     public string AppearanceSourceType { get; set; } = string.Empty;
 
+    public string GlamourerDesignId { get; set; } = string.Empty;
+
+    public string GlamourerDesignName { get; set; } = string.Empty;
+
+    public string GlamourerDesignPath { get; set; } = string.Empty;
+
+    public bool GlamourerIpcAvailable { get; set; }
+
+    public string LastGlamourerApplyStatus { get; set; } = string.Empty;
+
+    public string LastGlamourerApplyError { get; set; } = string.Empty;
+
+    public string LastSpawnReason { get; set; } = string.Empty;
+
+    public string LastRebuildReason { get; set; } = string.Empty;
+
+    public string LastGposeState { get; set; } = string.Empty;
+
+    public string LastSceneReadyState { get; set; } = string.Empty;
+
     public string LastAppearanceApplyResult { get; set; } = string.Empty;
 
     public DateTime? LastAppearanceAppliedAt { get; set; }
@@ -171,6 +229,32 @@ public sealed class RuntimeActorInstance
     public uint CurrentAnimationId { get; set; }
 
     public bool AnimationEnabled { get; set; }
+
+    public uint CurrentExpressionId { get; set; }
+
+    public ActorExpressionLayer CurrentExpressionLayer { get; set; } = ActorExpressionLayer.Facial;
+
+    public string LastExpressionResult { get; set; } = string.Empty;
+
+    public string LastExpressionError { get; set; } = string.Empty;
+
+    public bool ExpressionBlendLoopEnabled { get; set; }
+
+    public float ExpressionBlendLoopIntervalSeconds { get; set; } = 0.5f;
+
+    public DateTime LastExpressionBlendLoopAt { get; set; } = DateTime.MinValue;
+
+    public uint CurrentLipTalkId { get; set; }
+
+    public bool LipTalkLoopEnabled { get; set; }
+
+    public float LipTalkLoopIntervalSeconds { get; set; } = 0.5f;
+
+    public DateTime LastLipTalkLoopAt { get; set; } = DateTime.MinValue;
+
+    public string LastLipTalkResult { get; set; } = string.Empty;
+
+    public string LastLipTalkError { get; set; } = string.Empty;
 
     public string LastAnimationResult { get; set; } = string.Empty;
 

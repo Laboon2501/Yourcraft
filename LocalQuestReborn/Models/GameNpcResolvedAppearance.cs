@@ -52,18 +52,18 @@ public sealed class GameNpcResolvedCustomize
 
 public sealed class GameNpcResolvedEquipment
 {
-    public uint MainHand { get; set; }
-    public uint OffHand { get; set; }
-    public uint Head { get; set; }
-    public uint Body { get; set; }
-    public uint Hands { get; set; }
-    public uint Legs { get; set; }
-    public uint Feet { get; set; }
-    public uint Ears { get; set; }
-    public uint Neck { get; set; }
-    public uint Wrists { get; set; }
-    public uint LeftRing { get; set; }
-    public uint RightRing { get; set; }
+    public ulong MainHand { get; set; }
+    public ulong OffHand { get; set; }
+    public ulong Head { get; set; }
+    public ulong Body { get; set; }
+    public ulong Hands { get; set; }
+    public ulong Legs { get; set; }
+    public ulong Feet { get; set; }
+    public ulong Ears { get; set; }
+    public ulong Neck { get; set; }
+    public ulong Wrists { get; set; }
+    public ulong LeftRing { get; set; }
+    public ulong RightRing { get; set; }
 }
 
 public enum GameNpcResolvedAppearanceKind

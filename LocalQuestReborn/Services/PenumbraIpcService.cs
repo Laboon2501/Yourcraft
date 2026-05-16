@@ -207,6 +207,60 @@ public sealed class PenumbraIpcService
         }
     }
 
+    public bool ApplyCollection(PersistentActorConfig config, RuntimeActorInstance actor, out string reason)
+    {
+        actor.PenumbraMode = config.PenumbraMode;
+        actor.PenumbraCollectionId = config.PenumbraCollectionId;
+        actor.PenumbraCollectionNameCache = config.PenumbraCollectionNameCache;
+
+        if (config.PenumbraMode == PenumbraCollectionMode.DoNotTouch)
+        {
+            reason = "Penumbra mode DoNotTouch; skipped.";
+            actor.LastPenumbraCollectionResult = reason;
+            actor.LastPenumbraCollectionError = string.Empty;
+            return true;
+        }
+
+        if (!this.IsAvailable || !this.IsEnabled)
+            return this.Fail(actor, $"Penumbra unavailable: {this.LastError}", out reason);
+
+        if (!TryReadObjectIndex(actor, out var objectIndex))
+            return this.Fail(actor, $"Invalid actor object index: {actor.ObjectIndex}", out reason);
+
+        var target = config.PenumbraMode == PenumbraCollectionMode.UseCollection
+            ? config.PenumbraCollectionId
+            : null;
+
+        if (config.PenumbraMode == PenumbraCollectionMode.UseCollection && target == null)
+            return this.Fail(actor, "UseCollection selected but PenumbraCollectionId is empty.", out reason);
+
+        try
+        {
+            var setResult = target.HasValue
+                ? this.TrySetCollection(objectIndex, target.Value, out var setReason)
+                : this.TryClearCollection(objectIndex, out setReason);
+
+            if (!setResult)
+                return this.Fail(actor, setReason, out reason);
+
+            var redraw = this.TryRedrawObject(objectIndex, out var redrawReason);
+            actor.WeAppliedPenumbraCollection = true;
+            actor.LastAppliedPenumbraGameObjectIndex = objectIndex;
+            actor.LastAppliedPenumbraCollectionId = target;
+            actor.LastPenumbraCollectionError = string.Empty;
+            actor.LastPenumbraCollectionResult = $"Penumbra collection applied. mode={config.PenumbraMode}, index={objectIndex}, collection={target?.ToString() ?? "inherit"}, redraw={redraw}: {redrawReason}";
+            reason = actor.LastPenumbraCollectionResult;
+            this.log.Information("Apply Penumbra collection actor={Actor}, index={Index}, mode={Mode}, collection={Collection}, redraw={Redraw}", actor.RuntimeId, objectIndex, config.PenumbraMode, target?.ToString() ?? "inherit", redraw);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            this.MarkUnavailable($"SetCollectionForObject failed: {ex.Message}");
+            this.log.Warning(ex, "Apply Penumbra collection failed. Actor={Actor}, Index={Index}", actor.RuntimeId, objectIndex);
+            return this.Fail(actor, ex.Message, out reason);
+        }
+    }
+
     public bool RequestRedrawObject(RuntimeActorInstance actor, out string reason)
     {
         if (this.disposed)

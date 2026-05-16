@@ -67,6 +67,8 @@ public sealed class QuestDatabase
 
     public List<CustomNpc> Npcs { get; private set; } = [];
 
+    public List<PersistentActorConfig> ActorConfigs { get; private set; } = [];
+
     public List<CustomQuest> Quests { get; private set; } = [];
 
     public List<CustomProp> Props { get; private set; } = [];
@@ -87,12 +89,14 @@ public sealed class QuestDatabase
             var json = File.ReadAllText(this.QuestFilePath, Encoding.UTF8);
             var data = JsonSerializer.Deserialize<QuestDatabaseFile>(json, this.jsonOptions) ?? new QuestDatabaseFile();
             this.Npcs = data.Npcs ?? [];
+            this.ActorConfigs = data.ActorConfigs ?? [];
             this.Quests = data.Quests ?? [];
             this.Props = data.Props ?? [];
             this.log.Information(
-                "Loaded {QuestCount} quests, {NpcCount} NPCs and {PropCount} props from {Path}. UsingDevelopmentPath={UsingDevelopmentPath}",
+                "Loaded {QuestCount} quests, {NpcCount} NPCs, {ActorConfigCount} actor configs and {PropCount} props from {Path}. UsingDevelopmentPath={UsingDevelopmentPath}",
                 this.Quests.Count,
                 this.Npcs.Count,
+                this.ActorConfigs.Count,
                 this.Props.Count,
                 this.QuestFilePath,
                 this.IsUsingDevelopmentQuestPath);
@@ -101,6 +105,7 @@ public sealed class QuestDatabase
         {
             this.log.Error(ex, "Failed to load quest database from {Path}", this.QuestFilePath);
             this.Npcs = [];
+            this.ActorConfigs = [];
             this.Quests = [];
             this.Props = [];
         }
@@ -113,6 +118,7 @@ public sealed class QuestDatabase
         var data = new QuestDatabaseFile
         {
             Npcs = this.Npcs,
+            ActorConfigs = this.ActorConfigs,
             Quests = this.Quests,
             Props = this.Props,
         };
@@ -133,6 +139,7 @@ public sealed class QuestDatabase
             Version = "1.0.0",
             Description = description ?? "从当前 quests.json 导出的任务包。",
             Npcs = CloneViaJson(this.Npcs),
+            ActorConfigs = CloneViaJson(this.ActorConfigs),
             Quests = CloneViaJson(this.Quests),
         };
 
@@ -160,6 +167,7 @@ public sealed class QuestDatabase
             Version = "1.0.0",
             Description = description ?? "从当前 quests.json 导出的任务包。",
             Npcs = CloneViaJson(this.Npcs),
+            ActorConfigs = CloneViaJson(this.ActorConfigs),
             Quests = CloneViaJson(this.Quests),
         };
 
@@ -246,6 +254,32 @@ public sealed class QuestDatabase
             else
             {
                 this.Quests.Add(importedQuest);
+            }
+        }
+
+        foreach (var importedActor in CloneViaJson(pack.ActorConfigs))
+        {
+            if (npcIdMap.TryGetValue(importedActor.SourceNpcPresetId, out var mappedNpcId))
+                importedActor.SourceNpcPresetId = mappedNpcId;
+
+            if (this.ActorConfigs.Any(actor => string.Equals(actor.ConfigId, importedActor.ConfigId, StringComparison.OrdinalIgnoreCase)))
+            {
+                if (overwriteExistingIds)
+                {
+                    var index = this.ActorConfigs.FindIndex(actor => string.Equals(actor.ConfigId, importedActor.ConfigId, StringComparison.OrdinalIgnoreCase));
+                    if (index >= 0)
+                        this.ActorConfigs[index] = importedActor;
+                }
+                else
+                {
+                    importedActor.ConfigId = Guid.NewGuid().ToString("N");
+                    importedActor.RuntimeId = Guid.NewGuid().ToString("N");
+                    this.ActorConfigs.Add(importedActor);
+                }
+            }
+            else
+            {
+                this.ActorConfigs.Add(importedActor);
             }
         }
 
@@ -521,6 +555,8 @@ public sealed class QuestDatabase
     private sealed class QuestDatabaseFile
     {
         public List<CustomNpc>? Npcs { get; set; }
+
+        public List<PersistentActorConfig>? ActorConfigs { get; set; }
 
         public List<CustomQuest>? Quests { get; set; }
 

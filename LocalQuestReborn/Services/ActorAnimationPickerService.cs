@@ -73,6 +73,8 @@ public sealed class ActorAnimationPickerService
                     return this.ApplyNpcDefault(request, actionTimelineId);
                 case ActorAnimationPickerTargetKind.ActorCurrentAction:
                     return this.ApplyActorCurrent(request, actionTimelineId);
+                case ActorAnimationPickerTargetKind.ActorExpression:
+                    return this.ApplyActorExpression(request, actionTimelineId);
                 case ActorAnimationPickerTargetKind.StepAnimation:
                     return this.ApplyStep(request, actionTimelineId, expression: false);
                 case ActorAnimationPickerTargetKind.StepExpression:
@@ -128,6 +130,28 @@ public sealed class ActorAnimationPickerService
 
         actor.CurrentAnimationId = actionTimelineId;
         this.LastResult = $"已写入当前 Actor 动画：{ShortId(actor.RuntimeId)} -> {actionTimelineId}";
+        return true;
+    }
+
+    private bool ApplyActorExpression(ActorAnimationPickerRequest request, ushort actionTimelineId)
+    {
+        if (string.IsNullOrWhiteSpace(request.ActorRuntimeId))
+        {
+            this.LastResult = "Actor expression target is empty.";
+            return false;
+        }
+
+        var actor = this.actorRegistry.GetByRuntimeId(request.ActorRuntimeId);
+        if (actor == null)
+        {
+            this.LastResult = $"Actor not found: {request.ActorRuntimeId}";
+            return false;
+        }
+
+        actor.CurrentExpressionId = actionTimelineId;
+        if (actor.CurrentExpressionLayer == ActorExpressionLayer.None)
+            actor.CurrentExpressionLayer = ActorExpressionLayer.Facial;
+        this.LastResult = $"Actor expression selected: {ShortId(actor.RuntimeId)} -> {actionTimelineId}";
         return true;
     }
 

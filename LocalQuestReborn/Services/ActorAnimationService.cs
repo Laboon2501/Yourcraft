@@ -5,6 +5,8 @@ namespace LocalQuestReborn.Services;
 
 public sealed class ActorAnimationService
 {
+    private const int TimelineLipsOverrideOffset = 0x2E8;
+
     private readonly BrioAssemblyBridgeService brioAssemblyBridge;
     private readonly IPluginLog log;
 
@@ -40,6 +42,12 @@ public sealed class ActorAnimationService
             return false;
         }
 
+        if (!TryValidateActorTarget(actor, out reason))
+        {
+            actor.LastAnimationError = reason;
+            return false;
+        }
+
         if (!TryReadAddress(actor, out var address) || address == 0)
         {
             reason = $"Actor address unavailable: {actor.Address}";
@@ -66,6 +74,62 @@ public sealed class ActorAnimationService
             actor.LastAnimationError = reason;
             actor.LastAnimationResult = "Expression failed";
             this.log.Warning(ex, "Failed to play actor expression timeline. RuntimeId={RuntimeId}, ExpressionId={ExpressionId}", actor.RuntimeId, expressionId);
+            return false;
+        }
+    }
+
+    public bool ApplyLipTalk(RuntimeActorInstance actor, uint lipTimelineId, out string reason)
+    {
+        if (lipTimelineId > ushort.MaxValue)
+        {
+            reason = $"Lip talk ActionTimelineId is out of ushort range: {lipTimelineId}.";
+            actor.LastLipTalkError = reason;
+            return false;
+        }
+
+        if (!this.brioAssemblyBridge.EnableUnsafeNativeWrites)
+        {
+            reason = "UnsafeMode=false, native lip talk write skipped.";
+            actor.LastLipTalkError = reason;
+            return false;
+        }
+
+        if (!TryValidateActorTarget(actor, out reason))
+        {
+            actor.LastLipTalkError = reason;
+            return false;
+        }
+
+        if (!TryReadAddress(actor, out var address) || address == 0)
+        {
+            reason = $"Actor address unavailable: {actor.Address}";
+            actor.LastLipTalkError = reason;
+            return false;
+        }
+
+        try
+        {
+            unsafe
+            {
+                var character = (FFXIVClientStructs.FFXIV.Client.Game.Character.Character*)address;
+                var timeline = (byte*)&character->Timeline;
+                *(ushort*)(timeline + TimelineLipsOverrideOffset) = (ushort)lipTimelineId;
+            }
+
+            actor.CurrentLipTalkId = lipTimelineId;
+            actor.LastLipTalkError = string.Empty;
+            actor.LastLipTalkResult = lipTimelineId == 0
+                ? "Lip talk override cleared."
+                : $"Lip talk override applied: {lipTimelineId}";
+            reason = actor.LastLipTalkResult;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            reason = $"Lip talk override failed: {ex.Message}";
+            actor.LastLipTalkError = reason;
+            actor.LastLipTalkResult = "Lip talk failed";
+            this.log.Warning(ex, "Failed to apply actor lip talk override. RuntimeId={RuntimeId}, LipTimelineId={LipTimelineId}", actor.RuntimeId, lipTimelineId);
             return false;
         }
     }
@@ -240,5 +304,21 @@ public sealed class ActorAnimationService
         }
 
         return false;
+    }
+
+    private static bool TryValidateActorTarget(RuntimeActorInstance actor, out string reason)
+    {
+        var objectIndex = actor.LastKnownObjectIndex;
+        if (int.TryParse(actor.ObjectIndex, out var parsedIndex))
+            objectIndex = parsedIndex;
+
+        if (objectIndex <= 0)
+        {
+            reason = $"invalid Actor objectIndex={objectIndex}; refusing to write facial/lip data to objectIndex 0/local player.";
+            return false;
+        }
+
+        reason = string.Empty;
+        return true;
     }
 }

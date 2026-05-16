@@ -1,4 +1,4 @@
-using Dalamud.Bindings.ImGui;
+﻿using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Windowing;
 using LocalQuestReborn.Models;
 using LocalQuestReborn.Services;
@@ -47,6 +47,13 @@ public sealed class MainWindow : Window
     private string preferredModifyBgPartSearchText = string.Empty;
     private string glamourerSearchText = string.Empty;
     private string gameNpcSearchText = string.Empty;
+    private string cachedGlamourerSearchText = "\0";
+    private string cachedGameNpcSearchText = "\0";
+    private DateTime nextActorSourceSearchRefreshAt = DateTime.MinValue;
+    private DateTime nextActorRuntimeSnapshotRefreshAt = DateTime.MinValue;
+    private IReadOnlyList<GlamourerDesignEntry> cachedGlamourerDesignResults = [];
+    private IReadOnlyList<GameNpcCatalogEntry> cachedGameNpcResults = [];
+    private IReadOnlyList<RuntimeActorInstance> cachedActorRuntimeSnapshot = [];
     private int actorBatchCount = 3;
     private Vector3 actorBatchOffset = new(1.5f, 0f, 0f);
     private bool actorBatchUsePlayerPosition;
@@ -171,12 +178,6 @@ public sealed class MainWindow : Window
         if (ImGui.BeginTabItem("运行调试"))
         {
             this.DrawRuntimeDebug();
-            ImGui.EndTabItem();
-        }
-
-        if (ImGui.BeginTabItem("NPC 管理"))
-        {
-            this.DrawNpcManagement();
             ImGui.EndTabItem();
         }
 
@@ -1117,7 +1118,7 @@ public sealed class MainWindow : Window
 
     private void DrawActorInstances()
     {
-        this.EnsureSelectedNpc();
+        this.RefreshActorRuntimeSnapshotForUi();
         var available = ImGui.GetContentRegionAvail();
         var leftWidth = Math.Min(560f, Math.Max(380f, available.X * 0.45f));
 
@@ -1133,65 +1134,23 @@ public sealed class MainWindow : Window
 
     private void DrawActorSpawnAndListPanel()
     {
-        var selectedNpc = this.GetSelectedNpc();
         var inGpose = this.IsInGpose();
-        if (ImGui.BeginCombo("选中 NPC 模板", this.SelectedNpcLabel()))
-        {
-            foreach (var optionNpc in this.database.Npcs)
-            {
-                var selected = string.Equals(this.selectedNpcId, optionNpc.Id, StringComparison.OrdinalIgnoreCase);
-                if (ImGui.Selectable($"{optionNpc.Name} ({optionNpc.Id})", selected))
-                    this.selectedNpcId = optionNpc.Id;
-                if (selected)
-                    ImGui.SetItemDefaultFocus();
-            }
-            ImGui.EndCombo();
-        }
-        selectedNpc = this.GetSelectedNpc();
-
         if (ImGui.Button("刷新有效性"))
-            this.realNpcSpawn.RefreshActors();
-        ImGui.SameLine();
-        ImGui.BeginDisabled(inGpose || selectedNpc == null || !this.realNpcSpawn.CanSpawnRealActor);
-        if (ImGui.Button("从模板生成唯一 Actor") && selectedNpc != null)
-        {
-            var actor = this.realNpcSpawn.SpawnUnique(selectedNpc);
-            if (actor != null)
-            {
-                this.selectedActorRuntimeId = actor.RuntimeId;
-                this.SelectSceneEditableFromMainUi(SceneEditableKind.LocalActor, actor.RuntimeId);
-            }
-        }
-        ImGui.SameLine();
-        if (ImGui.Button("生成一个新 Actor") && selectedNpc != null)
-        {
-            var actor = this.realNpcSpawn.SpawnNew(selectedNpc);
-            if (actor != null)
-            {
-                this.selectedActorRuntimeId = actor.RuntimeId;
-                this.SelectSceneEditableFromMainUi(SceneEditableKind.LocalActor, actor.RuntimeId);
-            }
-        }
-        ImGui.EndDisabled();
-        ImGui.SameLine();
-        ImGui.BeginDisabled(inGpose || selectedNpc == null);
-        if (ImGui.Button("删除此模板的全部 Actor") && selectedNpc != null)
-            this.realNpcSpawn.DespawnAllForNpc(selectedNpc.Id);
-        ImGui.EndDisabled();
+            this.realNpcSpawn.RequestActorRebuild("manual UI refresh");
         ImGui.SameLine();
         ImGui.BeginDisabled(inGpose);
         if (ImGui.Button("删除全部 Actor"))
-            this.realNpcSpawn.DespawnAll();
+            this.realNpcSpawn.DespawnAll(deleteConfigs: true);
         ImGui.EndDisabled();
 
         if (inGpose)
-            this.DrawGposeBlockedMessage("Actor 创建 / 删除 / 批量生成");
-        else if (selectedNpc != null)
-            this.DrawActorBatchSpawnControls(selectedNpc);
+            this.DrawGposeBlockedMessage("Actor 创建 / 删除");
+        else
+            this.DrawActorSourceCreationPanel();
 
-        ImGui.TextWrapped($"Actor 数量：{this.realNpcSpawn.Actors.Count} | 队列长度：{this.realNpcSpawn.AppearanceQueueLength} | {this.realNpcSpawn.AppearanceQueueStatus}");
-        ImGui.TextWrapped($"Prewarm：{this.realNpcSpawn.SpawnPrewarmStatus} | FormalQueue：{this.realNpcSpawn.FormalQueueStatus}");
-        ImGui.TextWrapped($"SpawnQueue pending={this.realNpcSpawn.PendingActorSpawnCount} | {this.realNpcSpawn.ActorSpawnQueueDebug}");
+        ImGui.TextWrapped($"Actor 数量：{this.cachedActorRuntimeSnapshot.Count} | 队列长度：{this.realNpcSpawn.AppearanceQueueLength} | {this.realNpcSpawn.AppearanceQueueStatus}");
+        ImGui.TextWrapped($"ActorConfig spawn: {this.realNpcSpawn.FormalQueueStatus}");
+        ImGui.TextWrapped($"Lifecycle debug: {this.realNpcSpawn.ActorSpawnQueueDebug}");
         ImGui.TextWrapped($"SpawnIntent 数量：{this.realNpcSpawn.SpawnIntentCount}");
 
         if (!ImGui.BeginTable("RuntimeActors", 8, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 320f)))
@@ -1202,10 +1161,10 @@ public sealed class MainWindow : Window
         ImGui.TableSetupColumn("npcName");
         ImGui.TableSetupColumn("objectIndex");
         ImGui.TableSetupColumn("address");
-        ImGui.TableSetupColumn("valid");
+        ImGui.TableSetupColumn("state");
         ImGui.TableSetupColumn("position");
         ImGui.TableHeadersRow();
-        foreach (var actor in this.realNpcSpawn.Actors)
+        foreach (var actor in this.cachedActorRuntimeSnapshot)
         {
             ImGui.TableNextRow();
             ImGui.PushID(actor.RuntimeId);
@@ -1226,12 +1185,138 @@ public sealed class MainWindow : Window
             ImGui.TableSetColumnIndex(5);
             ImGui.TextWrapped(actor.Address);
             ImGui.TableSetColumnIndex(6);
-            ImGui.TextUnformatted(actor.IsValid ? "有效" : "失效");
+            ImGui.TextUnformatted(actor.LifecycleState.ToString());
             ImGui.TableSetColumnIndex(7);
             ImGui.TextWrapped(FormatVector(actor.LastKnownPosition));
             ImGui.PopID();
         }
         ImGui.EndTable();
+    }
+
+    private void DrawActorSourceCreationPanel()
+    {
+        this.RefreshActorSourceSearchCacheForUi();
+        ImGui.Separator();
+        ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "Glamourer Design");
+        if (ImGui.Button("重新扫描 Glamourer 设计"))
+        {
+            this.glamourerDesignCatalog.Scan();
+            this.cachedGlamourerSearchText = "\0";
+            this.nextActorSourceSearchRefreshAt = DateTime.MinValue;
+        }
+        ImGui.SameLine();
+        ImGui.TextWrapped(this.glamourerDesignCatalog.LastScanMessage);
+        ImGui.InputText("搜索 Design", ref this.glamourerSearchText, 128);
+
+        var designResults = this.cachedGlamourerDesignResults;
+        if (ImGui.BeginTable("ActorGlamourerDesignSources", 4, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 170f)))
+        {
+            ImGui.TableSetupColumn("名称");
+            ImGui.TableSetupColumn("Identifier");
+            ImGui.TableSetupColumn("来源");
+            ImGui.TableSetupColumn("操作");
+            ImGui.TableHeadersRow();
+            foreach (var design in designResults)
+            {
+                ImGui.TableNextRow();
+                ImGui.PushID($"design-{design.Identifier}-{design.FilePath}");
+                ImGui.TableSetColumnIndex(0);
+                ImGui.TextWrapped(design.Name);
+                ImGui.TableSetColumnIndex(1);
+                ImGui.TextWrapped(ShortId(design.Identifier));
+                ImGui.TableSetColumnIndex(2);
+                ImGui.TextWrapped(design.SourceDescription);
+                ImGui.TableSetColumnIndex(3);
+                ImGui.BeginDisabled(!this.realNpcSpawn.CanSpawnRealActor);
+                if (ImGui.Button("生成 Actor"))
+                    this.SelectCreatedActor(this.realNpcSpawn.SpawnFromGlamourerDesign(design));
+                ImGui.EndDisabled();
+                ImGui.PopID();
+            }
+
+            ImGui.EndTable();
+        }
+
+        ImGui.Separator();
+        ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "Glamourer NPC");
+        if (ImGui.Button("刷新 NPC 目录"))
+        {
+            this.gameNpcCatalog.ReloadCatalog();
+            this.cachedGameNpcSearchText = "\0";
+            this.nextActorSourceSearchRefreshAt = DateTime.MinValue;
+        }
+        ImGui.SameLine();
+        ImGui.TextWrapped(this.gameNpcCatalog.LastLoadMessage);
+        ImGui.InputText("搜索 NPC", ref this.gameNpcSearchText, 128);
+
+        var npcResults = this.cachedGameNpcResults;
+        if (ImGui.BeginTable("ActorGlamourerNpcSources", 5, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 190f)))
+        {
+            ImGui.TableSetupColumn("名称");
+            ImGui.TableSetupColumn("Kind");
+            ImGui.TableSetupColumn("RowId");
+            ImGui.TableSetupColumn("Model");
+            ImGui.TableSetupColumn("操作");
+            ImGui.TableHeadersRow();
+            foreach (var entry in npcResults)
+            {
+                ImGui.TableNextRow();
+                ImGui.PushID($"gnpc-{entry.Kind}-{entry.RowId}-{entry.ModelCharaId}");
+                ImGui.TableSetColumnIndex(0);
+                ImGui.TextWrapped(entry.Name);
+                ImGui.TableSetColumnIndex(1);
+                ImGui.TextUnformatted(entry.Kind.ToString());
+                ImGui.TableSetColumnIndex(2);
+                ImGui.TextUnformatted(entry.RowId.ToString());
+                ImGui.TableSetColumnIndex(3);
+                ImGui.TextUnformatted(entry.ModelCharaId.ToString());
+                ImGui.TableSetColumnIndex(4);
+                ImGui.BeginDisabled(!this.realNpcSpawn.CanSpawnRealActor);
+                if (ImGui.Button("生成 Actor"))
+                    this.SelectCreatedActor(this.realNpcSpawn.SpawnFromGlamourerNpc(entry));
+                ImGui.EndDisabled();
+                ImGui.PopID();
+            }
+
+            ImGui.EndTable();
+        }
+    }
+
+    private void SelectCreatedActor(RuntimeActorInstance? actor)
+    {
+        if (actor == null)
+            return;
+
+        this.cachedActorRuntimeSnapshot = this.realNpcSpawn.Actors;
+        this.nextActorRuntimeSnapshotRefreshAt = DateTime.UtcNow.AddMilliseconds(250);
+        this.selectedActorRuntimeId = actor.RuntimeId;
+        this.SelectSceneEditableFromMainUi(SceneEditableKind.LocalActor, actor.RuntimeId);
+    }
+
+    private void RefreshActorRuntimeSnapshotForUi()
+    {
+        var now = DateTime.UtcNow;
+        if (now < this.nextActorRuntimeSnapshotRefreshAt)
+            return;
+
+        this.cachedActorRuntimeSnapshot = this.realNpcSpawn.Actors;
+        this.nextActorRuntimeSnapshotRefreshAt = now.AddMilliseconds(250);
+    }
+
+    private void RefreshActorSourceSearchCacheForUi()
+    {
+        var now = DateTime.UtcNow;
+        var searchChanged =
+            !string.Equals(this.cachedGlamourerSearchText, this.glamourerSearchText, StringComparison.Ordinal) ||
+            !string.Equals(this.cachedGameNpcSearchText, this.gameNpcSearchText, StringComparison.Ordinal);
+        if (!searchChanged && now < this.nextActorSourceSearchRefreshAt)
+            return;
+
+        this.cachedGlamourerSearchText = this.glamourerSearchText;
+        this.cachedGameNpcSearchText = this.gameNpcSearchText;
+        this.cachedGlamourerDesignResults = this.glamourerDesignCatalog.Search(this.glamourerSearchText, 40);
+        this.cachedGameNpcResults = this.gameNpcCatalog.Search(this.gameNpcSearchText, 40);
+        this.nextActorSourceSearchRefreshAt = now.AddMilliseconds(500);
     }
 
     private void DrawSelectedActorDetailsPanel()
@@ -1242,15 +1327,20 @@ public sealed class MainWindow : Window
             ImGui.TextWrapped("当前没有选中 Actor。请在左侧 Actor 列表中选择一个实例。");
             return;
         }
-        var npc = this.database.GetNpcById(selectedActor.NpcId);
         ImGui.PushID(selectedActor.RuntimeId);
         ImGui.TextWrapped($"选中 Actor：{selectedActor.RuntimeId}");
-        ImGui.TextWrapped($"模板 NPC：{selectedActor.TemplateNpcId} / {selectedActor.NpcId}");
+        ImGui.TextWrapped($"Config：{selectedActor.ConfigId}");
         ImGui.TextWrapped($"显示名：{selectedActor.DisplayName}");
         ImGui.TextWrapped($"生成地图：{selectedActor.SpawnedTerritoryType} {selectedActor.SpawnedTerritoryName}");
         ImGui.TextWrapped($"当前外观来源：{selectedActor.AppearanceSourceType}");
         ImGui.TextWrapped($"Post-spawn pipeline：{selectedActor.PostSpawnPipelineState} / {selectedActor.PostSpawnPipelineStatus}");
-        ImGui.TextWrapped($"最后外观：{selectedActor.LastAppearanceApplyResult}");
+
+        ImGui.TextWrapped($"Config/runtime: config={selectedActor.ConfigId}, currentTerritory={this.runtime.TerritoryType}, configTerritory={selectedActor.SpawnedTerritoryType}");
+        ImGui.TextWrapped($"Lifecycle/debug: state={selectedActor.LifecycleState}, valid={selectedActor.IsValid}, native={selectedActor.HasBoundNativeActor}, draw={selectedActor.HasBoundDrawObject}, address={selectedActor.Address}, objectIndex={selectedActor.ObjectIndex}");
+        ImGui.TextWrapped($"Spawn/rebuild: spawnReason={selectedActor.LastSpawnReason}, rebuildReason={selectedActor.LastRebuildReason}, gpose={selectedActor.LastGposeState}, sceneReady={selectedActor.LastSceneReadyState}");
+        ImGui.TextWrapped($"Appearance source: {selectedActor.AppearanceSourceType}; Glamourer id={selectedActor.GlamourerDesignId}, name={selectedActor.GlamourerDesignName}, path={selectedActor.GlamourerDesignPath}, ipc={selectedActor.GlamourerIpcAvailable}");
+        ImGui.TextWrapped($"Glamourer apply: status={selectedActor.LastGlamourerApplyStatus}, error={selectedActor.LastGlamourerApplyError}");
+        ImGui.TextWrapped($"Transform apply: applied={selectedActor.RuntimeTransformApplied}, status={selectedActor.LastTransformReadback}, error={selectedActor.LastTransformError}");        ImGui.TextWrapped($"最后外观：{selectedActor.LastAppearanceApplyResult}");
         ImGui.TextWrapped($"错误：{selectedActor.LastError}");
         ImGui.BeginDisabled(this.IsInGpose());
         if (ImGui.Button("删除此 Actor"))
@@ -1262,36 +1352,35 @@ public sealed class MainWindow : Window
         }
         ImGui.EndDisabled();
 
-        this.DrawSelectedActorTransformEditor(selectedActor, npc);
-        this.DrawSelectedActorBehaviorEditor(selectedActor, npc);
+        this.DrawSelectedActorTransformEditor(selectedActor, null);
+        this.DrawSelectedActorBehaviorEditor(selectedActor, null);
         this.DrawSelectedActorActionSequenceEditor(selectedActor);
-        this.DrawSelectedActorAppearanceEditor(selectedActor, npc);
+        this.DrawSelectedActorAppearanceEditor(selectedActor, null);
         ImGui.PopID();
     }
 
     #pragma warning disable CS0162, CS8602
+
     private void DrawSelectedActorTransformEditor(RuntimeActorInstance actor, CustomNpc? npc)
     {
-        if (actor != null)
-        {
-            this.DrawSelectedActorTransformEditorPendingAware(actor);
-            return;
-        }
-
         ImGui.Separator();
-        ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "Actor World Transform 编辑");
-        var nativeReady = actor.IsValid && actor.CharacterObject != null && !actor.IsStale;
-        if (!nativeReady)
-        {
-            if (false)
-            ImGui.TextColored(new Vector4(1f, 0.35f, 0.25f, 1f), "当前 Actor 无效或已删除。");
-            return;
-        }
+        ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "Actor World Transform");
+
+        var runtimeReady = actor.LifecycleState == ActorLifecycleState.Ready && actor.IsValid && actor.CharacterObject != null && !actor.IsStale;
+        var stateColor = runtimeReady
+            ? new Vector4(0.25f, 0.95f, 0.45f, 1f)
+            : actor.LifecycleState == ActorLifecycleState.Failed
+                ? new Vector4(1f, 0.35f, 0.25f, 1f)
+                : new Vector4(1f, 0.78f, 0.25f, 1f);
+        ImGui.TextColored(stateColor, $"Lifecycle: {actor.LifecycleState}");
+        ImGui.TextWrapped($"Status: {actor.PostSpawnPipelineStatus}");
+        if (!string.IsNullOrWhiteSpace(actor.LastError))
+            ImGui.TextWrapped($"Last error: {actor.LastError}");
+        ImGui.TextWrapped($"ConfigId: {actor.ConfigId}; request: {actor.SpawnRequestId}; native={actor.HasBoundNativeActor}; draw={actor.HasBoundDrawObject}");
+        ImGui.TextWrapped($"Last transform apply: {(actor.LastSuccessfulTransformApplyAt?.ToLocalTime().ToString("HH:mm:ss") ?? "never")}; appearance: {(actor.LastSuccessfulAppearanceApplyAt?.ToLocalTime().ToString("HH:mm:ss") ?? "never")}");
 
         if (actor.TransformEditScale == Vector3.Zero)
             actor.TransformEditScale = actor.LastKnownScale == Vector3.Zero ? Vector3.One : actor.LastKnownScale;
-        if (actor.TransformEditPosition == Vector3.Zero && actor.LastKnownPosition != Vector3.Zero)
-            actor.TransformEditPosition = actor.LastKnownPosition;
 
         var transformChanged = false;
         var editPosition = actor.TransformEditPosition;
@@ -1303,74 +1392,73 @@ public sealed class MainWindow : Window
             RadiansToDegrees(actor.TransformEditRotationEuler.X),
             RadiansToDegrees(actor.TransformEditRotationEuler.Y),
             RadiansToDegrees(actor.TransformEditRotationEuler.Z));
-        if (ImGui.InputFloat("World Pitch X (deg)", ref rotationDegrees.X))
-        {
-            actor.TransformEditRotationEuler = new Vector3(DegreesToRadians(rotationDegrees.X), actor.TransformEditRotationEuler.Y, actor.TransformEditRotationEuler.Z);
-            transformChanged = true;
-        }
-        if (ImGui.InputFloat("World Yaw Y (deg)", ref rotationDegrees.Y))
-        {
-            actor.TransformEditRotationEuler = new Vector3(actor.TransformEditRotationEuler.X, DegreesToRadians(rotationDegrees.Y), actor.TransformEditRotationEuler.Z);
-            transformChanged = true;
-        }
-        if (ImGui.InputFloat("World Roll Z (deg)", ref rotationDegrees.Z))
-        {
-            actor.TransformEditRotationEuler = new Vector3(actor.TransformEditRotationEuler.X, actor.TransformEditRotationEuler.Y, DegreesToRadians(rotationDegrees.Z));
-            transformChanged = true;
-        }
+        if (ImGui.InputFloat("Pitch (deg)", ref rotationDegrees.X)) { actor.TransformEditRotationEuler = new Vector3(DegreesToRadians(rotationDegrees.X), actor.TransformEditRotationEuler.Y, actor.TransformEditRotationEuler.Z); transformChanged = true; }
+        if (ImGui.InputFloat("Yaw (deg)", ref rotationDegrees.Y)) { actor.TransformEditRotationEuler = new Vector3(actor.TransformEditRotationEuler.X, DegreesToRadians(rotationDegrees.Y), actor.TransformEditRotationEuler.Z); transformChanged = true; }
+        if (ImGui.InputFloat("Roll (deg)", ref rotationDegrees.Z)) { actor.TransformEditRotationEuler = new Vector3(actor.TransformEditRotationEuler.X, actor.TransformEditRotationEuler.Y, DegreesToRadians(rotationDegrees.Z)); transformChanged = true; }
 
         var editScale = actor.TransformEditScale;
-        if (ImGui.InputFloat("World Scale X", ref editScale.X)) { actor.TransformEditScale = Vector3.Max(editScale, new Vector3(0.01f)); transformChanged = true; }
-        if (ImGui.InputFloat("World Scale Y", ref editScale.Y)) { actor.TransformEditScale = Vector3.Max(editScale, new Vector3(0.01f)); transformChanged = true; }
-        if (ImGui.InputFloat("World Scale Z", ref editScale.Z)) { actor.TransformEditScale = Vector3.Max(editScale, new Vector3(0.01f)); transformChanged = true; }
+        if (ImGui.InputFloat("Scale X", ref editScale.X)) { actor.TransformEditScale = Vector3.Max(editScale, new Vector3(0.01f)); transformChanged = true; }
+        if (ImGui.InputFloat("Scale Y", ref editScale.Y)) { actor.TransformEditScale = Vector3.Max(editScale, new Vector3(0.01f)); transformChanged = true; }
+        if (ImGui.InputFloat("Scale Z", ref editScale.Z)) { actor.TransformEditScale = Vector3.Max(editScale, new Vector3(0.01f)); transformChanged = true; }
 
         if (transformChanged && !this.IsInGpose())
             this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
 
-        ImGui.TextWrapped($"world readback position：{FormatVector(actor.LastKnownPosition)}");
-        ImGui.TextWrapped($"world readback rotation：pitch {RadiansToDegrees(actor.LastKnownRotationEuler.X):F1}, yaw {RadiansToDegrees(actor.LastKnownRotationEuler.Y):F1}, roll {RadiansToDegrees(actor.LastKnownRotationEuler.Z):F1}");
-        ImGui.TextWrapped($"world readback scale：{FormatVector(actor.LastKnownScale)}");
-        ImGui.TextWrapped($"last transform readback：{(string.IsNullOrWhiteSpace(actor.LastTransformReadback) ? "未读取" : actor.LastTransformReadback)}");
-        ImGui.TextWrapped($"last transform error：{(string.IsNullOrWhiteSpace(actor.LastTransformError) ? "无" : actor.LastTransformError)}");
+        if (!runtimeReady)
+            ImGui.TextWrapped("Runtime is not Ready. Edits are saved to PersistentActorConfig and will apply automatically after spawn/bind.");
+
+        ImGui.TextWrapped($"runtime readback position: {FormatVector(actor.LastKnownPosition)}");
+        ImGui.TextWrapped($"runtime readback rotation: pitch {RadiansToDegrees(actor.LastKnownRotationEuler.X):F1}, yaw {RadiansToDegrees(actor.LastKnownRotationEuler.Y):F1}, roll {RadiansToDegrees(actor.LastKnownRotationEuler.Z):F1}");
+        ImGui.TextWrapped($"runtime readback scale: {FormatVector(actor.LastKnownScale)}");
+        ImGui.TextWrapped($"last transform readback: {(string.IsNullOrWhiteSpace(actor.LastTransformReadback) ? "none" : actor.LastTransformReadback)}");
+        ImGui.TextWrapped($"last transform error: {(string.IsNullOrWhiteSpace(actor.LastTransformError) ? "none" : actor.LastTransformError)}");
 
         ImGui.BeginDisabled(this.IsInGpose());
-        if (ImGui.Button("应用 World Transform"))
+        if (ImGui.Button("Apply World Transform"))
             this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
         ImGui.SameLine();
-        if (ImGui.Button("移动到玩家当前位置") && this.runtime.PlayerPosition.HasValue)
+        if (ImGui.Button("Save World Transform"))
+            this.realNpcSpawn.SaveActorTransformSnapshot(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
+        ImGui.SameLine();
+        if (ImGui.Button("Read World Transform"))
+            this.realNpcSpawn.RefreshActorTransform(actor.RuntimeId);
+
+        if (ImGui.Button("Move to player position") && this.runtime.PlayerPosition.HasValue)
         {
             actor.TransformEditPosition = this.runtime.PlayerPosition.Value;
             this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
         }
         ImGui.SameLine();
-        if (ImGui.Button("重置位置"))
+        if (ImGui.Button("Look at player") && this.runtime.PlayerPosition.HasValue)
+        {
+            var delta = this.runtime.PlayerPosition.Value - actor.TransformEditPosition;
+            if (delta.LengthSquared() > 0.0001f)
+            {
+                actor.TransformEditRotationEuler = new Vector3(actor.TransformEditRotationEuler.X, MathF.Atan2(delta.X, delta.Z), actor.TransformEditRotationEuler.Z);
+                this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
+            }
+        }
+
+        if (ImGui.Button("Reset position"))
         {
             actor.TransformEditPosition = actor.SpawnPosition == Vector3.Zero ? actor.LastKnownPosition : actor.SpawnPosition;
             this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
         }
-
-        if (ImGui.Button("重置旋转"))
+        ImGui.SameLine();
+        if (ImGui.Button("Reset rotation"))
         {
             actor.TransformEditRotationEuler = Vector3.Zero;
             this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
         }
         ImGui.SameLine();
-        if (ImGui.Button("重置缩放"))
+        if (ImGui.Button("Reset scale"))
         {
             actor.TransformEditScale = Vector3.One;
             this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
         }
-        ImGui.SameLine();
-        if (ImGui.Button("保存当前 World Transform"))
-            this.realNpcSpawn.SaveActorTransformSnapshot(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
-
-        ImGui.BeginDisabled(!nativeReady);
-
-        if (ImGui.Button("从当前 Actor 读取 World Transform"))
-            this.realNpcSpawn.RefreshActorTransform(actor.RuntimeId);
-        ImGui.EndDisabled();
         ImGui.EndDisabled();
     }
+
 
     #pragma warning restore CS0162, CS8602
 
@@ -1510,7 +1598,31 @@ public sealed class MainWindow : Window
         ImGui.SameLine();
         this.DrawAnimationPickerButton("##ActorCurrentAnimationPicker", ActorAnimationPickerRequest.ForActorCurrent(actor.RuntimeId, ActorAnimationPickerMode.EmoteActionsOnly));
 
+        var expressionId = (int)Math.Min(actor.CurrentExpressionId, int.MaxValue);
+        if (ImGui.InputInt("此 Actor 表情 blend ID", ref expressionId))
+            actor.CurrentExpressionId = (uint)Math.Max(0, expressionId);
+        ImGui.SameLine();
+        this.DrawAnimationPickerButton("##ActorExpressionPicker", ActorAnimationPickerRequest.ForActorExpression(actor.RuntimeId, ActorAnimationPickerMode.ExpressionCandidates));
+
+        var expressionLayer = actor.CurrentExpressionLayer;
+        if (DrawExpressionLayerCombo("ActorExpressionLayer", ref expressionLayer))
+            actor.CurrentExpressionLayer = expressionLayer;
+
+        var expressionLoopIntervalMs = (int)MathF.Round(Math.Max(0.05f, actor.ExpressionBlendLoopIntervalSeconds) * 1000f);
+        if (ImGui.InputInt("表情循环间隔 ms", ref expressionLoopIntervalMs))
+            actor.ExpressionBlendLoopIntervalSeconds = Math.Max(50, expressionLoopIntervalMs) / 1000f;
+
+        var lipTalkId = (int)Math.Min(actor.CurrentLipTalkId, int.MaxValue);
+        if (ImGui.InputInt("口型 ID / speak ActionTimelineId", ref lipTalkId))
+            actor.CurrentLipTalkId = (uint)Math.Max(0, lipTalkId);
+
+        var lipLoopIntervalMs = (int)MathF.Round(Math.Max(0.05f, actor.LipTalkLoopIntervalSeconds) * 1000f);
+        if (ImGui.InputInt("口型循环间隔 ms", ref lipLoopIntervalMs))
+            actor.LipTalkLoopIntervalSeconds = Math.Max(50, lipLoopIntervalMs) / 1000f;
+
         ImGui.TextWrapped($"动画状态：enabled={actor.AnimationEnabled}, current={actor.CurrentAnimationId}, error={(string.IsNullOrWhiteSpace(actor.LastAnimationError) ? "无" : actor.LastAnimationError)}");
+        ImGui.TextWrapped($"表情 blend：current={actor.CurrentExpressionId}, layer={actor.CurrentExpressionLayer}, loop={actor.ExpressionBlendLoopEnabled}, result={(string.IsNullOrWhiteSpace(actor.LastExpressionResult) ? "无" : actor.LastExpressionResult)}, error={(string.IsNullOrWhiteSpace(actor.LastExpressionError) ? "无" : actor.LastExpressionError)}");
+        ImGui.TextWrapped($"口型：current={actor.CurrentLipTalkId}, loop={actor.LipTalkLoopEnabled}, result={(string.IsNullOrWhiteSpace(actor.LastLipTalkResult) ? "无" : actor.LastLipTalkResult)}, error={(string.IsNullOrWhiteSpace(actor.LastLipTalkError) ? "无" : actor.LastLipTalkError)}");
         ImGui.TextWrapped($"看向状态：enabled={actor.LookAtPlayerEnabled}, registered={actor.LookAtRegistered}, target={actor.LookAtTargetDebug}, looking={actor.IsLookingAtPlayer}, error={(string.IsNullOrWhiteSpace(actor.LastLookAtError) ? "无" : actor.LastLookAtError)}");
 
         ImGui.BeginDisabled(!actor.IsValid || actor.CharacterObject == null || this.IsInGpose());
@@ -1521,20 +1633,29 @@ public sealed class MainWindow : Window
             this.realNpcSpawn.StopAnimation(actor.RuntimeId);
         ImGui.EndDisabled();
 
+        ImGui.BeginDisabled(this.IsInGpose());
+        if (ImGui.Button("表情单次应用"))
+            this.realNpcSpawn.PlayExpressionBlend(actor.RuntimeId, actor.CurrentExpressionId, actor.CurrentExpressionLayer);
         ImGui.SameLine();
-        ImGui.BeginDisabled(npc == null);
-        if (ImGui.Button("保存为模板默认值") && npc != null)
-        {
-            npc.DefaultAnimationId = actor.CurrentAnimationId;
-            npc.LookAtPlayerEnabled = actor.LookAtPlayerEnabled;
-            npc.LookAtRadius = actor.LookAtRadius;
-            npc.LookAtMode = NpcLookAtMode.NativeLookAt;
-            SetVector3Data(npc.DefaultRotationEuler, actor.TransformEditRotationEuler);
-            SetVector3Data(npc.DefaultScale, actor.TransformEditScale == Vector3.Zero ? Vector3.One : actor.TransformEditScale);
-            this.database.Save();
-            this.realNpcSpawn.SetMessage($"已把 Actor {ShortId(actor.RuntimeId)} 的行为/旋转/缩放保存为模板默认值。");
-        }
+        if (ImGui.Button("表情 Loop"))
+            this.realNpcSpawn.StartExpressionBlendLoop(actor.RuntimeId, actor.CurrentExpressionId, actor.CurrentExpressionLayer, actor.ExpressionBlendLoopIntervalSeconds);
+        ImGui.SameLine();
+        if (ImGui.Button("表情 Stop"))
+            this.realNpcSpawn.StopExpressionBlendLoop(actor.RuntimeId);
+        ImGui.SameLine();
+        if (ImGui.Button("清除表情选择"))
+            this.realNpcSpawn.ClearExpressionBlend(actor.RuntimeId);
+
+        if (ImGui.Button("口型单次应用"))
+            this.realNpcSpawn.ApplyLipTalk(actor.RuntimeId, actor.CurrentLipTalkId);
+        ImGui.SameLine();
+        if (ImGui.Button("口型 Loop"))
+            this.realNpcSpawn.StartLipTalkLoop(actor.RuntimeId, actor.CurrentLipTalkId, actor.LipTalkLoopIntervalSeconds);
+        ImGui.SameLine();
+        if (ImGui.Button("口型 Stop"))
+            this.realNpcSpawn.StopLipTalkLoop(actor.RuntimeId);
         ImGui.EndDisabled();
+
         if (this.IsInGpose())
             this.DrawGposeBlockedMessage("Actor World Transform 写入");
     }
@@ -1681,16 +1802,10 @@ public sealed class MainWindow : Window
     {
         ImGui.Separator();
         ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "Actor 外观");
-        if (npc == null)
-        {
-            ImGui.TextColored(new Vector4(1f, 0.35f, 0.25f, 1f), "找不到对应 NPC 模板，无法应用模板外观。");
-            return;
-        }
-
-        ImGui.TextWrapped($"模板外观来源：{npc.Appearance.SourceType}");
-        ImGui.TextWrapped($"模板 displayName：{npc.Appearance.DisplayName}");
-        ImGui.TextWrapped($"Glamourer Design：{npc.Appearance.GlamourerDesignId}");
-        ImGui.TextWrapped($"GameNpc：{npc.Appearance.GameNpcName} / baseId={npc.Appearance.GameNpcBaseId} / modelId={npc.Appearance.GameNpcModelId}");
+        ImGui.TextWrapped($"本地外观来源：{actor.AppearanceSourceType}");
+        ImGui.TextWrapped($"外观名称：{actor.GlamourerDesignName}");
+        ImGui.TextWrapped($"外观 ID：{actor.GlamourerDesignId}");
+        ImGui.TextWrapped($"外观文件：{actor.GlamourerDesignPath}");
         ImGui.TextWrapped($"Penumbra：mode={actor.PenumbraMode}, collection={this.GetCollectionDisplayName(actor.PenumbraCollectionId, actor.PenumbraCollectionNameCache)}");
         ImGui.TextWrapped($"Penumbra result：{(string.IsNullOrWhiteSpace(actor.LastPenumbraCollectionResult) ? "未应用" : actor.LastPenumbraCollectionResult)}");
         if (!string.IsNullOrWhiteSpace(actor.LastPenumbraCollectionError))
@@ -1715,29 +1830,11 @@ public sealed class MainWindow : Window
             ImGui.TextWrapped($"Apply 后：{actor.LastAppearanceAfterSummary}");
 
         ImGui.BeginDisabled(!actor.IsValid || actor.CharacterObject == null || this.IsInGpose());
-        if (ImGui.Button("应用 NPC 模板外观"))
+        if (ImGui.Button("应用本地 Actor 外观"))
             this.realNpcSpawn.EnqueueNpcAppearance(actor.RuntimeId);
-        ImGui.SameLine();
-        ImGui.BeginDisabled(npc.Appearance.SourceType != CustomNpcAppearanceSourceType.GlamourerDesign);
-        if (ImGui.Button("重新应用 Glamourer design"))
-            this.realNpcSpawn.EnqueueNpcAppearance(actor.RuntimeId);
-        ImGui.EndDisabled();
-        ImGui.SameLine();
-        ImGui.BeginDisabled(npc.Appearance.SourceType != CustomNpcAppearanceSourceType.GameNpc);
-        if (ImGui.Button("重新应用 GameNpc 外观"))
-            this.realNpcSpawn.EnqueueNpcAppearance(actor.RuntimeId);
-        ImGui.EndDisabled();
-        if (ImGui.Button("Debug：打印外观摘要"))
-            this.realNpcSpawn.LogActorAppearanceDiagnostics(actor.RuntimeId);
-        ImGui.SameLine();
-        if (ImGui.Button("Debug：Clear 装备 + 重新套外观"))
-            this.realNpcSpawn.ForceClearAndReapplyAppearance(actor.RuntimeId);
-        ImGui.SameLine();
-        if (ImGui.Button("Debug：Penumbra redraw + 重新套外观"))
-            this.realNpcSpawn.ForceTargetedRedrawAndReapplyAppearance(actor.RuntimeId);
         ImGui.EndDisabled();
         if (this.IsInGpose())
-            this.DrawGposeBlockedMessage("Actor 外观应用 / Penumbra redraw / Clear 装备");
+            this.DrawGposeBlockedMessage("Actor 外观应用");
     }
 
     private static void DrawActorActionStepKindCombo(ActorActionSequenceStep step)
@@ -1857,19 +1954,32 @@ public sealed class MainWindow : Window
 
     private static void DrawExpressionLayerCombo(ActorActionSequenceStep step)
     {
-        if (!ImGui.BeginCombo("ExpressionLayer", step.ExpressionLayer.ToString()))
-            return;
+        var layer = step.ExpressionLayer;
+        if (DrawExpressionLayerCombo("ExpressionLayer", ref layer))
+            step.ExpressionLayer = layer;
+    }
 
-        foreach (var layer in Enum.GetValues<ActorExpressionLayer>())
+    private static bool DrawExpressionLayerCombo(string label, ref ActorExpressionLayer layer)
+    {
+        if (!ImGui.BeginCombo(label, layer.ToString()))
+            return false;
+
+        var changed = false;
+        foreach (var candidate in Enum.GetValues<ActorExpressionLayer>())
         {
-            var selected = step.ExpressionLayer == layer;
-            if (ImGui.Selectable(layer.ToString(), selected))
-                step.ExpressionLayer = layer;
+            var selected = layer == candidate;
+            if (ImGui.Selectable(candidate.ToString(), selected))
+            {
+                layer = candidate;
+                changed = true;
+            }
+
             if (selected)
                 ImGui.SetItemDefaultFocus();
         }
 
         ImGui.EndCombo();
+        return changed;
     }
 
     private static void DrawActorActionStepBubbleOptions(ActorActionSequenceStep step)
@@ -3921,4 +4031,5 @@ public sealed class MainWindow : Window
     private static float DegreesToRadians(float degrees)
         => degrees * MathF.PI / 180f;
 }
+
 

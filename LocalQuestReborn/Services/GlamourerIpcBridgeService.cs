@@ -72,7 +72,13 @@ public sealed class GlamourerIpcBridgeService
         var candidates = this.details.Where(detail => detail.IsRegistered).ToList();
         if (candidates.Count == 0)
         {
-            reason = "No Glamourer.ApplyDesign(Guid,int,uint,uint) IPC binding was found. Probe Glamourer IPC first.";
+            this.Probe();
+            candidates = this.details.Where(detail => detail.IsRegistered).ToList();
+        }
+
+        if (candidates.Count == 0)
+        {
+            reason = "No Glamourer.ApplyDesign(Guid,int,uint,uint) IPC binding was found after auto-probe.";
             this.LastError = reason;
             this.LastMessage = reason;
             return false;

@@ -1,7 +1,11 @@
+using Dalamud.Game.ClientState.Objects.Types;
 using Dalamud.Plugin.Services;
+using FFXIVClientStructs.FFXIV.Client.Game.Character;
+using FFXIVClientStructs.FFXIV.Client.Game.Object;
 using LocalQuestReborn.Models;
 using System.Numerics;
 using System.Reflection;
+using System.Text;
 
 namespace LocalQuestReborn.Services;
 
@@ -50,6 +54,47 @@ public sealed class BrioAssemblyBridgeService
 
     public bool IsBrioAssemblyLoaded => this.FindBrioAssembly() != null;
 
+    public bool CanSpawnNativeActor => this.objectTable.LocalPlayer != null;
+
+    public string ActorSpawnStatusText => this.CanSpawnNativeActor
+        ? "ARR-style native ClientObjectManager actor spawn is available."
+        : "Native actor spawn is waiting for LocalPlayer.";
+
+    public string LocalPlayerStatusText
+    {
+        get
+        {
+            if (this.TryReadLocalPlayerPosition(out var position, out var reason))
+            {
+                var localPlayer = this.objectTable.LocalPlayer;
+                return $"ObjectTable.LocalPlayer available at {position}; objectIndex={ReadProperty(localPlayer!, "ObjectIndex")}; address={ReadProperty(localPlayer!, "Address")}";
+            }
+
+            return reason;
+        }
+    }
+
+    public bool TryReadLocalPlayerPosition(out Vector3 position, out string reason)
+    {
+        position = Vector3.Zero;
+        var localPlayer = this.objectTable.LocalPlayer;
+        if (localPlayer == null)
+        {
+            reason = "ObjectTable.LocalPlayer is null.";
+            return false;
+        }
+
+        position = localPlayer.Position;
+        if (!float.IsFinite(position.X) || !float.IsFinite(position.Y) || !float.IsFinite(position.Z))
+        {
+            reason = $"ObjectTable.LocalPlayer position is invalid: {position}";
+            return false;
+        }
+
+        reason = $"ObjectTable.LocalPlayer position available. objectIndex={ReadProperty(localPlayer, "ObjectIndex")}; address={ReadProperty(localPlayer, "Address")}.";
+        return true;
+    }
+
     public bool HasActorSpawnService
     {
         get
@@ -68,6 +113,77 @@ public sealed class BrioAssemblyBridgeService
             return this.HasActorSpawnService
                 ? "已找到 Brio assembly 和 ActorSpawnService。"
                 : $"已找到 Brio assembly，但无法取得 ActorSpawnService：{this.LastReflectionError}";
+        }
+    }
+
+    public bool TrySpawnActor(PersistentActorConfig config, out RuntimeActorInstance instance, out string reason, Vector3? initialWorldPosition = null, float? initialYawRadians = null)
+    {
+        var displayName = string.IsNullOrWhiteSpace(config.DisplayName)
+            ? string.IsNullOrWhiteSpace(config.NpcNameSnapshot) ? "Actor" : config.NpcNameSnapshot
+            : config.DisplayName;
+        instance = new RuntimeActorInstance
+        {
+            RuntimeId = config.RuntimeId,
+            ConfigId = config.ConfigId,
+            NpcId = config.SourceNpcPresetId,
+            TemplateNpcId = config.SourceNpcPresetId,
+            NpcName = config.NpcNameSnapshot,
+            DisplayName = displayName,
+            ExpectedName = displayName,
+            DesiredDisplayName = displayName,
+            SpawnSource = "ARRNative",
+            SpawnTime = DateTime.Now,
+            LastKnownPosition = initialWorldPosition ?? new Vector3(config.WorldPosition.X, config.WorldPosition.Y, config.WorldPosition.Z),
+        };
+
+        try
+        {
+            var spawnPosition = initialWorldPosition ?? instance.LastKnownPosition;
+            var spawnYaw = initialYawRadians ?? 0f;
+            var localPlayerStatus = this.LocalPlayerStatusText;
+            this.log.Information(
+                "[ActorSpawn] Native spawn attempt config={ConfigId}, runtime={RuntimeId}, territory={Territory}, position={Position}, yaw={Yaw}, localPlayer={LocalPlayer}",
+                config.ConfigId,
+                config.RuntimeId,
+                config.TerritoryType,
+                spawnPosition,
+                spawnYaw,
+                localPlayerStatus);
+
+            if (!this.TrySpawnNativeActor(instance, displayName, spawnPosition, spawnYaw, out reason))
+            {
+                instance.LastError = reason;
+                this.log.Warning(
+                    "[ActorSpawn] Native spawn failed config={ConfigId}, runtime={RuntimeId}, territory={Territory}, position={Position}, reason={Reason}, localPlayer={LocalPlayer}",
+                    config.ConfigId,
+                    config.RuntimeId,
+                    config.TerritoryType,
+                    spawnPosition,
+                    reason,
+                    localPlayerStatus);
+                return false;
+            }
+
+            this.LastCreateCharacterSignatureKind = "ClientObjectManager.CreateBattleCharacter";
+            this.LastCreateCharacterResult = "native";
+            this.LastCreateCharacterReturnedNull = instance.CharacterObject == null;
+            this.LastSpawnedObjectIndex = instance.ObjectIndex;
+            this.LastSpawnedAddress = instance.Address;
+            this.LastSpawnedPosition = instance.LastKnownPosition.ToString();
+            this.LastPositionError = string.Empty;
+            this.LastMessage = reason;
+            this.LastReflectionError = string.Empty;
+            this.log.Information("[ActorSpawn] {Reason}", reason);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            reason = $"Native actor spawn failed: {ex.Message}";
+            instance.LastError = reason;
+            this.LastReflectionError = reason;
+            this.LastMessage = reason;
+            this.log.Error(ex, "Failed to spawn runtime actor via native ClientObjectManager. RuntimeId={RuntimeId}", config.RuntimeId);
+            return false;
         }
     }
 
@@ -385,6 +501,15 @@ public sealed class BrioAssemblyBridgeService
                 return true;
             }
 
+            if (this.TryDeleteNativeActor(instance, out reason))
+            {
+                instance.IsValid = false;
+                instance.LastError = string.Empty;
+                this.LastDespawnError = string.Empty;
+                this.LastMessage = reason;
+                return true;
+            }
+
             if (this.TryGetActorSpawnService(out var actorSpawnService, out reason) && actorSpawnService != null && this.TryInvokeDestroyObject(actorSpawnService, instance.CharacterObject, out reason))
             {
                 instance.IsValid = false;
@@ -549,6 +674,149 @@ public sealed class BrioAssemblyBridgeService
         {
             reason = ex.Message;
             this.log.Error(ex, "Native SetRotation failed. Address={Address}, Yaw={Yaw}", address, yawRadians);
+            return false;
+        }
+    }
+
+    public unsafe bool TrySetActorNativeScale(RuntimeActorInstance instance, Vector3 scale, out string reason)
+    {
+        if (!this.EnableUnsafeNativeWrites)
+        {
+            reason = "native root scale write disabled.";
+            return false;
+        }
+
+        if (!TryValidateSpawnedActorIndex(instance, out reason))
+            return false;
+
+        if (instance.IsStale || instance.CharacterObject == null)
+        {
+            reason = "actor stale or CharacterObject unavailable.";
+            return false;
+        }
+
+        if (!TryReadAddress(instance.CharacterObject, out var address) || address == 0)
+        {
+            reason = $"unable to read valid Address. Address={ReadProperty(instance.CharacterObject, "Address")}";
+            return false;
+        }
+
+        var normalizedScale = NormalizeActorScale(scale);
+        try
+        {
+            var native = (Character*)address;
+            native->GameObject.Scale = normalizedScale.Y;
+            reason = $"native root scale set to {normalizedScale.Y:F4}.";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            reason = ex.Message;
+            this.log.Error(ex, "Native SetScale failed. Address={Address}, Scale={Scale}", address, scale);
+            return false;
+        }
+    }
+
+    public unsafe bool TryApplyActorNativeRootTransform(RuntimeActorInstance instance, Vector3 position, float yawRadians, Vector3 scale, out string reason)
+    {
+        if (!this.EnableUnsafeNativeWrites)
+        {
+            reason = "native root transform write disabled.";
+            return false;
+        }
+
+        if (!TryValidateSpawnedActorIndex(instance, out reason))
+            return false;
+
+        if (instance.IsStale || instance.CharacterObject == null)
+        {
+            reason = "actor stale or CharacterObject unavailable.";
+            return false;
+        }
+
+        if (!TryReadAddress(instance.CharacterObject, out var address) || address == 0)
+        {
+            reason = $"unable to read valid Address. Address={ReadProperty(instance.CharacterObject, "Address")}";
+            return false;
+        }
+
+        if (!IsFiniteVector(position) || !float.IsFinite(yawRadians))
+        {
+            reason = $"invalid native transform. position={position}, yaw={yawRadians}";
+            return false;
+        }
+
+        var normalizedScale = NormalizeActorScale(scale);
+        try
+        {
+            var native = (Character*)address;
+            native->GameObject.SetPosition(position.X, position.Y, position.Z);
+            native->GameObject.SetRotation(yawRadians);
+            native->GameObject.RotationModified();
+            native->GameObject.Scale = normalizedScale.Y;
+
+            if (!this.TryReadActorNativeTransform(instance, out var readPosition, out var readRotationEuler, out var readScale, out var readReason))
+            {
+                reason = $"native root transform wrote but readback failed: {readReason}";
+                return false;
+            }
+
+            instance.LastKnownPosition = readPosition;
+            instance.LastKnownRotationEuler = readRotationEuler;
+            instance.LastKnownRotation = Quaternion.CreateFromYawPitchRoll(readRotationEuler.Y, readRotationEuler.X, readRotationEuler.Z);
+            instance.LastKnownScale = readScale;
+            reason = $"native root transform applied; readback position={readPosition}; rotationEuler={readRotationEuler}; scale={readScale}";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            reason = ex.Message;
+            this.log.Error(ex, "Native root transform failed. Address={Address}, Position={Position}, Yaw={Yaw}, Scale={Scale}", address, position, yawRadians, scale);
+            return false;
+        }
+    }
+
+    public unsafe bool TryReadActorNativeTransform(RuntimeActorInstance instance, out Vector3 position, out Vector3 rotationEuler, out Vector3 scale, out string reason)
+    {
+        position = Vector3.Zero;
+        rotationEuler = Vector3.Zero;
+        scale = Vector3.One;
+
+        if (!TryValidateSpawnedActorIndex(instance, out reason))
+            return false;
+
+        if (instance.IsStale || instance.CharacterObject == null)
+        {
+            reason = "actor stale or CharacterObject unavailable.";
+            return false;
+        }
+
+        if (!TryReadAddress(instance.CharacterObject, out var address) || address == 0)
+        {
+            reason = $"unable to read valid Address. Address={ReadProperty(instance.CharacterObject, "Address")}";
+            return false;
+        }
+
+        try
+        {
+            var native = (Character*)address;
+            position = native->GameObject.Position;
+            var yaw = native->GameObject.Rotation;
+            rotationEuler = new Vector3(0f, yaw, 0f);
+            var nativeScale = MathF.Max(0.01f, native->GameObject.Scale);
+            scale = new Vector3(nativeScale, nativeScale, nativeScale);
+
+            instance.LastKnownPosition = position;
+            instance.LastKnownRotationEuler = rotationEuler;
+            instance.LastKnownRotation = Quaternion.CreateFromYawPitchRoll(yaw, 0f, 0f);
+            instance.LastKnownScale = scale;
+            reason = $"native readback ok; yaw-only rotation readback. objectIndex={instance.ObjectIndex}, address={instance.Address}";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            reason = ex.Message;
+            this.log.Warning(ex, "Native transform readback failed. RuntimeId={RuntimeId}, Address={Address}", instance.RuntimeId, instance.Address);
             return false;
         }
     }
@@ -822,10 +1090,128 @@ public sealed class BrioAssemblyBridgeService
         return false;
     }
 
+    public unsafe bool TryEnsureNativeActorDraw(RuntimeActorInstance instance, out string reason)
+    {
+        if (instance.CharacterObject == null || !TryReadAddress(instance.CharacterObject, out var address) || address == 0)
+        {
+            reason = "native actor address unavailable while enabling draw.";
+            return false;
+        }
+
+        var battleCharacter = (BattleChara*)address;
+        battleCharacter->Alpha = 1f;
+        if (!battleCharacter->IsReadyToDraw())
+        {
+            reason = "native actor is not ready to draw yet.";
+            return false;
+        }
+
+        battleCharacter->EnableDraw();
+        instance.HasBoundDrawObject = true;
+        reason = "native actor draw enabled.";
+        return true;
+    }
+
     public void RefreshSpawnedNpcs()
     {
         foreach (var pair in this.spawnedCharacters.ToList())
             this.RefreshRuntimeNpc(pair.Key, pair.Value);
+    }
+
+    private unsafe bool TrySpawnNativeActor(RuntimeActorInstance instance, string displayName, Vector3 position, float yawRadians, out string reason)
+    {
+        var objectManager = ClientObjectManager.Instance();
+        if (objectManager == null)
+        {
+            reason = "ClientObjectManager.Instance() returned null.";
+            return false;
+        }
+
+        var objectIndex = objectManager->CreateBattleCharacter();
+        if (objectIndex == 0xffffffff)
+        {
+            reason = "ClientObjectManager.CreateBattleCharacter failed.";
+            return false;
+        }
+
+        var gameObject = objectManager->GetObjectByIndex((ushort)objectIndex);
+        if (gameObject == null)
+        {
+            reason = $"ClientObjectManager.GetObjectByIndex returned null for index={objectIndex}.";
+            return false;
+        }
+
+        var battleCharacter = (BattleChara*)gameObject;
+        var character = (Character*)battleCharacter;
+        battleCharacter->CharacterSetup.SetupBNpc(0);
+        battleCharacter->ObjectKind = ObjectKind.BattleNpc;
+        battleCharacter->BattleNpcSubKind = (BattleNpcSubKind)4;
+        battleCharacter->TargetableStatus &= ~ObjectTargetableFlags.IsTargetable;
+        character->GameObject.SetPosition(position.X, position.Y, position.Z);
+        character->GameObject.SetRotation(yawRadians);
+        character->GameObject.RotationModified();
+        character->Alpha = 1f;
+        character->GameObject.EnableDraw();
+        WriteNativeName(character, displayName);
+
+        var reference = this.objectTable.CreateObjectReference((nint)battleCharacter);
+        if (reference == null)
+        {
+            objectManager->DeleteObjectByIndex((ushort)objectIndex, 0);
+            reason = "Dalamud object table could not create an object reference for the native actor.";
+            return false;
+        }
+
+        this.FillInstanceFromCharacter(instance, reference);
+        instance.CharacterObject = reference;
+        instance.ObjectIndex = objectIndex.ToString();
+        instance.Address = $"0x{(nint)battleCharacter:X}";
+        instance.LastKnownObjectIndex = (int)objectIndex;
+        instance.IsValid = true;
+        instance.IsStale = false;
+        instance.LastKnownPosition = position;
+        instance.NativeNameSet = true;
+        instance.CurrentNativeName = displayName;
+        instance.NativeNameReadback = displayName;
+        reason = $"Native actor spawned. runtime={instance.RuntimeId[..Math.Min(8, instance.RuntimeId.Length)]}, objectIndex={objectIndex}, address={instance.Address}, name={displayName}.";
+        return true;
+    }
+
+    private unsafe bool TryDeleteNativeActor(RuntimeActorInstance instance, out string reason)
+    {
+        if (instance.CharacterObject == null || !TryReadAddress(instance.CharacterObject, out var address) || address == 0)
+        {
+            reason = "native actor address unavailable.";
+            return false;
+        }
+
+        var objectManager = ClientObjectManager.Instance();
+        if (objectManager == null)
+        {
+            reason = "ClientObjectManager.Instance() returned null.";
+            return false;
+        }
+
+        var gameObject = (FFXIVClientStructs.FFXIV.Client.Game.Object.GameObject*)address;
+        var objectIndex = objectManager->GetIndexByObject(gameObject);
+        if (objectIndex < 0)
+        {
+            reason = $"ClientObjectManager could not resolve object index for {instance.Address}.";
+            return false;
+        }
+
+        objectManager->DeleteObjectByIndex((ushort)objectIndex, 0);
+        reason = $"Native actor deleted by ClientObjectManager at index={objectIndex}.";
+        return true;
+    }
+
+    private unsafe static void WriteNativeName(Character* character, string name)
+    {
+        var bytes = Encoding.UTF8.GetBytes((name.Length > 20 ? name[..20] : name).Trim());
+        var count = Math.Min(bytes.Length, 63);
+        for (var index = 0; index < count; index++)
+            character->GameObject.Name[index] = bytes[index];
+        character->GameObject.Name[count] = 0;
     }
 
     private bool TryGetActorSpawnService(out object? actorSpawnService, out string reason)
@@ -1001,6 +1387,31 @@ public sealed class BrioAssemblyBridgeService
 
     private static string FormatPosition(Vector3 position)
         => $"X {position.X:F2}, Y {position.Y:F2}, Z {position.Z:F2}";
+
+    private static Vector3 NormalizeActorScale(Vector3 scale)
+    {
+        if (!IsFiniteVector(scale) || scale == Vector3.Zero)
+            return Vector3.One;
+
+        var uniform = MathF.Max(0.01f, scale.Y);
+        return new Vector3(uniform, uniform, uniform);
+    }
+
+    private static bool TryValidateSpawnedActorIndex(RuntimeActorInstance instance, out string reason)
+    {
+        var objectIndex = instance.LastKnownObjectIndex;
+        if (int.TryParse(instance.ObjectIndex, out var parsedIndex))
+            objectIndex = parsedIndex;
+
+        if (objectIndex <= 0)
+        {
+            reason = $"invalid spawned Actor objectIndex={objectIndex}; objectIndex 0/local player is not a valid Actor target.";
+            return false;
+        }
+
+        reason = string.Empty;
+        return true;
+    }
 
     private static bool TryReadAddress(object character, out nint address)
     {
@@ -1264,6 +1675,7 @@ public sealed class BrioAssemblyBridgeService
     {
         var preferredNames = new[]
         {
+            "DefinePosition",
             "CopyPosition",
             "Default",
         };
@@ -1280,7 +1692,7 @@ public sealed class BrioAssemblyBridgeService
         }
 
         selectedFlagInfo = new SpawnFlagInfo("整数 4", 4);
-        this.log.Warning("[BrioAssemblyBridgeService] CopyPosition/Default not found. Falling back to integer 4.");
+        this.log.Warning("[BrioAssemblyBridgeService] DefinePosition/CopyPosition/Default not found. Falling back to integer 4.");
         return Enum.ToObject(spawnFlagsType, 4);
     }
 

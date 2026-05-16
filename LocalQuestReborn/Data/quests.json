@@ -187,6 +187,167 @@
       }
     }
   ],
+  "ActorConfigs": [
+    {
+      "SchemaVersion": 2,
+      "ConfigId": "8e95a90d0e2b420c82bfc343274770ca",
+      "RuntimeId": "80c7a6665d624f9f9ddedfa3d9aa9875",
+      "SourceNpcPresetId": "",
+      "NpcNameSnapshot": "困晕 - 沃仙曦染",
+      "DisplayName": "困晕 - 沃仙曦染",
+      "Appearance": {
+        "sourceKind": "GlamourerDesign",
+        "sourceId": "e5aeb78e-c56a-4250-95cf-6fbc03945104",
+        "sourceName": "困晕 - 沃仙曦染",
+        "sourcePath": "C:\\Users\\kiomo\\AppData\\Roaming\\XIVLauncherCN\\pluginConfigs\\Glamourer\\designs\\e5aeb78e-c56a-4250-95cf-6fbc03945104.json",
+        "isHumanoid": true,
+        "modelCharaId": 0,
+        "modelSkeletonId": 0,
+        "customize": {
+          "Race": 4,
+          "Sex": 0,
+          "BodyType": 1,
+          "Height": 100,
+          "Tribe": 8,
+          "Face": 1,
+          "HairStyle": 160,
+          "Highlights": 128,
+          "SkinColor": 57,
+          "EyeColorRight": 58,
+          "HairColor": 99,
+          "HighlightsColor": 7,
+          "FacialFeatures": 0,
+          "FacialFeaturesColor": 0,
+          "Eyebrows": 1,
+          "EyeColorLeft": 58,
+          "EyeShape": 2,
+          "Nose": 0,
+          "Jaw": 2,
+          "Lipstick": 130,
+          "LipColorFurPattern": 39,
+          "MuscleMass": 24,
+          "TailShape": 2,
+          "BustSize": 0,
+          "FacePaint": 3,
+          "FacePaintColor": 7,
+          "RawCustomizeBase64": ""
+        },
+        "equipment": {
+          "MainHand": {
+            "ModelSetId": 7201,
+            "Base": 6,
+            "Variant": 2,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "OffHand": {
+            "ModelSetId": 0,
+            "Base": 0,
+            "Variant": 0,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Head": {
+            "ModelId": 698,
+            "Variant": 1,
+            "Stain0": 112,
+            "Stain1": 0
+          },
+          "Body": {
+            "ModelId": 6191,
+            "Variant": 1,
+            "Stain0": 101,
+            "Stain1": 101
+          },
+          "Hands": {
+            "ModelId": 6148,
+            "Variant": 1,
+            "Stain0": 101,
+            "Stain1": 0
+          },
+          "Legs": {
+            "ModelId": 263,
+            "Variant": 1,
+            "Stain0": 101,
+            "Stain1": 0
+          },
+          "Feet": {
+            "ModelId": 6147,
+            "Variant": 1,
+            "Stain0": 101,
+            "Stain1": 0
+          },
+          "Ears": {
+            "ModelId": 53,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Neck": {
+            "ModelId": 53,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Wrists": {
+            "ModelId": 53,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "LeftRing": {
+            "ModelId": 53,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "RightRing": {
+            "ModelId": 53,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "HideWeapons": true,
+          "HideHeadgear": false
+        },
+        "summary": "Localized Glamourer design. humanoid=True, modelChara=0, modelSkeleton=0, customizeFields=20/26, equipmentSlots=12/12, missing=none, file=C:\\Users\\kiomo\\AppData\\Roaming\\XIVLauncherCN\\pluginConfigs\\Glamourer\\designs\\e5aeb78e-c56a-4250-95cf-6fbc03945104.json"
+      },
+      "TerritoryType": 339,
+      "TerritoryName": "Territory 339",
+      "WorldPosition": {
+        "X": -57.677673,
+        "Y": 13.119315,
+        "Z": 9.68062
+      },
+      "WorldRotationEuler": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "WorldScale": {
+        "X": 1,
+        "Y": 1,
+        "Z": 1
+      },
+      "DefaultAnimationId": 0,
+      "CurrentAnimationId": 0,
+      "AnimationEnabled": false,
+      "AutoPlayDefaultAnimation": false,
+      "LookAtPlayerEnabled": false,
+      "LookAtRadius": 8,
+      "EnableActionSequence": false,
+      "ActionSequenceLoop": false,
+      "ActionSequenceLoopDelay": 0,
+      "ActionSequence": [],
+      "PenumbraMode": "DoNotTouch",
+      "PenumbraCollectionId": null,
+      "PenumbraCollectionNameCache": "",
+      "AutoSpawn": true,
+      "SortOrder": 1,
+      "SpawnSequence": 24,
+      "Notes": ""
+    }
+  ],
   "Quests": [
     {
       "Id": "local-quest-1778431124",

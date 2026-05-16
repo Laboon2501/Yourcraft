@@ -35,7 +35,7 @@ public sealed class AppearanceApplyQueue
 
     public string LastError { get; private set; } = string.Empty;
 
-    public string LastStatus { get; private set; } = "外观队列空闲。";
+    public string LastStatus { get; private set; } = "Local actor appearance queue idle.";
 
     public void Enqueue(string runtimeId, string reason)
     {
@@ -43,7 +43,7 @@ public sealed class AppearanceApplyQueue
             return;
 
         this.jobs.Enqueue(new AppearanceApplyJob(runtimeId, reason, DateTime.Now));
-        this.LastStatus = $"已加入外观队列：{runtimeId}，当前队列 {this.jobs.Count}。";
+        this.LastStatus = $"Queued local actor appearance apply: {runtimeId}, pending={this.jobs.Count}.";
     }
 
     public void EnqueueForNpc(string npcId)
@@ -51,11 +51,11 @@ public sealed class AppearanceApplyQueue
         var count = 0;
         foreach (var actor in this.registry.GetByNpcId(npcId).ToList())
         {
-            this.Enqueue(actor.RuntimeId, $"NPC {npcId} 批量应用外观");
+            this.Enqueue(actor.RuntimeId, $"legacy npc {npcId} batch appearance apply");
             count++;
         }
 
-        this.LastStatus = $"已加入 {count} 个 Actor 的外观应用任务。";
+        this.LastStatus = $"Queued {count} legacy actor appearance job(s).";
     }
 
     public void EnqueueAll()
@@ -63,11 +63,11 @@ public sealed class AppearanceApplyQueue
         var count = 0;
         foreach (var actor in this.registry.GetAll().ToList())
         {
-            this.Enqueue(actor.RuntimeId, "全部 Actor 批量应用外观");
+            this.Enqueue(actor.RuntimeId, "batch local actor appearance apply");
             count++;
         }
 
-        this.LastStatus = $"已加入全部 {count} 个 Actor 的外观应用任务。";
+        this.LastStatus = $"Queued all actor appearance jobs: {count}.";
     }
 
     public int RemoveJobsForActor(string runtimeId)
@@ -89,7 +89,7 @@ public sealed class AppearanceApplyQueue
         if (string.Equals(this.CurrentActorRuntimeId, runtimeId, StringComparison.OrdinalIgnoreCase))
             this.CurrentActorRuntimeId = string.Empty;
 
-        this.LastStatus = $"已移除 Actor {runtimeId} 的待处理外观任务：{removed} 个。";
+        this.LastStatus = $"Removed pending appearance jobs for {runtimeId}: {removed}.";
         return removed;
     }
 
@@ -110,28 +110,30 @@ public sealed class AppearanceApplyQueue
             var actor = this.registry.GetByRuntimeId(job.RuntimeId);
             if (actor == null)
             {
-                this.LastError = $"Actor 不存在：{job.RuntimeId}";
+                this.LastError = $"Actor not found: {job.RuntimeId}";
                 this.LastStatus = this.LastError;
                 return;
             }
 
-            var npc = this.database.GetNpcById(actor.NpcId);
-            if (npc == null)
+            var config = this.database.ActorConfigs.FirstOrDefault(item => string.Equals(item.RuntimeId, actor.RuntimeId, StringComparison.OrdinalIgnoreCase));
+            if (config == null)
             {
-                this.LastError = $"NPC 配置不存在：{actor.NpcId}";
+                this.LastError = $"Actor config not found: {actor.RuntimeId}";
                 actor.LastAppearanceError = this.LastError;
                 actor.LastAppearanceApplyResult = this.LastError;
                 this.LastStatus = this.LastError;
                 return;
             }
 
-            var success = this.appearanceApplyService.ApplyNpcPresetAppearance(npc, actor);
+            var success = this.appearanceApplyService.ApplyActorConfigAppearance(config, actor);
+            actor.RuntimeAppearanceApplied = success;
+            actor.LastSuccessfulAppearanceApplyAt = success ? DateTime.UtcNow : actor.LastSuccessfulAppearanceApplyAt;
             stopwatch.Stop();
             this.LastElapsedMilliseconds = stopwatch.ElapsedMilliseconds;
 
             if (this.LastElapsedMilliseconds > TimeoutMilliseconds)
             {
-                var timeout = $"外观任务超过 {TimeoutMilliseconds}ms：实际 {this.LastElapsedMilliseconds}ms，RuntimeId={job.RuntimeId}";
+                var timeout = $"Appearance job exceeded {TimeoutMilliseconds}ms: actual={this.LastElapsedMilliseconds}ms, runtimeId={job.RuntimeId}";
                 actor.LastAppearanceError = timeout;
                 actor.LastAppearanceApplyResult = timeout;
                 this.LastError = timeout;
@@ -142,15 +144,15 @@ public sealed class AppearanceApplyQueue
 
             this.LastError = success ? string.Empty : actor.LastAppearanceError;
             this.LastStatus = success
-                ? $"外观任务完成：{job.RuntimeId}，耗时 {this.LastElapsedMilliseconds}ms。"
-                : $"外观任务失败：{job.RuntimeId}，{actor.LastAppearanceError}";
+                ? $"Local appearance job completed: {job.RuntimeId}, elapsed={this.LastElapsedMilliseconds}ms."
+                : $"Local appearance job failed: {job.RuntimeId}, {actor.LastAppearanceError}";
         }
         catch (Exception ex)
         {
             stopwatch.Stop();
             this.LastElapsedMilliseconds = stopwatch.ElapsedMilliseconds;
             this.LastError = ex.Message;
-            this.LastStatus = $"外观任务异常：{job.RuntimeId}，{ex.Message}";
+            this.LastStatus = $"Appearance job exception: {job.RuntimeId}, {ex.Message}";
             this.log.Error(ex, "Appearance apply job failed. RuntimeId={RuntimeId}", job.RuntimeId);
         }
         finally

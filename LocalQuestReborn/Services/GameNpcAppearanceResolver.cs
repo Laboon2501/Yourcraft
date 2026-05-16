@@ -175,18 +175,18 @@ public sealed class GameNpcAppearanceResolver
             },
             Equipment = new GameNpcResolvedEquipment
             {
-                MainHand = ReadFirstUInt(row, "ModelMainHand"),
-                OffHand = ReadFirstUInt(row, "ModelOffHand"),
-                Head = ReadFirstUInt(row, "ModelHead"),
-                Body = ReadFirstUInt(row, "ModelBody"),
-                Hands = ReadFirstUInt(row, "ModelHands"),
-                Legs = ReadFirstUInt(row, "ModelLegs"),
-                Feet = ReadFirstUInt(row, "ModelFeet"),
-                Ears = ReadFirstUInt(row, "ModelEars"),
-                Neck = ReadFirstUInt(row, "ModelNeck"),
-                Wrists = ReadFirstUInt(row, "ModelWrists"),
-                LeftRing = ReadFirstUInt(row, "ModelLeftRing"),
-                RightRing = ReadFirstUInt(row, "ModelRightRing"),
+                MainHand = ReadFirstUInt64(row, "ModelMainHand"),
+                OffHand = ReadFirstUInt64(row, "ModelOffHand"),
+                Head = ReadFirstUInt64(row, "ModelHead"),
+                Body = ReadFirstUInt64(row, "ModelBody"),
+                Hands = ReadFirstUInt64(row, "ModelHands"),
+                Legs = ReadFirstUInt64(row, "ModelLegs"),
+                Feet = ReadFirstUInt64(row, "ModelFeet"),
+                Ears = ReadFirstUInt64(row, "ModelEars"),
+                Neck = ReadFirstUInt64(row, "ModelNeck"),
+                Wrists = ReadFirstUInt64(row, "ModelWrists"),
+                LeftRing = ReadFirstUInt64(row, "ModelLeftRing"),
+                RightRing = ReadFirstUInt64(row, "ModelRightRing"),
             },
             DebugInfo = DumpPublicMembers(row),
         };
@@ -248,6 +248,18 @@ public sealed class GameNpcAppearanceResolver
         return 0;
     }
 
+    private static ulong ReadFirstUInt64(object source, params string[] memberNames)
+    {
+        foreach (var memberName in memberNames)
+        {
+            var value = ReadUInt64(source, memberName);
+            if (value != 0)
+                return value;
+        }
+
+        return 0;
+    }
+
     private static uint ReadUInt(object source, string memberName)
     {
         var value = ReadMember(source, memberName);
@@ -263,6 +275,27 @@ public sealed class GameNpcAppearanceResolver
         if (value is int intValue && intValue >= 0)
             return (uint)intValue;
         return uint.TryParse(value.ToString(), out var parsed) ? parsed : 0;
+    }
+
+    private static ulong ReadUInt64(object source, string memberName)
+    {
+        var value = ReadMember(source, memberName);
+        if (value == null)
+            return 0;
+
+        if (value is ulong ulongValue)
+            return ulongValue;
+        if (value is long longValue && longValue >= 0)
+            return (ulong)longValue;
+        if (value is uint uintValue)
+            return uintValue;
+        if (value is ushort ushortValue)
+            return ushortValue;
+        if (value is byte byteValue)
+            return byteValue;
+        if (value is int intValue && intValue >= 0)
+            return (uint)intValue;
+        return ulong.TryParse(value.ToString(), out var parsed) ? parsed : 0;
     }
 
     private static object? ReadMember(object source, string memberName)
