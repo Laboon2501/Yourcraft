@@ -93,6 +93,7 @@ public sealed class ActorEquipmentData
     public ActorEquipmentModelData? LeftRing { get; set; }
     public ActorEquipmentModelData? RightRing { get; set; }
     public bool HideWeapons { get; set; }
+    public bool ApplyHeadgearVisibility { get; set; }
     public bool HideHeadgear { get; set; }
 }
 

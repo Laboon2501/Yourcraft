@@ -206,6 +206,8 @@ public sealed class AppearanceApplyService
             string afterSummary;
             string verification;
             string customizeWriteMode = string.Empty;
+            var applyHeadgearVisibility = ShouldApplyHeadgearVisibility(appearance.Equipment);
+            var hideHeadgear = appearance.Equipment.HideHeadgear;
             unsafe
             {
                 var character = (Character*)address;
@@ -224,10 +226,13 @@ public sealed class AppearanceApplyService
                 {
                     ApplyEquipment(character, appearance.Equipment);
                     character->DrawData.HideWeapons(appearance.Equipment.HideWeapons);
-                    character->DrawData.HideHeadgear(0, appearance.Equipment.HideHeadgear);
+                    if (applyHeadgearVisibility)
+                        ApplyHeadgearVisibility(character, hideHeadgear);
                 }
                 character->Alpha = 1f;
                 character->GameObject.EnableDraw();
+                if (isCharacter && applyHeadgearVisibility)
+                    ApplyHeadgearVisibility(character, hideHeadgear);
                 afterSummary = BuildNativeAppearanceSummary(character);
                 if (!VerifyApplied(character, appearance, out verification))
                     return this.FailActorAppearance(actor, "LocalActorAppearanceFailed", $"AppearanceFailed: {verification}. before={beforeSummary}; after={afterSummary}; sourceSummary={appearance.Summary}");
@@ -247,6 +252,16 @@ public sealed class AppearanceApplyService
             actor.LastAppearanceRedrawFallbackCount = 1;
             actor.LastAppearanceApplyResult = $"AppearanceApplied: source={appearance.SourceKind}, spawnKind={spawnKind}, name={appearance.SourceName}, sourceModelChara={appearance.ModelCharaId}, overrideModelChara={appearance.ModelCharaOverrideId}, effectiveModelChara={effectiveModelCharaId}, actualAppliedModelChara={actor.LastAppliedModelCharaId}, fields={BuildAppearanceFieldSummary(appearance)}, customizeWrite={customizeWriteMode}, verification={verification}, summary={appearance.Summary}";
             actor.LastAppearanceAppliedAt = DateTime.Now;
+            this.log.Debug(
+                "[ActorHeadgear] runtime={RuntimeId}, config={ConfigId}, source={Source}, applyVisibility={ApplyVisibility}, requested={Requested}, before={Before}, after={After}, verification={Verification}",
+                actor.RuntimeId,
+                config.ConfigId,
+                appearance.SourceKind,
+                applyHeadgearVisibility,
+                applyHeadgearVisibility ? (hideHeadgear ? "hidden" : "visible") : "not-set",
+                beforeSummary,
+                afterSummary,
+                verification);
             return true;
         }
         catch (Exception ex)
@@ -317,6 +332,13 @@ public sealed class AppearanceApplyService
         ApplyGear(character, EquipmentSlot.RFinger, equipment.RightRing);
     }
 
+    private unsafe static void ApplyHeadgearVisibility(Character* character, bool hideHeadgear)
+    {
+        if (!hideHeadgear)
+            character->DrawData.HideHeadgear(0, true);
+        character->DrawData.HideHeadgear(0, hideHeadgear);
+    }
+
     private unsafe static void ApplyWeapon(Character* character, WeaponSlot slot, ActorWeaponModelData? model)
     {
         if (model == null)
@@ -382,7 +404,16 @@ public sealed class AppearanceApplyService
            data.FacePaint != 0;
 
     private static string BuildAppearanceFieldSummary(ActorAppearanceData appearance)
-        => $"spawnKind={appearance.SpawnKind},sourceModelChara={appearance.ModelCharaId},overrideModelChara={appearance.ModelCharaOverrideId},effectiveModelChara={EffectiveModelCharaId(appearance)},customizeFields={CountCustomizeFields(appearance.Customize)}/26,equipmentSlots={CountEquipment(appearance.Equipment)}/12,hideWeapons={appearance.Equipment.HideWeapons},hideHeadgear={appearance.Equipment.HideHeadgear}";
+    {
+        var applyHeadgearVisibility = ShouldApplyHeadgearVisibility(appearance.Equipment);
+        var headgearVisibility = applyHeadgearVisibility
+            ? (appearance.Equipment.HideHeadgear ? "hidden" : "visible")
+            : "not-set";
+        return $"spawnKind={appearance.SpawnKind},sourceModelChara={appearance.ModelCharaId},overrideModelChara={appearance.ModelCharaOverrideId},effectiveModelChara={EffectiveModelCharaId(appearance)},customizeFields={CountCustomizeFields(appearance.Customize)}/26,equipmentSlots={CountEquipment(appearance.Equipment)}/12,hideWeapons={appearance.Equipment.HideWeapons},headgearVisibility={headgearVisibility}";
+    }
+
+    private static bool ShouldApplyHeadgearVisibility(ActorEquipmentData equipment)
+        => equipment.ApplyHeadgearVisibility || equipment.HideHeadgear;
 
     private static int CountCustomizeFields(ActorCustomizeData data)
     {

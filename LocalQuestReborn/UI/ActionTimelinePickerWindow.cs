@@ -26,16 +26,13 @@ public sealed class ActionTimelinePickerWindow : Window
         var request = this.picker.CurrentRequest;
         if (request == null)
         {
-            ImGui.TextDisabled(T("没有活动的选择目标。", "No active picker target."));
+            ImGui.TextDisabled(T("没有可用的选择目标。", "No active picker target."));
             if (ImGui.Button(T("关闭", "Close")))
                 this.IsOpen = false;
             return;
         }
 
         ImGui.TextUnformatted(request.Title);
-        ImGui.TextDisabled(T(
-            "选择后会写入输入框；仍可手动输入任意 ActionTimelineId。",
-            "Selecting an entry writes it to the field; manual ActionTimelineId input is still supported."));
 
         var mode = request.PickerMode;
         if (ImGui.BeginCombo(T("列表模式", "List Mode"), mode.ToString()))
@@ -74,20 +71,16 @@ public sealed class ActionTimelinePickerWindow : Window
         ImGui.Separator();
 
         var entries = this.picker.Search();
-        ImGui.TextDisabled(T(
-            $"显示 {entries.Count} 条。ExpressionCandidates 如果无法可靠过滤，会显示候选和可搜索 ActionTimeline。",
-            $"Showing {entries.Count} entries. Expression candidates may include searchable ActionTimelines when filtering is uncertain."));
-
         if (!ImGui.BeginTable("ActionTimelinePickerTable", 7, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.ScrollY, new Vector2(0f, 360f)))
             return;
 
         ImGui.TableSetupColumn("ID", ImGuiTableColumnFlags.WidthFixed, 70f);
-        ImGui.TableSetupColumn("Name", ImGuiTableColumnFlags.WidthStretch);
-        ImGui.TableSetupColumn("Command", ImGuiTableColumnFlags.WidthFixed, 100f);
-        ImGui.TableSetupColumn("Source", ImGuiTableColumnFlags.WidthFixed, 90f);
-        ImGui.TableSetupColumn("Row", ImGuiTableColumnFlags.WidthFixed, 70f);
+        ImGui.TableSetupColumn(T("名称", "Name"), ImGuiTableColumnFlags.WidthStretch);
+        ImGui.TableSetupColumn(T("命令", "Command"), ImGuiTableColumnFlags.WidthFixed, 100f);
+        ImGui.TableSetupColumn(T("来源", "Source"), ImGuiTableColumnFlags.WidthFixed, 90f);
+        ImGui.TableSetupColumn(T("行", "Row"), ImGuiTableColumnFlags.WidthFixed, 70f);
         ImGui.TableSetupColumn("Slot", ImGuiTableColumnFlags.WidthFixed, 80f);
-        ImGui.TableSetupColumn("Loop?", ImGuiTableColumnFlags.WidthFixed, 60f);
+        ImGui.TableSetupColumn(T("循环", "Loop"), ImGuiTableColumnFlags.WidthFixed, 60f);
         ImGui.TableHeadersRow();
 
         foreach (var entry in entries)
@@ -107,7 +100,7 @@ public sealed class ActionTimelinePickerWindow : Window
             }
 
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip($"ActionTimelineId={entry.ActionTimelineId}\nKey={entry.Key}\nPurpose={entry.Purpose}\n仍可手动输入未列出的 ID。");
+                ImGui.SetTooltip($"ActionTimelineId={entry.ActionTimelineId}\nKey={entry.Key}\nPurpose={entry.Purpose}");
 
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(string.IsNullOrWhiteSpace(entry.Name) ? "(unnamed)" : entry.Name);
@@ -120,7 +113,7 @@ public sealed class ActionTimelinePickerWindow : Window
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(entry.Slot);
             ImGui.TableNextColumn();
-            ImGui.TextUnformatted(entry.IsLoopCandidate ? "yes" : string.Empty);
+            ImGui.TextUnformatted(entry.IsLoopCandidate ? T("是", "yes") : string.Empty);
         }
 
         ImGui.EndTable();

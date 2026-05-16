@@ -1453,6 +1453,7 @@ public sealed class MainWindow : Window
                 ? new Vector4(1f, 0.35f, 0.25f, 1f)
                 : new Vector4(1f, 0.78f, 0.25f, 1f);
         ImGui.TextColored(stateColor, $"Lifecycle: {actor.LifecycleState}");
+        ImGui.Spacing();
 
         if (actor.TransformEditScale == Vector3.Zero)
             actor.TransformEditScale = Vector3.One;
@@ -1462,9 +1463,9 @@ public sealed class MainWindow : Window
         var transformChanged = false;
         var editPosition = actor.TransformEditPosition;
         transformChanged |= DrawSmallFloatStepper(T("X", "X"), "ActorTransformX", ref editPosition.X, 0.2f);
-        ImGui.SameLine();
+        ImGui.SameLine(0f, 12f);
         transformChanged |= DrawSmallFloatStepper(T("Y", "Y"), "ActorTransformY", ref editPosition.Y, 0.2f);
-        ImGui.SameLine();
+        ImGui.SameLine(0f, 12f);
         transformChanged |= DrawSmallFloatStepper(T("Z", "Z"), "ActorTransformZ", ref editPosition.Z, 0.2f);
         actor.TransformEditPosition = editPosition;
         ImGui.NewLine();
@@ -1477,7 +1478,7 @@ public sealed class MainWindow : Window
         }
 
         var uniformScale = ActorTransformUtil.UniformScaleFrom(actor.TransformEditScale);
-        ImGui.SameLine();
+        ImGui.SameLine(0f, 12f);
         if (DrawSmallFloatStepper(T("缩放", "Scale"), "ActorTransformScale", ref uniformScale, 0.2f, 0.01f))
         {
             actor.TransformEditScale = new Vector3(MathF.Max(0.01f, uniformScale));
@@ -1487,6 +1488,7 @@ public sealed class MainWindow : Window
         if (transformChanged)
             this.realNpcSpawn.ApplyAndSaveActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
 
+        ImGui.Spacing();
         if (ImGui.Button(T("移动到玩家位置", "Move to Player Position")) && this.runtime.PlayerPosition.HasValue)
         {
             actor.TransformEditPosition = this.runtime.PlayerPosition.Value;
@@ -1545,6 +1547,7 @@ public sealed class MainWindow : Window
         }
 
         var lookRadius = actor.LookAtRadius <= 0.1f ? npc?.LookAtRadius ?? 8f : actor.LookAtRadius;
+        ImGui.SetNextItemWidth(86f);
         if (ImGui.InputFloat(T("此 Actor 看向半径", "Look Radius"), ref lookRadius))
         {
             actor.LookAtRadius = Math.Max(0.1f, lookRadius);
@@ -1556,32 +1559,35 @@ public sealed class MainWindow : Window
         if (lookAtChanged)
             this.realNpcSpawn.UpdateActorLookAtSettings(actor.RuntimeId, actor.LookAtPlayerEnabled, actor.LookAtRadius);
 
+        ImGui.Spacing();
         var animationId = (int)Math.Min(actor.CurrentAnimationId == 0 ? actor.DefaultAnimationId : actor.CurrentAnimationId, int.MaxValue);
         ImGui.SetNextItemWidth(130f);
         if (ImGui.InputInt(T("此 Actor 动画 ID", "Actor Animation ID"), ref animationId))
             actor.CurrentAnimationId = (uint)Math.Max(0, animationId);
-        ImGui.SameLine();
+        ImGui.SameLine(0f, 8f);
         this.DrawAnimationPickerButton("##ActorCurrentAnimationPicker", ActorAnimationPickerRequest.ForActorCurrent(actor.RuntimeId, ActorAnimationPickerMode.EmoteActionsOnly));
 
+        ImGui.Spacing();
         var expressionId = (int)Math.Min(actor.CurrentExpressionId, int.MaxValue);
         ImGui.SetNextItemWidth(110f);
         if (ImGui.InputInt(T("表情", "Expression"), ref expressionId))
             actor.CurrentExpressionId = (uint)Math.Max(0, expressionId);
-        ImGui.SameLine();
+        ImGui.SameLine(0f, 8f);
         this.DrawAnimationPickerButton("##ActorExpressionPicker", ActorAnimationPickerRequest.ForActorExpression(actor.RuntimeId, ActorAnimationPickerMode.ExpressionCandidates));
 
         var expressionLayer = actor.CurrentExpressionLayer;
-        ImGui.SameLine();
+        ImGui.SameLine(0f, 14f);
         ImGui.SetNextItemWidth(120f);
         if (DrawExpressionLayerCombo(T("层", "Layer"), ref expressionLayer))
             actor.CurrentExpressionLayer = expressionLayer;
 
         var expressionLoopIntervalMs = (int)MathF.Round(Math.Max(0.05f, actor.ExpressionBlendLoopIntervalSeconds) * 1000f);
-        ImGui.SameLine();
+        ImGui.SameLine(0f, 14f);
         ImGui.SetNextItemWidth(100f);
         if (ImGui.InputInt(T("间隔 ms", "Interval ms"), ref expressionLoopIntervalMs))
             actor.ExpressionBlendLoopIntervalSeconds = Math.Max(50, expressionLoopIntervalMs) / 1000f;
 
+        ImGui.Spacing();
         var lipTalkKey = actor.CurrentLipTalkKey;
         var lipTalkId = actor.CurrentLipTalkId;
         ImGui.SetNextItemWidth(220f);
@@ -1589,11 +1595,12 @@ public sealed class MainWindow : Window
             this.realNpcSpawn.SetActorLipTalkPreset(actor.RuntimeId, lipTalkKey);
 
         var lipLoopIntervalMs = (int)MathF.Round(Math.Max(0.05f, actor.LipTalkLoopIntervalSeconds) * 1000f);
-        ImGui.SameLine();
+        ImGui.SameLine(0f, 14f);
         ImGui.SetNextItemWidth(100f);
         if (ImGui.InputInt(T("间隔 ms##Lip", "Interval ms##Lip"), ref lipLoopIntervalMs))
             actor.LipTalkLoopIntervalSeconds = Math.Max(50, lipLoopIntervalMs) / 1000f;
 
+        ImGui.Spacing();
         ImGui.BeginDisabled(!actor.IsValid || actor.CharacterObject == null);
         if (ImGui.Button(T("播放动画", "Play Animation")))
             this.realNpcSpawn.PlayAnimation(actor.RuntimeId, actor.CurrentAnimationId);
@@ -1828,6 +1835,7 @@ public sealed class MainWindow : Window
         if (ImGui.SliderFloat(T("表情权重", "Expression Weight"), ref expressionWeight, 0f, 1f))
             step.ExpressionWeight = Math.Clamp(expressionWeight, 0f, 1f);
 
+        ImGui.Spacing();
         var lipOptionsChanged = false;
         var playLipTalk = step.PlayLipTalkWithAction;
         if (ImGui.Checkbox(T("随动作播放口型", "Play Lips With Action"), ref playLipTalk))
@@ -1845,6 +1853,7 @@ public sealed class MainWindow : Window
 
         var lipTalkKey = step.LipTalkKey;
         var lipTalkId = (uint)step.LipTalkId;
+        ImGui.SetNextItemWidth(220f);
         if (this.DrawLipAnimationCombo(T("步骤口型 / Lips", "Step Lips"), ref lipTalkKey, ref lipTalkId))
         {
             step.LipTalkKey = lipTalkKey;
@@ -1852,13 +1861,17 @@ public sealed class MainWindow : Window
             lipOptionsChanged = true;
         }
 
+        ImGui.Spacing();
         var lipDelay = step.LipTalkDelaySeconds;
+        ImGui.SetNextItemWidth(100f);
         if (ImGui.InputFloat(T("口型延迟", "Lip Delay"), ref lipDelay))
         {
             step.LipTalkDelaySeconds = Math.Max(0f, lipDelay);
             lipOptionsChanged = true;
         }
+        ImGui.SameLine(0f, 14f);
         var lipDuration = step.LipTalkDurationSeconds;
+        ImGui.SetNextItemWidth(100f);
         if (ImGui.InputFloat(T("口型持续", "Lip Duration"), ref lipDuration))
         {
             step.LipTalkDurationSeconds = Math.Max(0f, lipDuration);

@@ -309,7 +309,16 @@ public sealed class ActorAppearanceLocalizerService
         data.Equipment.LeftRing = this.ReadGlamourerGearSlot(equipment, "LFinger", "LeftRing");
 
         if (TryGetPropertyIgnoreCase(equipment, "Hat", out var hat))
-            data.Equipment.HideHeadgear = !ReadBool(hat, true, "Show", "Visible");
+        {
+            var hasApplyFlag = TryReadBool(hat, out var applyHatVisibility, "Apply");
+            data.Equipment.ApplyHeadgearVisibility = !hasApplyFlag || applyHatVisibility;
+            if (data.Equipment.ApplyHeadgearVisibility)
+            {
+                data.Equipment.HideHeadgear = TryReadBool(hat, out var explicitHidden, "Hide", "Hidden", "HideHeadgear")
+                    ? explicitHidden
+                    : !ReadBool(hat, true, "Show", "Visible");
+            }
+        }
         if (TryGetPropertyIgnoreCase(equipment, "Weapon", out var weapon))
             data.Equipment.HideWeapons = !ReadBool(weapon, true, "Show", "Visible");
     }
@@ -555,22 +564,53 @@ public sealed class ActorAppearanceLocalizerService
     }
 
     private static bool ReadBool(JsonElement element, bool fallback, params string[] names)
+        => TryReadBool(element, out var value, names) ? value : fallback;
+
+    private static bool TryReadBool(JsonElement element, out bool value, params string[] names)
     {
+        if (names.Length == 0 || element.ValueKind != JsonValueKind.Object)
+            return TryReadBoolValue(element, out value);
+
         foreach (var name in names)
         {
             if (!TryGetPropertyIgnoreCase(element, name, out var property))
                 continue;
-            if (property.ValueKind == JsonValueKind.Object && TryGetPropertyIgnoreCase(property, "Value", out var nested))
-                property = nested;
-            if (property.ValueKind == JsonValueKind.True)
+
+            if (TryReadBoolValue(property, out value))
                 return true;
-            if (property.ValueKind == JsonValueKind.False)
-                return false;
-            if (bool.TryParse(property.ToString(), out var parsed))
-                return parsed;
         }
 
-        return fallback;
+        value = false;
+        return false;
+    }
+
+    private static bool TryReadBoolValue(JsonElement element, out bool value)
+    {
+        if (element.ValueKind == JsonValueKind.Object && TryGetPropertyIgnoreCase(element, "Value", out var nested))
+            element = nested;
+        if (element.ValueKind == JsonValueKind.True)
+        {
+            value = true;
+            return true;
+        }
+        if (element.ValueKind == JsonValueKind.False)
+        {
+            value = false;
+            return true;
+        }
+        if (element.ValueKind == JsonValueKind.Number && element.TryGetInt32(out var numeric))
+        {
+            value = numeric != 0;
+            return true;
+        }
+        if (bool.TryParse(element.ToString(), out var parsed))
+        {
+            value = parsed;
+            return true;
+        }
+
+        value = false;
+        return false;
     }
 
     private static byte ReadByte(JsonElement element, params string[] names)
@@ -721,7 +761,10 @@ public sealed class ActorAppearanceLocalizerService
         if (data.SpawnKind is ActorSpawnKind.Demihuman or ActorSpawnKind.Mount or ActorSpawnKind.Minion && data.ModelCharaId == 0)
             missing.Add("modelChara");
 
-        return $"Localized {source}. spawnKind={data.SpawnKind}, sourceActorKind={data.SourceActorKind}, objectKind={data.ObjectKind}, humanoid={data.IsHumanoid}, modelChara={data.ModelCharaId}, modelSkeleton={data.ModelSkeletonId}, customizeFields={customizeCount}/26, equipmentSlots={equipmentCount}/12, missing={(missing.Count == 0 ? "none" : string.Join(',', missing))}, {extra}";
+        var headgearVisibility = data.Equipment.ApplyHeadgearVisibility
+            ? (data.Equipment.HideHeadgear ? "hidden" : "visible")
+            : "not-set";
+        return $"Localized {source}. spawnKind={data.SpawnKind}, sourceActorKind={data.SourceActorKind}, objectKind={data.ObjectKind}, humanoid={data.IsHumanoid}, modelChara={data.ModelCharaId}, modelSkeleton={data.ModelSkeletonId}, customizeFields={customizeCount}/26, equipmentSlots={equipmentCount}/12, headgearVisibility={headgearVisibility}, missing={(missing.Count == 0 ? "none" : string.Join(',', missing))}, {extra}";
     }
 
     private static int CountCustomizeFields(ActorCustomizeData data)
