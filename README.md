@@ -9,7 +9,7 @@ YourCraft 是一款可以进行地图编辑的插件。
 ## Features / 功能
 
 - Build your own map!
-- 
+  
   建造你自己的地图！
 
 - Persistently save your map edits. Your edits can be preserved after changing zones, relogging, or entering GPose. However, due to conflicts with Brio, Actors may need to be manually adjusted after entering GPose to make them appear.
