@@ -732,6 +732,33 @@ public sealed class RealNpcSpawnService
         this.LastMessage = $"Updated look-at settings for Actor {ShortId(runtimeId)}.";
     }
 
+    public void UpdateActorExpressionSettings(string runtimeId, uint expressionId, ActorExpressionLayer layer, float intervalSeconds)
+    {
+        if (this.registry.GetByRuntimeId(runtimeId) is not { } actor)
+            return;
+
+        actor.CurrentExpressionId = expressionId;
+        actor.CurrentExpressionLayer = layer == ActorExpressionLayer.None && expressionId != 0
+            ? ActorExpressionLayer.Facial
+            : layer;
+        actor.ExpressionBlendLoopIntervalSeconds = Math.Max(0.05f, intervalSeconds);
+        this.PersistBehavior(actor);
+        this.LastMessage = $"Updated expression settings for Actor {ShortId(runtimeId)}.";
+    }
+
+    public void UpdateActorLipTalkSettings(string runtimeId, string lipKey, uint lipTimelineId, float intervalSeconds)
+    {
+        if (this.registry.GetByRuntimeId(runtimeId) is not { } actor)
+            return;
+
+        var entry = this.lipSyncPresets.Resolve(lipKey, lipTimelineId);
+        actor.CurrentLipTalkKey = entry.InternalKey;
+        actor.CurrentLipTalkId = entry.ResolvedTimelineId;
+        actor.LipTalkLoopIntervalSeconds = Math.Max(0.05f, intervalSeconds);
+        this.PersistBehavior(actor);
+        this.LastMessage = $"Updated lip settings for Actor {ShortId(runtimeId)}.";
+    }
+
     public bool PlayAnimation(string runtimeId, uint animationId)
     {
         if (this.registry.GetByRuntimeId(runtimeId) is not { } actor)
@@ -783,6 +810,8 @@ public sealed class RealNpcSpawnService
 
         actor.CurrentExpressionId = expressionId;
         actor.CurrentExpressionLayer = layer;
+        actor.ExpressionBlendLoopEnabled = false;
+        this.PersistBehavior(actor);
         if (expressionId == 0 || layer == ActorExpressionLayer.None)
         {
             actor.LastExpressionError = "Expression blend id is 0 or layer is None.";
@@ -815,9 +844,11 @@ public sealed class RealNpcSpawnService
         actor.CurrentExpressionId = expressionId;
         actor.CurrentExpressionLayer = layer == ActorExpressionLayer.None ? ActorExpressionLayer.Facial : layer;
         actor.ExpressionBlendLoopIntervalSeconds = Math.Max(0.05f, intervalSeconds);
+        this.PersistBehavior(actor);
         if (!this.ApplyExpressionBlendInternal(actor, actor.CurrentExpressionId, actor.CurrentExpressionLayer, out var reason))
         {
             actor.ExpressionBlendLoopEnabled = false;
+            this.PersistBehavior(actor);
             this.LastMessage = reason;
             return false;
         }
@@ -826,6 +857,7 @@ public sealed class RealNpcSpawnService
         actor.LastExpressionBlendLoopAt = DateTime.UtcNow;
         actor.LastExpressionResult = $"Expression blend loop started: {actor.CurrentExpressionId}, interval={actor.ExpressionBlendLoopIntervalSeconds:F2}s.";
         actor.LastExpressionError = string.Empty;
+        this.PersistBehavior(actor);
         this.LastMessage = actor.LastExpressionResult;
         return true;
     }
@@ -841,6 +873,7 @@ public sealed class RealNpcSpawnService
         actor.ExpressionBlendLoopEnabled = false;
         actor.LastExpressionResult = "Expression blend loop stopped.";
         actor.LastExpressionError = string.Empty;
+        this.PersistBehavior(actor);
         this.LastMessage = actor.LastExpressionResult;
     }
 
@@ -857,6 +890,7 @@ public sealed class RealNpcSpawnService
         actor.ExpressionBlendLoopEnabled = false;
         actor.LastExpressionError = string.Empty;
         actor.LastExpressionResult = "Expression blend selection cleared.";
+        this.PersistBehavior(actor);
         this.LastMessage = actor.LastExpressionResult;
     }
 
@@ -869,6 +903,8 @@ public sealed class RealNpcSpawnService
         }
 
         actor.CurrentLipTalkId = lipTimelineId;
+        actor.LipTalkLoopEnabled = false;
+        this.PersistBehavior(actor);
         var success = this.ApplyLipTalkInternal(actor, lipTimelineId, out var reason);
         this.LastMessage = reason;
         return success;
@@ -927,9 +963,11 @@ public sealed class RealNpcSpawnService
 
         actor.CurrentLipTalkId = lipTimelineId;
         actor.LipTalkLoopIntervalSeconds = Math.Max(0.05f, intervalSeconds);
+        this.PersistBehavior(actor);
         if (!this.ApplyLipTalkInternal(actor, actor.CurrentLipTalkId, out var reason))
         {
             actor.LipTalkLoopEnabled = false;
+            this.PersistBehavior(actor);
             this.LastMessage = reason;
             return false;
         }
@@ -938,6 +976,7 @@ public sealed class RealNpcSpawnService
         actor.LastLipTalkLoopAt = DateTime.UtcNow;
         actor.LastLipTalkResult = $"Lip talk loop started: {actor.CurrentLipTalkId}, interval={actor.LipTalkLoopIntervalSeconds:F2}s.";
         actor.LastLipTalkError = string.Empty;
+        this.PersistBehavior(actor);
         this.LastMessage = actor.LastLipTalkResult;
         return true;
     }
@@ -982,9 +1021,13 @@ public sealed class RealNpcSpawnService
         }
 
         actor.LipTalkLoopEnabled = false;
+        var stopEntry = this.lipSyncPresets.Resolve("speak/stop", 0);
+        actor.CurrentLipTalkKey = stopEntry.InternalKey;
+        actor.CurrentLipTalkId = 0;
         this.ApplyLipTalkInternal(actor, 0, out _);
         actor.LastLipTalkResult = "Lip talk loop stopped.";
         actor.LastLipTalkError = string.Empty;
+        this.PersistBehavior(actor);
         this.LastMessage = actor.LastLipTalkResult;
     }
 
@@ -1270,12 +1313,6 @@ public sealed class RealNpcSpawnService
         {
             if (!this.IsRuntimeReady(actor))
             {
-                if (actor.ExpressionBlendLoopEnabled)
-                    actor.LastExpressionError = "Expression blend loop stopped: Actor not ready.";
-                if (actor.LipTalkLoopEnabled)
-                    actor.LastLipTalkError = "Lip talk loop stopped: Actor not ready.";
-                actor.ExpressionBlendLoopEnabled = false;
-                actor.LipTalkLoopEnabled = false;
                 continue;
             }
 
@@ -1640,6 +1677,10 @@ public sealed class RealNpcSpawnService
 
         if (actor.AnimationEnabled && actor.CurrentAnimationId != 0)
             this.PlayAnimation(actor.RuntimeId, actor.CurrentAnimationId);
+        if (actor.CurrentExpressionId != 0)
+            this.ApplyExpressionBlendInternal(actor, actor.CurrentExpressionId, actor.CurrentExpressionLayer, out _);
+        if (actor.CurrentLipTalkId != 0)
+            this.ApplyLipTalkInternal(actor, actor.CurrentLipTalkId, out _);
         this.PersistBehavior(actor);
         return true;
     }
@@ -1728,9 +1769,17 @@ public sealed class RealNpcSpawnService
         actor.DefaultAnimationId = config.DefaultAnimationId;
         actor.CurrentAnimationId = config.CurrentAnimationId != 0 ? config.CurrentAnimationId : config.DefaultAnimationId;
         actor.AnimationEnabled = config.AnimationEnabled || config.AutoPlayDefaultAnimation;
+        actor.CurrentExpressionId = config.CurrentExpressionId;
+        actor.CurrentExpressionLayer = config.CurrentExpressionLayer == ActorExpressionLayer.None && config.CurrentExpressionId != 0
+            ? ActorExpressionLayer.Facial
+            : config.CurrentExpressionLayer;
+        actor.ExpressionBlendLoopEnabled = config.ExpressionBlendLoopEnabled && config.CurrentExpressionId != 0;
+        actor.ExpressionBlendLoopIntervalSeconds = Math.Max(0.05f, config.ExpressionBlendLoopIntervalSeconds <= 0f ? 0.5f : config.ExpressionBlendLoopIntervalSeconds);
         var lipEntry = this.lipSyncPresets.Resolve(config.CurrentLipTalkKey, config.CurrentLipTalkId);
         actor.CurrentLipTalkKey = lipEntry.InternalKey;
         actor.CurrentLipTalkId = lipEntry.ResolvedTimelineId;
+        actor.LipTalkLoopEnabled = config.LipTalkLoopEnabled && actor.CurrentLipTalkId != 0;
+        actor.LipTalkLoopIntervalSeconds = Math.Max(0.05f, config.LipTalkLoopIntervalSeconds <= 0f ? 0.5f : config.LipTalkLoopIntervalSeconds);
         actor.LookAtPlayerEnabled = config.LookAtPlayerEnabled;
         actor.LookAtRadius = config.LookAtRadius;
         actor.LookAtMode = config.LookAtPlayerEnabled ? NpcLookAtMode.NativeLookAt : NpcLookAtMode.None;
@@ -1833,8 +1882,14 @@ public sealed class RealNpcSpawnService
 
         config.CurrentAnimationId = actor.CurrentAnimationId;
         config.AnimationEnabled = actor.AnimationEnabled;
+        config.CurrentExpressionId = actor.CurrentExpressionId;
+        config.CurrentExpressionLayer = actor.CurrentExpressionLayer;
+        config.ExpressionBlendLoopEnabled = actor.ExpressionBlendLoopEnabled;
+        config.ExpressionBlendLoopIntervalSeconds = Math.Max(0.05f, actor.ExpressionBlendLoopIntervalSeconds);
         config.CurrentLipTalkKey = actor.CurrentLipTalkKey;
         config.CurrentLipTalkId = actor.CurrentLipTalkId;
+        config.LipTalkLoopEnabled = actor.LipTalkLoopEnabled;
+        config.LipTalkLoopIntervalSeconds = Math.Max(0.05f, actor.LipTalkLoopIntervalSeconds);
         config.LookAtPlayerEnabled = actor.LookAtPlayerEnabled;
         config.LookAtRadius = actor.LookAtRadius;
         config.EnableActionSequence = actor.EnableActionSequence;

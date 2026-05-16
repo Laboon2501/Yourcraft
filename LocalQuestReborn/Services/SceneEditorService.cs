@@ -375,7 +375,8 @@ public sealed unsafe class SceneEditorService
 
         if (this.ShowPluginObjects && this.ShowLights)
         {
-            foreach (var light in this.localLights.Instances)
+            var territory = this.getTerritoryType();
+            foreach (var light in this.localLights.Instances.Where(item => item.TerritoryId == territory))
             {
                 items.Add(new SceneEditableRef(
                     light.Id,
@@ -2237,7 +2238,8 @@ public sealed unsafe class SceneEditorService
                 result.Add(ptr);
         }
 
-        foreach (var light in this.localLights.Instances)
+        var territory = this.getTerritoryType();
+        foreach (var light in this.localLights.Instances.Where(item => item.TerritoryId == territory))
         {
             if (light.NativeSceneLight != 0)
                 result.Add(light.NativeSceneLight);

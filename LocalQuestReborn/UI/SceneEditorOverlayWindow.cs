@@ -1,4 +1,4 @@
-using Dalamud.Bindings.ImGui;
+﻿using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin.Services;
 using LocalQuestReborn.Models;
@@ -32,6 +32,8 @@ public sealed class SceneEditorOverlayWindow : Window
 
     private ActiveDrag activeDrag;
     private readonly TransformEditState panelTransformState = new();
+
+    private static string T(string chinese, string english) => Localization.T(chinese, english);
 
     public SceneEditorOverlayWindow(
         IGameGui gameGui,
@@ -154,7 +156,12 @@ public sealed class SceneEditorOverlayWindow : Window
                 this.sceneEditor.Gizmo.InputState.SetMarkerPressed(hoveredMarker.RuntimeId);
                 this.selection.Select(hoveredMarker.Kind, hoveredMarker.RuntimeId, SceneEditorSelectionSource.Overlay);
             }
+
+            return;
         }
+
+        if (ImGui.IsMouseClicked(ImGuiMouseButton.Left))
+            this.selection.Clear(SceneEditorSelectionSource.Overlay);
     }
 
     private void DrawObjectPanel(SceneMarker marker, SceneEditableRef editable, bool selectedPanel)
@@ -171,34 +178,37 @@ public sealed class SceneEditorOverlayWindow : Window
                     ImGuiWindowFlags.NoCollapse |
                     ImGuiWindowFlags.NoDocking |
                     ImGuiWindowFlags.NoFocusOnAppearing;
-        if (!ImGui.Begin($"{(selectedPanel ? "Selected" : "Hover")} Scene Object##SceneEditorMiniPanel{editable.Kind}{editable.RuntimeId}", flags))
+        if (!ImGui.Begin($"{(selectedPanel ? T("已选中的物体", "Selected Object") : T("悬停物体", "Hovered Object"))}##SceneEditorMiniPanel{editable.Kind}{editable.RuntimeId}", flags))
         {
             ImGui.End();
             return;
         }
 
-        ImGui.TextUnformatted($"{editable.Kind}");
+        if (selectedPanel && editable.Kind is (SceneEditableKind.LocalBgPart or SceneEditableKind.NativeBgPart))
+            ImGui.TextColored(new Vector4(1f, 0.22f, 0.18f, 1f), T("请小心：即便未勾选 collision，也有可能导致模型碰撞体积被一起移动。", "Careful: even when collision is unchecked, the model collision volume may still move with it."));
+
+        ImGui.TextUnformatted(DisplayOverlayEditableKind(editable.Kind));
         ImGui.SameLine();
         ImGui.TextDisabled(ShortId(editable.RuntimeId));
         ImGui.TextWrapped(editable.DisplayName);
-        if (!string.IsNullOrWhiteSpace(editable.MdlPath))
+        if (!string.IsNullOrWhiteSpace(editable.MdlPath) && editable.Kind is not (SceneEditableKind.LocalBgPart or SceneEditableKind.NativeBgPart))
             ImGui.TextWrapped(editable.MdlPath);
 
-        if (ImGui.Button("Select##MiniPanelSelect"))
+        if (ImGui.Button($"{T("选择", "Select")}##MiniPanelSelect"))
             this.selection.Select(editable.Kind, editable.RuntimeId, SceneEditorSelectionSource.Overlay);
 
         var bgPartNeedsCollisionConfirmation = this.sceneEditor.IsBgPartCollisionConfirmationRequired(editable.Kind);
         var editableTransform = editable.TransformEditable && editable.IsValid && !bgPartNeedsCollisionConfirmation;
         ImGui.SameLine();
-        this.DrawMiniModeButton("Move", SceneEditorGizmoMode.Move, editableTransform);
+        this.DrawMiniModeButton(T("位移", "Move"), SceneEditorGizmoMode.Move, editableTransform);
         ImGui.SameLine();
-        this.DrawMiniModeButton("Rotate", SceneEditorGizmoMode.Rotate, editableTransform);
+        this.DrawMiniModeButton(T("旋转", "Rotate"), SceneEditorGizmoMode.Rotate, editableTransform);
         ImGui.SameLine();
-        this.DrawMiniModeButton("Scale", SceneEditorGizmoMode.Scale, editableTransform);
+        this.DrawMiniModeButton(T("缩放", "Scale"), SceneEditorGizmoMode.Scale, editableTransform);
 
         ImGui.SameLine();
         ImGui.BeginDisabled(!this.sceneEditor.Undo.HasUndo);
-        if (ImGui.Button("Undo##MiniPanelUndo"))
+        if (ImGui.Button($"{T("撤销", "Undo")}##MiniPanelUndo"))
             this.sceneEditor.TryUndoLast();
         ImGui.EndDisabled();
 
@@ -206,13 +216,13 @@ public sealed class SceneEditorOverlayWindow : Window
         {
             ImGui.Separator();
             if (editable.IsPlayer)
-                ImGui.TextDisabled("Player target: read-only.");
+                ImGui.TextDisabled(T("玩家目标只读。", "Player target: read-only."));
             else if (bgPartNeedsCollisionConfirmation)
-                ImGui.TextDisabled("BgPart collision editing needs confirmation before transform is enabled.");
+                ImGui.TextDisabled(T("BgPart 碰撞体编辑需要先确认。", "BgPart collision editing needs confirmation."));
             else if (!editable.TransformEditable)
-                ImGui.TextDisabled("Native target: read-only. Enable the existing unsafe native-write switch to move it.");
+                ImGui.TextDisabled(T("原生目标当前只读，需要 Native 写入才能移动。", "Native target is read-only. Native writes are required."));
             else
-                ImGui.TextColored(new Vector4(1f, 0.68f, 0.2f, 1f), "Native transform editing is enabled.");
+                ImGui.TextColored(new Vector4(1f, 0.68f, 0.2f, 1f), T("原生 Transform 编辑已启用。", "Native transform editing is enabled."));
 
             if (!string.IsNullOrWhiteSpace(editable.ObjectKind))
                 ImGui.TextDisabled(editable.ObjectKind);
@@ -224,21 +234,21 @@ public sealed class SceneEditorOverlayWindow : Window
             {
                 if (nativeRecord?.IsHidden == true)
                 {
-                    if (ImGui.Button("Restore##MiniNativeRestore"))
+                    if (ImGui.Button($"{T("恢复", "Restore")}##MiniNativeRestore"))
                         this.sceneEditor.RestoreNativeModification(nativeRecord.RecordId);
                 }
                 else
                 {
                     ImGui.BeginDisabled(!this.sceneEditor.AllowNativeTransformWrites);
-                    if (ImGui.Button("Hide##MiniNativeHide"))
+                    if (ImGui.Button($"{T("隐藏", "Hide")}##MiniNativeHide"))
                         this.sceneEditor.HideNativeObject(editable);
                     ImGui.EndDisabled();
                     if (ImGui.IsItemHovered() && !this.sceneEditor.AllowNativeTransformWrites)
-                        ImGui.SetTooltip("Enable the existing unsafe/native write confirmation before hiding native objects.");
+                        ImGui.SetTooltip(T("需要 Native 写入。", "Native writes are required."));
                 }
 
                 ImGui.SameLine();
-                ImGui.TextDisabled(nativeRecord == null ? "not recorded" : nativeRecord.Status);
+                ImGui.TextDisabled(nativeRecord == null ? T("未记录", "not recorded") : nativeRecord.Status);
             }
         }
 
@@ -277,46 +287,45 @@ public sealed class SceneEditorOverlayWindow : Window
         ImGui.Separator();
         ImGui.TextDisabled("BgPart");
         var collisionMode = this.sceneEditor.BgPartCollisionModeEnabled;
-        if (ImGui.Checkbox("Collision##MiniBgPartCollision", ref collisionMode))
+        if (ImGui.Checkbox($"{T("碰撞体", "Collision")}##MiniBgPartCollision", ref collisionMode))
             this.sceneEditor.SetBgPartCollisionMode(collisionMode, collisionMode && this.sceneEditor.BgPartCollisionModeConfirmed, this.sceneEditor.UnsafeNativeWritesEnabled);
         if (!this.sceneEditor.BgPartCollisionModeEnabled)
         {
-            ImGui.TextDisabled("VisualOnly: model only; collision stays put.");
+            ImGui.TextDisabled(T("只移动视觉模型，碰撞体保持原位。", "Visual only: collision stays put."));
         }
         else if (!this.sceneEditor.BgPartCollisionModeConfirmed)
         {
-            ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "Collision transform blocked until confirmed.");
+            ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), T("需要二次确认后才能移动碰撞体。", "Collision transform is blocked until confirmed."));
             ImGui.BeginDisabled(!this.sceneEditor.UnsafeNativeWritesEnabled);
-            if (ImGui.Button("确认启用碰撞编辑##MiniBgPartCollisionConfirm"))
+            if (ImGui.Button($"{T("确认启用碰撞编辑", "Confirm Collision Editing")}##MiniBgPartCollisionConfirm"))
                 this.sceneEditor.SetBgPartCollisionMode(true, true, this.sceneEditor.UnsafeNativeWritesEnabled);
             ImGui.EndDisabled();
         }
         else
         {
-            ImGui.TextColored(new Vector4(1f, 0.72f, 0.25f, 1f), "FullLayoutWithCollision confirmed.");
+            ImGui.TextColored(new Vector4(1f, 0.72f, 0.25f, 1f), T("已确认：模型和碰撞体会一起变化。", "Confirmed: model and collision move together."));
             ImGui.SameLine();
-            if (ImGui.SmallButton("撤销##MiniBgPartCollisionRevoke"))
+            if (ImGui.SmallButton($"{T("撤销", "Revoke")}##MiniBgPartCollisionRevoke"))
                 this.sceneEditor.SetBgPartCollisionMode(true, false, this.sceneEditor.UnsafeNativeWritesEnabled);
         }
-        ImGui.TextDisabled(this.sceneEditor.LastBgPartCollisionOperation);
-        if (!string.IsNullOrWhiteSpace(editable.MdlPath) && ImGui.Button("Copy mdl##MiniCopyMdl"))
+        if (!string.IsNullOrWhiteSpace(editable.MdlPath) && ImGui.Button($"{T("复制 mdl", "Copy MDL")}##MiniCopyMdl"))
             ImGui.SetClipboardText(editable.MdlPath);
 
         ImGui.SameLine();
         ImGui.BeginDisabled(!this.sceneEditor.AllowNativeTransformWrites);
-        if (ImGui.Button("Copy 1##MiniCopyOne"))
+        if (ImGui.Button($"{T("创建复制体", "Create Copy")}##MiniCopyOne"))
             this.sceneEditor.TryCopyOneBgPart(editable, new Vector3(0.6f, 0f, 0.6f));
         ImGui.EndDisabled();
         if (ImGui.IsItemHovered() && !this.sceneEditor.AllowNativeTransformWrites)
-            ImGui.SetTooltip("Unsafe/native writes are disabled, or FullLayoutWithCollision has not been confirmed.");
+            ImGui.SetTooltip(T("需要 Native 写入，且碰撞体模式需要二次确认。", "Native writes are required, and collision editing may need confirmation."));
 
-        if (ImGui.Button("Candidate##MiniCandidate"))
+        if (ImGui.Button($"{T("候选", "Candidate")}##MiniCandidate"))
             this.sceneEditor.TryMarkBgPartCandidate(editable);
         ImGui.SameLine();
-        if (ImGui.Button("Preferred##MiniPreferred"))
+        if (ImGui.Button($"{T("优先", "Preferred")}##MiniPreferred"))
             this.sceneEditor.TryPreferBgPart(editable);
         ImGui.SameLine();
-        if (ImGui.Button("Protect##MiniProtect"))
+        if (ImGui.Button($"{T("保护", "Protect")}##MiniProtect"))
             this.sceneEditor.TryProtectBgPart(editable);
     }
 
@@ -329,27 +338,27 @@ public sealed class SceneEditorOverlayWindow : Window
         ImGui.Separator();
         ImGui.TextDisabled("Actor");
         var lookAt = actor.LookAtPlayerEnabled;
-        if (ImGui.Checkbox("Look at player##MiniActorLookAt", ref lookAt))
+        if (ImGui.Checkbox($"{T("看向玩家", "Look at Player")}##MiniActorLookAt", ref lookAt))
         {
             actor.LookAtPlayerEnabled = lookAt;
             this.sceneEditor.UpdateLocalActorLookAt(actor.RuntimeId, actor.LookAtPlayerEnabled, actor.LookAtRadius);
         }
 
         var radius = actor.LookAtRadius <= 0.1f ? 8f : actor.LookAtRadius;
-        if (DrawCompactFloatControl("Look radius##MiniActorLookRadius", ref radius, 0.1f, 0.1f, 1f, 0.1f, 80f))
+        if (DrawCompactFloatControl($"{T("看向半径", "Look Radius")}##MiniActorLookRadius", ref radius, 0.1f, 0.1f, 1f, 0.1f, 80f))
         {
             actor.LookAtRadius = MathF.Max(0.1f, radius);
             this.sceneEditor.UpdateLocalActorLookAt(actor.RuntimeId, actor.LookAtPlayerEnabled, actor.LookAtRadius);
         }
 
         var animation = (int)Math.Min(actor.CurrentAnimationId == 0 ? actor.DefaultAnimationId : actor.CurrentAnimationId, int.MaxValue);
-        if (DrawCompactIntControl("Animation ID##MiniActorAnimation", ref animation, 1, 0, int.MaxValue))
+        if (DrawCompactIntControl($"{T("动画 ID", "Animation ID")}##MiniActorAnimation", ref animation, 1, 0, int.MaxValue))
             actor.CurrentAnimationId = (uint)Math.Max(0, animation);
 
-        if (ImGui.Button("Play##MiniActorPlay"))
+        if (ImGui.Button($"{T("播放", "Play")}##MiniActorPlay"))
             this.sceneEditor.PlayLocalActorAnimation(actor.RuntimeId, actor.CurrentAnimationId);
         ImGui.SameLine();
-        if (ImGui.Button("Idle##MiniActorIdle"))
+        if (ImGui.Button($"{T("待机", "Idle")}##MiniActorIdle"))
             this.sceneEditor.StopLocalActorAnimation(actor.RuntimeId);
     }
 
@@ -360,42 +369,42 @@ public sealed class SceneEditorOverlayWindow : Window
             return;
 
         ImGui.Separator();
-        ImGui.TextDisabled("Local Light");
+        ImGui.TextDisabled(T("本地灯光", "Local Light"));
         var changed = false;
         var color = light.ColorRgb;
         changed |= DrawCompactVector3("RGB##MiniLightRgb", ref color, 0.1f, 0f, 1f);
         light.ColorRgb = Vector3.Clamp(color, Vector3.Zero, Vector3.One);
 
         var intensity = light.Intensity;
-        if (DrawCompactFloatControl("Intensity##MiniLightIntensity", ref intensity, 0.1f, 0.01f, 1f, 0f, float.MaxValue))
+        if (DrawCompactFloatControl($"{T("强度", "Intensity")}##MiniLightIntensity", ref intensity, 0.1f, 0.01f, 1f, 0f, float.MaxValue))
         {
             light.Intensity = MathF.Max(0f, intensity);
             changed = true;
         }
 
         var range = light.Range;
-        if (DrawCompactFloatControl("Range##MiniLightRange", ref range, 0.1f, 0.01f, 1f, 0f, float.MaxValue))
+        if (DrawCompactFloatControl($"{T("范围", "Range")}##MiniLightRange", ref range, 0.1f, 0.01f, 1f, 0f, float.MaxValue))
         {
             light.Range = MathF.Max(0f, range);
             changed = true;
         }
 
         var falloff = light.Falloff;
-        if (DrawCompactFloatControl("Falloff##MiniLightFalloff", ref falloff, 0.1f, 0.01f, 1f, 0f, float.MaxValue))
+        if (DrawCompactFloatControl($"{T("衰减", "Falloff")}##MiniLightFalloff", ref falloff, 0.1f, 0.01f, 1f, 0f, float.MaxValue))
         {
             light.Falloff = MathF.Max(0f, falloff);
             changed = true;
         }
 
         var spot = light.LightAngle;
-        if (DrawCompactFloatControl("SpotAngle##MiniLightSpot", ref spot, 0.1f, 0.01f, 1f, 0f, 90f))
+        if (DrawCompactFloatControl($"{T("聚焦角度", "Spot Angle")}##MiniLightSpot", ref spot, 0.1f, 0.01f, 1f, 0f, 90f))
         {
             light.LightAngle = Math.Clamp(spot, 0f, 90f);
             changed = true;
         }
 
         var falloffAngle = light.FalloffAngle;
-        if (DrawCompactFloatControl("FalloffAngle##MiniLightFalloffAngle", ref falloffAngle, 0.1f, 0.01f, 1f, 0f, 90f))
+        if (DrawCompactFloatControl($"{T("衰减角度", "Falloff Angle")}##MiniLightFalloffAngle", ref falloffAngle, 0.1f, 0.01f, 1f, 0f, 90f))
         {
             light.FalloffAngle = Math.Clamp(falloffAngle, 0f, 90f);
             changed = true;
@@ -416,14 +425,14 @@ public sealed class SceneEditorOverlayWindow : Window
         }
 
         var specular = light.EnableSpecular;
-        if (ImGui.Checkbox("Specular highlights##MiniLightSpecular", ref specular))
+        if (ImGui.Checkbox($"{T("高光", "Specular Highlights")}##MiniLightSpecular", ref specular))
         {
             light.EnableSpecular = specular;
             changed = true;
         }
 
         var shadows = light.EnableDynamicShadows;
-        if (ImGui.Checkbox("Dynamic shadows##MiniLightShadows", ref shadows))
+        if (ImGui.Checkbox($"{T("动态阴影", "Dynamic Shadows")}##MiniLightShadows", ref shadows))
         {
             light.EnableDynamicShadows = shadows;
             changed = true;
@@ -440,21 +449,21 @@ public sealed class SceneEditorOverlayWindow : Window
         var changed = false;
 
         var position = this.panelTransformState.PositionInput;
-        if (DrawCompactVector3("World Position##MiniPanel", ref position, 0.1f))
+        if (DrawCompactVector3Rows($"{T("位移", "Position")}##MiniPanelPosition", ref position, 0.2f))
         {
             this.panelTransformState.PositionInput = position;
             changed = true;
         }
 
         var eulerDegrees = RadiansToDegrees(this.panelTransformState.EulerInput);
-        if (DrawCompactVector3("World Rotation##MiniPanel", ref eulerDegrees, 0.1f))
+        if (DrawCompactVector3Rows($"{T("旋转", "Rotation")}##MiniPanelRotation", ref eulerDegrees, 0.2f))
         {
             this.panelTransformState.EulerInput = DegreesToRadians(eulerDegrees);
             changed = true;
         }
 
         var scale = this.panelTransformState.ScaleInput;
-        if (DrawCompactVector3("World Scale##MiniPanel", ref scale, 0.1f, 0.01f, float.MaxValue))
+        if (DrawCompactVector3Rows($"{T("缩放", "Scale")}##MiniPanelScale", ref scale, 0.2f, 0.01f, float.MaxValue))
         {
             this.panelTransformState.ScaleInput = WorldTransformUtil.NormalizeScale(scale);
             changed = true;
@@ -466,12 +475,25 @@ public sealed class SceneEditorOverlayWindow : Window
             if (this.sceneEditor.ApplyWorldTransform(editable.Kind, editable.RuntimeId, after))
                 this.sceneEditor.PushTransformUndo(editable.Kind, editable.RuntimeId, editable.DisplayName, before, after, "PanelInput");
         }
+    }
 
-        if (ImGui.Button("Read current##MiniReadTransform"))
-            this.panelTransformState.Bind(editable, uint.MaxValue);
-        ImGui.SameLine();
-        if (ImGui.Button("Save to config##MiniSaveTransform"))
-            this.sceneEditor.ApplyWorldTransform(editable.Kind, editable.RuntimeId, this.panelTransformState.ToWorldTransform());
+    private static bool DrawCompactVector3Rows(string label, ref Vector3 vector, float step, float min = float.MinValue, float max = float.MaxValue)
+    {
+        var changed = false;
+        ImGui.TextUnformatted(LabelText(label));
+        ImGui.Indent(8f);
+        var x = vector.X;
+        changed |= DrawCompactFloatControl($"X##{label}", ref x, step, step * 0.1f, step * 10f, min, max);
+        ImGui.Spacing();
+        var y = vector.Y;
+        changed |= DrawCompactFloatControl($"Y##{label}", ref y, step, step * 0.1f, step * 10f, min, max);
+        ImGui.Spacing();
+        var z = vector.Z;
+        changed |= DrawCompactFloatControl($"Z##{label}", ref z, step, step * 0.1f, step * 10f, min, max);
+        ImGui.Unindent(8f);
+        if (changed)
+            vector = new Vector3(x, y, z);
+        return changed;
     }
 
     private static bool DrawCompactVector3(string label, ref Vector3 vector, float step, float min = float.MinValue, float max = float.MaxValue)
@@ -565,10 +587,10 @@ public sealed class SceneEditorOverlayWindow : Window
     private static void DrawReadOnlyTransform(SceneEditableRef editable)
     {
         ImGui.Separator();
-        ImGui.TextDisabled($"Position {editable.Transform.WorldPosition.X:F2}, {editable.Transform.WorldPosition.Y:F2}, {editable.Transform.WorldPosition.Z:F2}");
+        ImGui.TextDisabled(T($"位移 {editable.Transform.WorldPosition.X:F2}, {editable.Transform.WorldPosition.Y:F2}, {editable.Transform.WorldPosition.Z:F2}", $"Position {editable.Transform.WorldPosition.X:F2}, {editable.Transform.WorldPosition.Y:F2}, {editable.Transform.WorldPosition.Z:F2}"));
         var euler = RadiansToDegrees(editable.Transform.WorldEulerRadians);
-        ImGui.TextDisabled($"Rotation {euler.X:F1}, {euler.Y:F1}, {euler.Z:F1}");
-        ImGui.TextDisabled($"Scale {editable.Transform.WorldScale.X:F2}, {editable.Transform.WorldScale.Y:F2}, {editable.Transform.WorldScale.Z:F2}");
+        ImGui.TextDisabled(T($"旋转 {euler.X:F1}, {euler.Y:F1}, {euler.Z:F1}", $"Rotation {euler.X:F1}, {euler.Y:F1}, {euler.Z:F1}"));
+        ImGui.TextDisabled(T($"缩放 {editable.Transform.WorldScale.X:F2}, {editable.Transform.WorldScale.Y:F2}, {editable.Transform.WorldScale.Z:F2}", $"Scale {editable.Transform.WorldScale.X:F2}, {editable.Transform.WorldScale.Y:F2}, {editable.Transform.WorldScale.Z:F2}"));
     }
 
     private static bool InputVector3(string label, ref Vector3 vector)
@@ -593,6 +615,20 @@ public sealed class SceneEditorOverlayWindow : Window
 
     private static string ShortId(string id)
         => string.IsNullOrWhiteSpace(id) ? "none" : id.Length <= 8 ? id : id[..8];
+
+    private static string DisplayOverlayEditableKind(SceneEditableKind kind)
+        => kind switch
+        {
+            SceneEditableKind.LocalActor => T("Actor", "Actor"),
+            SceneEditableKind.LocalBgPart => T("本地 BgPart", "Local BgPart"),
+            SceneEditableKind.LocalLight => T("本地灯光", "Local Light"),
+            SceneEditableKind.NativeActor => T("原生 Actor", "Native Actor"),
+            SceneEditableKind.EventNpc => T("事件 NPC", "Event NPC"),
+            SceneEditableKind.NativeBgPart => T("原生 BgPart", "Native BgPart"),
+            SceneEditableKind.NativeLight => T("原生灯光", "Native Light"),
+            SceneEditableKind.Player => T("玩家", "Player"),
+            _ => kind.ToString(),
+        };
 
     private List<SceneMarker> BuildMarkers(IReadOnlyList<SceneEditableRef> editables)
     {
@@ -641,11 +677,11 @@ public sealed class SceneEditorOverlayWindow : Window
     private void DrawMarkerTooltip(SceneMarker marker)
     {
         ImGui.BeginTooltip();
-        ImGui.TextUnformatted(marker.Kind.ToString());
+        ImGui.TextUnformatted(DisplayOverlayEditableKind(marker.Kind));
         ImGui.TextUnformatted(marker.DisplayName);
         if (!string.IsNullOrWhiteSpace(marker.MdlPath))
             ImGui.TextWrapped(marker.MdlPath);
-        ImGui.TextUnformatted($"World: {marker.WorldPosition}");
+        ImGui.TextUnformatted(T($"坐标：{marker.WorldPosition}", $"World: {marker.WorldPosition}"));
         ImGui.EndTooltip();
     }
 
@@ -828,9 +864,9 @@ public sealed class SceneEditorOverlayWindow : Window
 
         var text = this.sceneEditor.Gizmo.Mode switch
         {
-            SceneEditorGizmoMode.Move => $"Position {selected.Transform.WorldPosition.X:F2}, {selected.Transform.WorldPosition.Y:F2}, {selected.Transform.WorldPosition.Z:F2}",
-            SceneEditorGizmoMode.Rotate => $"Rotation {RadiansToDegrees(selected.Transform.WorldEulerRadians).X:F1}, {RadiansToDegrees(selected.Transform.WorldEulerRadians).Y:F1}, {RadiansToDegrees(selected.Transform.WorldEulerRadians).Z:F1}",
-            SceneEditorGizmoMode.Scale => $"Scale {selected.Transform.WorldScale.X:F2}, {selected.Transform.WorldScale.Y:F2}, {selected.Transform.WorldScale.Z:F2}",
+            SceneEditorGizmoMode.Move => T($"位移 {selected.Transform.WorldPosition.X:F2}, {selected.Transform.WorldPosition.Y:F2}, {selected.Transform.WorldPosition.Z:F2}", $"Position {selected.Transform.WorldPosition.X:F2}, {selected.Transform.WorldPosition.Y:F2}, {selected.Transform.WorldPosition.Z:F2}"),
+            SceneEditorGizmoMode.Rotate => T($"旋转 {RadiansToDegrees(selected.Transform.WorldEulerRadians).X:F1}, {RadiansToDegrees(selected.Transform.WorldEulerRadians).Y:F1}, {RadiansToDegrees(selected.Transform.WorldEulerRadians).Z:F1}", $"Rotation {RadiansToDegrees(selected.Transform.WorldEulerRadians).X:F1}, {RadiansToDegrees(selected.Transform.WorldEulerRadians).Y:F1}, {RadiansToDegrees(selected.Transform.WorldEulerRadians).Z:F1}"),
+            SceneEditorGizmoMode.Scale => T($"缩放 {selected.Transform.WorldScale.X:F2}, {selected.Transform.WorldScale.Y:F2}, {selected.Transform.WorldScale.Z:F2}", $"Scale {selected.Transform.WorldScale.X:F2}, {selected.Transform.WorldScale.Y:F2}, {selected.Transform.WorldScale.Z:F2}"),
             _ => string.Empty,
         };
 
@@ -914,7 +950,7 @@ public sealed class SceneEditorOverlayWindow : Window
         };
 
         if (selected)
-            color = new Vector4(1f, 0.55f, 0.15f, 1f);
+            color = new Vector4(0.15f, 1f, 0.35f, 1f);
 
         return ImGui.GetColorU32(color);
     }

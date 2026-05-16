@@ -40,9 +40,21 @@ public sealed class PersistentActorConfig
 
     public bool AutoPlayDefaultAnimation { get; set; }
 
+    public uint CurrentExpressionId { get; set; }
+
+    public ActorExpressionLayer CurrentExpressionLayer { get; set; } = ActorExpressionLayer.Facial;
+
+    public bool ExpressionBlendLoopEnabled { get; set; }
+
+    public float ExpressionBlendLoopIntervalSeconds { get; set; } = 0.5f;
+
     public string CurrentLipTalkKey { get; set; } = "speak/stop";
 
     public uint CurrentLipTalkId { get; set; }
+
+    public bool LipTalkLoopEnabled { get; set; }
+
+    public float LipTalkLoopIntervalSeconds { get; set; } = 0.5f;
 
     public bool LookAtPlayerEnabled { get; set; }
 
