@@ -11,14 +11,16 @@ public sealed class ActorActionSequenceService
     private readonly ActorAnimationService animationService;
     private readonly ActorNativeBubbleService bubbleService;
     private readonly BrioCapabilityBridgeService transformBridge;
+    private readonly ActorLipSyncPresetService lipSyncPresets;
     private readonly Dictionary<string, ActorActionSequenceRuntime> runtimes = new(StringComparer.OrdinalIgnoreCase);
     private DateTime lastUpdateAt = DateTime.UtcNow;
 
-    public ActorActionSequenceService(ActorAnimationService animationService, ActorNativeBubbleService bubbleService, BrioCapabilityBridgeService transformBridge)
+    public ActorActionSequenceService(ActorAnimationService animationService, ActorNativeBubbleService bubbleService, BrioCapabilityBridgeService transformBridge, ActorLipSyncPresetService lipSyncPresets)
     {
         this.animationService = animationService;
         this.bubbleService = bubbleService;
         this.transformBridge = transformBridge;
+        this.lipSyncPresets = lipSyncPresets;
     }
 
     public void Update(IEnumerable<RuntimeActorInstance> actors)
@@ -86,9 +88,11 @@ public sealed class ActorActionSequenceService
 
         var runtime = this.GetRuntime(actor);
         runtime.ExpressionPlayed = false;
+        runtime.LipTalkPlayed = false;
         runtime.BubbleShown = false;
         runtime.LastAnimationRepeatAt = 0f;
         runtime.LastExpressionRepeatAt = 0f;
+        runtime.LastLipTalkRepeatAt = 0f;
         var success = this.EnterStep(actor, step, runtime, testOnly: true, out reason);
         actor.ActionSequenceStatus = success ? $"Tested step: {step.Name}" : "Step test failed.";
         return success;
@@ -123,8 +127,10 @@ public sealed class ActorActionSequenceService
             runtime.StepEntered = false;
             runtime.BubbleShown = false;
             runtime.ExpressionPlayed = false;
+            runtime.LipTalkPlayed = false;
             runtime.LastAnimationRepeatAt = 0f;
             runtime.LastExpressionRepeatAt = 0f;
+            runtime.LastLipTalkRepeatAt = 0f;
             runtime.LoopDelayElapsed = 0f;
             runtime.Generation++;
         }
@@ -158,8 +164,10 @@ public sealed class ActorActionSequenceService
         reason = string.Empty;
         runtime.BubbleShown = false;
         runtime.ExpressionPlayed = false;
+        runtime.LipTalkPlayed = false;
         runtime.LastAnimationRepeatAt = 0f;
         runtime.LastExpressionRepeatAt = 0f;
+        runtime.LastLipTalkRepeatAt = 0f;
         actor.LookAtPausedByActionSequence = !step.AllowLookAtDuringStep || actor.VisibilityRuntimeState == ActorVisibilityRuntimeState.SequenceHidden;
 
         switch (step.Kind)
@@ -249,6 +257,15 @@ public sealed class ActorActionSequenceService
             runtime.LastExpressionRepeatAt = 0f;
         }
 
+        if (step.Kind == ActorActionStepKind.Action &&
+            step.PlayLipTalkWithAction &&
+            step.LipTalkDelaySeconds <= 0f &&
+            actor.VisibilityRuntimeState != ActorVisibilityRuntimeState.SequenceHidden)
+        {
+            runtime.LipTalkPlayed = this.ApplyStepLipTalk(actor, step);
+            runtime.LastLipTalkRepeatAt = 0f;
+        }
+
         actor.LastActionSequenceError = string.Empty;
         if (testOnly)
             actor.ActionSequenceStatus = $"Tested step: {step.Name}";
@@ -273,21 +290,39 @@ public sealed class ActorActionSequenceService
             runtime.LastAnimationRepeatAt = runtime.CurrentStepElapsed;
         }
 
-        if (!step.PlayExpressionWithAction || step.ExpressionId == 0)
-            return;
-
-        if (!runtime.ExpressionPlayed && runtime.CurrentStepElapsed >= Math.Max(0f, step.ExpressionDelaySeconds))
+        if (step.PlayExpressionWithAction && step.ExpressionId != 0 &&
+            !runtime.ExpressionPlayed && runtime.CurrentStepElapsed >= Math.Max(0f, step.ExpressionDelaySeconds))
         {
             runtime.ExpressionPlayed = this.animationService.PlayExpressionTimeline(actor, step.ExpressionId, step.ExpressionLayer, out _);
             runtime.LastExpressionRepeatAt = runtime.CurrentStepElapsed;
             return;
         }
 
-        var expressionRepeat = step.ExpressionDurationSeconds > 0f ? step.ExpressionDurationSeconds : StepDuration(step);
-        if (step.LoopExpression && runtime.ExpressionPlayed && expressionRepeat > 0.05f && runtime.CurrentStepElapsed - runtime.LastExpressionRepeatAt >= expressionRepeat)
+        if (step.PlayExpressionWithAction && step.ExpressionId != 0)
         {
-            this.animationService.PlayExpressionTimeline(actor, step.ExpressionId, step.ExpressionLayer, out _);
-            runtime.LastExpressionRepeatAt = runtime.CurrentStepElapsed;
+            var expressionRepeat = step.ExpressionDurationSeconds > 0f ? step.ExpressionDurationSeconds : StepDuration(step);
+            if (step.LoopExpression && runtime.ExpressionPlayed && expressionRepeat > 0.05f && runtime.CurrentStepElapsed - runtime.LastExpressionRepeatAt >= expressionRepeat)
+            {
+                this.animationService.PlayExpressionTimeline(actor, step.ExpressionId, step.ExpressionLayer, out _);
+                runtime.LastExpressionRepeatAt = runtime.CurrentStepElapsed;
+            }
+        }
+
+        if (!step.PlayLipTalkWithAction)
+            return;
+
+        if (!runtime.LipTalkPlayed && runtime.CurrentStepElapsed >= Math.Max(0f, step.LipTalkDelaySeconds))
+        {
+            runtime.LipTalkPlayed = this.ApplyStepLipTalk(actor, step);
+            runtime.LastLipTalkRepeatAt = runtime.CurrentStepElapsed;
+            return;
+        }
+
+        var lipRepeat = step.LipTalkDurationSeconds > 0f ? step.LipTalkDurationSeconds : StepDuration(step);
+        if (step.LoopLipTalk && runtime.LipTalkPlayed && lipRepeat > 0.05f && runtime.CurrentStepElapsed - runtime.LastLipTalkRepeatAt >= lipRepeat)
+        {
+            this.ApplyStepLipTalk(actor, step);
+            runtime.LastLipTalkRepeatAt = runtime.CurrentStepElapsed;
         }
     }
 
@@ -435,8 +470,10 @@ public sealed class ActorActionSequenceService
         runtime.StepEntered = false;
         runtime.BubbleShown = false;
         runtime.ExpressionPlayed = false;
+        runtime.LipTalkPlayed = false;
         runtime.LastAnimationRepeatAt = 0f;
         runtime.LastExpressionRepeatAt = 0f;
+        runtime.LastLipTalkRepeatAt = 0f;
     }
 
     private static float StepDuration(ActorActionSequenceStep step)
@@ -446,6 +483,23 @@ public sealed class ActorActionSequenceService
 
     private static float MoveDuration(ActorActionSequenceStep step)
         => step.MoveDurationSeconds > 0f ? step.MoveDurationSeconds : step.DurationSeconds > 0f ? step.DurationSeconds : DefaultStepDurationSeconds;
+
+    private bool ApplyStepLipTalk(RuntimeActorInstance actor, ActorActionSequenceStep step)
+    {
+        if (!this.lipSyncPresets.TryResolveTimelineId(step.LipTalkKey, step.LipTalkId, out var timelineId, out var entry, out var resolveReason))
+        {
+            actor.LastLipTalkError = resolveReason;
+            actor.LastLipTalkResult = string.Empty;
+            return false;
+        }
+
+        step.LipTalkKey = entry.InternalKey;
+        step.LipTalkId = (ushort)Math.Min(timelineId, ushort.MaxValue);
+        var success = this.animationService.ApplyLipTalk(actor, timelineId, out var reason);
+        actor.LastLipTalkResult = success ? $"{entry.DisplayName}: {reason}" : string.Empty;
+        actor.LastLipTalkError = success ? string.Empty : reason;
+        return success;
+    }
 
     private static float DegreesToRadians(float degrees)
         => degrees * (MathF.PI / 180f);

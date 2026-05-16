@@ -16,9 +16,13 @@ public sealed class ActorActionSequenceRuntime
 
     public bool ExpressionPlayed { get; set; }
 
+    public bool LipTalkPlayed { get; set; }
+
     public float LastAnimationRepeatAt { get; set; }
 
     public float LastExpressionRepeatAt { get; set; }
+
+    public float LastLipTalkRepeatAt { get; set; }
 
     public float LoopDelayElapsed { get; set; }
 

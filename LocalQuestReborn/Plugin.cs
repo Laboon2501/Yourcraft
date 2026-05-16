@@ -39,6 +39,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly ActorAnimationService actorAnimation;
     private readonly ActorAnimationCatalogService actorAnimationCatalog;
     private readonly ActorAnimationPickerService actorAnimationPicker;
+    private readonly ActorLipSyncPresetService actorLipSyncPresets;
     private readonly ActorNativeBubbleService actorBubble;
     private readonly ActorActionSequenceService actorActionSequence;
     private readonly ActorLookAtService actorLookAt;
@@ -131,8 +132,9 @@ public sealed class Plugin : IDalamudPlugin
         this.actorAnimation = new ActorAnimationService(this.brioAssemblyBridge, log);
         this.actorAnimationCatalog = new ActorAnimationCatalogService(dataManager, log);
         this.actorAnimationPicker = new ActorAnimationPickerService(this.database, this.runtimeActorRegistry, this.actorAnimationCatalog, log);
+        this.actorLipSyncPresets = new ActorLipSyncPresetService(this.actorAnimationCatalog);
         this.actorBubble = new ActorNativeBubbleService(this.brioAssemblyBridge, log);
-        this.actorActionSequence = new ActorActionSequenceService(this.actorAnimation, this.actorBubble, this.brioCapabilityBridge);
+        this.actorActionSequence = new ActorActionSequenceService(this.actorAnimation, this.actorBubble, this.brioCapabilityBridge, this.actorLipSyncPresets);
         this.actorLookAt = new ActorLookAtService(objectTable, this.brioAssemblyBridge, log);
         this.playerLookAtActor = new PlayerLookAtActorService(objectTable, this.brioAssemblyBridge, log);
         this.actorValidityMonitor = new ActorValidityMonitorService(clientState, objectTable);
@@ -144,7 +146,7 @@ public sealed class Plugin : IDalamudPlugin
         this.experimentalEventNpcService = new ExperimentalEventNpcService(this.brioAssemblyBridge, this.nativeGameObjectDump, log);
         this.nativeTalkProbe = new NativeTalkProbeService(targetManager);
         this.eventNpcHost = new EventNpcHostService(targetManager, clientState, this.database);
-        this.realNpcSpawn = new RealNpcSpawnService(clientState, targetManager, this.database, this.runtimeActorRegistry, this.brioNpcBridge, this.brioAssemblyBridge, this.brioCapabilityBridge, this.actorAppearanceLocalizer, this.appearanceApply, this.appearanceApplyQueue, this.actorAnimation, this.actorActionSequence, this.actorLookAt, this.playerLookAtActor, this.actorValidityMonitor, this.actorNameplate, this.actorTargetability, this.targetProbe, this.nativeNpcProbe, this.nativeGameObjectDump, this.experimentalEventNpcService, this.nativeTalkProbe, this.glamourerIpcProbe, this.glamourerIpcBridge, this.penumbraIpc, log);
+        this.realNpcSpawn = new RealNpcSpawnService(clientState, targetManager, this.database, this.runtimeActorRegistry, this.brioNpcBridge, this.brioAssemblyBridge, this.brioCapabilityBridge, this.actorAppearanceLocalizer, this.appearanceApply, this.appearanceApplyQueue, this.actorAnimation, this.actorActionSequence, this.actorLipSyncPresets, this.actorLookAt, this.playerLookAtActor, this.actorValidityMonitor, this.actorNameplate, this.actorTargetability, this.targetProbe, this.nativeNpcProbe, this.nativeGameObjectDump, this.experimentalEventNpcService, this.nativeTalkProbe, this.glamourerIpcProbe, this.glamourerIpcBridge, this.penumbraIpc, log);
         this.realNpcSpawn.SetEventNpcHostService(this.eventNpcHost);
         this.realNpcSpawn.CleanupActorsForMissingNpcs();
         this.brioPropBridge = new BrioPropBridgeService(this.brioAssemblyBridge, log);
@@ -191,7 +193,7 @@ public sealed class Plugin : IDalamudPlugin
 
         this.actionTimelinePickerWindow = new ActionTimelinePickerWindow(this.actorAnimationPicker);
         this.sceneEditorOverlayWindow = new SceneEditorOverlayWindow(gameGui, this.sceneEditor, this.sceneEditorSelection);
-        this.mainWindow = new MainWindow(this.configuration, this.database, this.runtime, this.experimentalNpc, this.realNpcSpawn, this.propRuntime, this.layoutProbe, this.layoutTransform, this.layoutClone, this.layerDump, this.localLayoutObjects, this.localLights, this.sceneEditor, this.sceneEditorSelection, this.bgPartVisualProbe, this.rotationMatrixExperiment, this.bgPartVisualRescue, this.visualOnlyRotationDeepProbe, this.drawObjectUpdateDirtyProbe, this.graphicsSceneObjectTransform, this.bgPartCollisionSourceProbe, this.animatedBgPartControllerProbe, this.standaloneBgObjectProbe, this.standaloneRenderListProbe, this.meddleSceneProbe, this.gameNpcCatalog, this.gameNpcAppearanceResolver, this.glamourerDesignCatalog, this.actorAnimationPicker, this.actionTimelinePickerWindow, this.penumbraIpc, this.Reload, () => this.pluginInterface.SavePluginConfig(this.configuration), () => this.clientState.IsGPosing);
+        this.mainWindow = new MainWindow(this.configuration, this.database, this.runtime, this.experimentalNpc, this.realNpcSpawn, this.propRuntime, this.layoutProbe, this.layoutTransform, this.layoutClone, this.layerDump, this.localLayoutObjects, this.localLights, this.sceneEditor, this.sceneEditorSelection, this.bgPartVisualProbe, this.rotationMatrixExperiment, this.bgPartVisualRescue, this.visualOnlyRotationDeepProbe, this.drawObjectUpdateDirtyProbe, this.graphicsSceneObjectTransform, this.bgPartCollisionSourceProbe, this.animatedBgPartControllerProbe, this.standaloneBgObjectProbe, this.standaloneRenderListProbe, this.meddleSceneProbe, this.gameNpcCatalog, this.gameNpcAppearanceResolver, this.glamourerDesignCatalog, this.actorAnimationPicker, this.actorLipSyncPresets, this.actionTimelinePickerWindow, this.penumbraIpc, this.Reload, () => this.pluginInterface.SavePluginConfig(this.configuration), () => this.clientState.IsGPosing);
 
         this.windowSystem.AddWindow(this.mainWindow);
         this.windowSystem.AddWindow(this.actionTimelinePickerWindow);

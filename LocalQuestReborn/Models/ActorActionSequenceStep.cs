@@ -32,6 +32,18 @@ public sealed class ActorActionSequenceStep
 
     public ActorExpressionLayer ExpressionLayer { get; set; } = ActorExpressionLayer.Facial;
 
+    public string LipTalkKey { get; set; } = "speak/stop";
+
+    public ushort LipTalkId { get; set; }
+
+    public bool PlayLipTalkWithAction { get; set; }
+
+    public float LipTalkDelaySeconds { get; set; }
+
+    public float LipTalkDurationSeconds { get; set; }
+
+    public bool LoopLipTalk { get; set; }
+
     public float DurationSeconds { get; set; } = 3f;
 
     public string BubbleText { get; set; } = string.Empty;

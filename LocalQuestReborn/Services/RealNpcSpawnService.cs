@@ -27,6 +27,7 @@ public sealed class RealNpcSpawnService
     private readonly AppearanceApplyQueue appearanceApplyQueue;
     private readonly ActorAnimationService animationService;
     private readonly ActorActionSequenceService actionSequenceService;
+    private readonly ActorLipSyncPresetService lipSyncPresets;
     private readonly ActorLookAtService lookAtService;
     private readonly PlayerLookAtActorService playerLookAtActorService;
     private readonly ActorValidityMonitorService validityMonitorService;
@@ -66,6 +67,7 @@ public sealed class RealNpcSpawnService
         AppearanceApplyQueue appearanceApplyQueue,
         ActorAnimationService animationService,
         ActorActionSequenceService actionSequenceService,
+        ActorLipSyncPresetService lipSyncPresets,
         ActorLookAtService lookAtService,
         PlayerLookAtActorService playerLookAtActorService,
         ActorValidityMonitorService validityMonitorService,
@@ -93,6 +95,7 @@ public sealed class RealNpcSpawnService
         this.appearanceApplyQueue = appearanceApplyQueue;
         this.animationService = animationService;
         this.actionSequenceService = actionSequenceService;
+        this.lipSyncPresets = lipSyncPresets;
         this.lookAtService = lookAtService;
         this.playerLookAtActorService = playerLookAtActorService;
         this.validityMonitorService = validityMonitorService;
@@ -865,9 +868,53 @@ public sealed class RealNpcSpawnService
             return false;
         }
 
+        actor.CurrentLipTalkId = lipTimelineId;
         var success = this.ApplyLipTalkInternal(actor, lipTimelineId, out var reason);
         this.LastMessage = reason;
         return success;
+    }
+
+    public bool SetActorLipTalkPreset(string runtimeId, string lipKey)
+    {
+        if (this.registry.GetByRuntimeId(runtimeId) is not { } actor)
+        {
+            this.LastMessage = $"Actor not found: {runtimeId}.";
+            return false;
+        }
+
+        var entry = this.lipSyncPresets.Resolve(lipKey, actor.CurrentLipTalkId);
+        actor.CurrentLipTalkKey = entry.InternalKey;
+        actor.CurrentLipTalkId = entry.ResolvedTimelineId;
+        this.PersistBehavior(actor);
+        actor.LastLipTalkResult = $"Lip preset selected: {entry.DisplayName} ({entry.Status}).";
+        actor.LastLipTalkError = entry.IsResolved || entry.IsLegacy ? string.Empty : actor.LastLipTalkResult;
+        this.LastMessage = actor.LastLipTalkResult;
+        return entry.IsResolved || entry.IsLegacy;
+    }
+
+    public bool ApplyLipTalkPreset(string runtimeId, string lipKey)
+    {
+        if (this.registry.GetByRuntimeId(runtimeId) is not { } actor)
+        {
+            this.LastMessage = $"Actor not found: {runtimeId}.";
+            return false;
+        }
+
+        if (!this.lipSyncPresets.TryResolveTimelineId(lipKey, actor.CurrentLipTalkId, out var timelineId, out var entry, out var resolveReason))
+        {
+            actor.CurrentLipTalkKey = entry.InternalKey;
+            actor.CurrentLipTalkId = entry.ResolvedTimelineId;
+            actor.LastLipTalkError = resolveReason;
+            actor.LastLipTalkResult = string.Empty;
+            this.PersistBehavior(actor);
+            this.LastMessage = resolveReason;
+            return false;
+        }
+
+        actor.CurrentLipTalkKey = entry.InternalKey;
+        actor.CurrentLipTalkId = timelineId;
+        this.PersistBehavior(actor);
+        return this.ApplyLipTalk(runtimeId, timelineId);
     }
 
     public bool StartLipTalkLoop(string runtimeId, uint lipTimelineId, float intervalSeconds)
@@ -893,6 +940,37 @@ public sealed class RealNpcSpawnService
         actor.LastLipTalkError = string.Empty;
         this.LastMessage = actor.LastLipTalkResult;
         return true;
+    }
+
+    public bool StartLipTalkLoopPreset(string runtimeId, string lipKey, float intervalSeconds)
+    {
+        if (this.registry.GetByRuntimeId(runtimeId) is not { } actor)
+        {
+            this.LastMessage = $"Actor not found: {runtimeId}.";
+            return false;
+        }
+
+        if (!this.lipSyncPresets.TryResolveTimelineId(lipKey, actor.CurrentLipTalkId, out var timelineId, out var entry, out var resolveReason))
+        {
+            actor.CurrentLipTalkKey = entry.InternalKey;
+            actor.CurrentLipTalkId = entry.ResolvedTimelineId;
+            actor.LastLipTalkError = resolveReason;
+            actor.LastLipTalkResult = string.Empty;
+            this.PersistBehavior(actor);
+            this.LastMessage = resolveReason;
+            return false;
+        }
+
+        actor.CurrentLipTalkKey = entry.InternalKey;
+        actor.CurrentLipTalkId = timelineId;
+        this.PersistBehavior(actor);
+        if (timelineId == 0)
+        {
+            this.StopLipTalkLoop(runtimeId);
+            return true;
+        }
+
+        return this.StartLipTalkLoop(runtimeId, timelineId, intervalSeconds);
     }
 
     public void StopLipTalkLoop(string runtimeId)
@@ -1650,6 +1728,9 @@ public sealed class RealNpcSpawnService
         actor.DefaultAnimationId = config.DefaultAnimationId;
         actor.CurrentAnimationId = config.CurrentAnimationId != 0 ? config.CurrentAnimationId : config.DefaultAnimationId;
         actor.AnimationEnabled = config.AnimationEnabled || config.AutoPlayDefaultAnimation;
+        var lipEntry = this.lipSyncPresets.Resolve(config.CurrentLipTalkKey, config.CurrentLipTalkId);
+        actor.CurrentLipTalkKey = lipEntry.InternalKey;
+        actor.CurrentLipTalkId = lipEntry.ResolvedTimelineId;
         actor.LookAtPlayerEnabled = config.LookAtPlayerEnabled;
         actor.LookAtRadius = config.LookAtRadius;
         actor.LookAtMode = config.LookAtPlayerEnabled ? NpcLookAtMode.NativeLookAt : NpcLookAtMode.None;
@@ -1752,6 +1833,8 @@ public sealed class RealNpcSpawnService
 
         config.CurrentAnimationId = actor.CurrentAnimationId;
         config.AnimationEnabled = actor.AnimationEnabled;
+        config.CurrentLipTalkKey = actor.CurrentLipTalkKey;
+        config.CurrentLipTalkId = actor.CurrentLipTalkId;
         config.LookAtPlayerEnabled = actor.LookAtPlayerEnabled;
         config.LookAtRadius = actor.LookAtRadius;
         config.EnableActionSequence = actor.EnableActionSequence;
@@ -2221,6 +2304,12 @@ public sealed class RealNpcSpawnService
             LoopExpression = step.LoopExpression,
             ExpressionWeight = step.ExpressionWeight,
             ExpressionLayer = step.ExpressionLayer,
+            LipTalkKey = step.LipTalkKey,
+            LipTalkId = step.LipTalkId,
+            PlayLipTalkWithAction = step.PlayLipTalkWithAction,
+            LipTalkDelaySeconds = step.LipTalkDelaySeconds,
+            LipTalkDurationSeconds = step.LipTalkDurationSeconds,
+            LoopLipTalk = step.LoopLipTalk,
             DurationSeconds = step.DurationSeconds,
             BubbleText = step.BubbleText,
             BubbleDurationSeconds = step.BubbleDurationSeconds,

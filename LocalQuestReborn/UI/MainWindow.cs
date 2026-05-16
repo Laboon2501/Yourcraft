@@ -25,6 +25,7 @@ public sealed class MainWindow : Window
     private readonly GameNpcCatalogService gameNpcCatalog;
     private readonly GlamourerDesignCatalogService glamourerDesignCatalog;
     private readonly ActorAnimationPickerService actorAnimationPicker;
+    private readonly ActorLipSyncPresetService lipSyncPresets;
     private readonly ActionTimelinePickerWindow actionTimelinePickerWindow;
     private readonly PenumbraIpcService penumbraIpc;
     private readonly Action reloadAction;
@@ -111,6 +112,7 @@ public sealed class MainWindow : Window
         GameNpcAppearanceResolver gameNpcAppearanceResolver,
         GlamourerDesignCatalogService glamourerDesignCatalog,
         ActorAnimationPickerService actorAnimationPicker,
+        ActorLipSyncPresetService lipSyncPresets,
         ActionTimelinePickerWindow actionTimelinePickerWindow,
         PenumbraIpcService penumbraIpc,
         Action reloadAction,
@@ -135,6 +137,7 @@ public sealed class MainWindow : Window
         this.gameNpcCatalog = gameNpcCatalog;
         this.glamourerDesignCatalog = glamourerDesignCatalog;
         this.actorAnimationPicker = actorAnimationPicker;
+        this.lipSyncPresets = lipSyncPresets;
         this.actionTimelinePickerWindow = actionTimelinePickerWindow;
         this.penumbraIpc = penumbraIpc;
         this.reloadAction = reloadAction;
@@ -1618,9 +1621,10 @@ public sealed class MainWindow : Window
         if (ImGui.InputInt("表情循环间隔 ms", ref expressionLoopIntervalMs))
             actor.ExpressionBlendLoopIntervalSeconds = Math.Max(50, expressionLoopIntervalMs) / 1000f;
 
-        var lipTalkId = (int)Math.Min(actor.CurrentLipTalkId, int.MaxValue);
-        if (ImGui.InputInt("口型 ID / speak ActionTimelineId", ref lipTalkId))
-            actor.CurrentLipTalkId = (uint)Math.Max(0, lipTalkId);
+        var lipTalkKey = actor.CurrentLipTalkKey;
+        var lipTalkId = actor.CurrentLipTalkId;
+        if (this.DrawLipAnimationCombo("口型 / Lips", ref lipTalkKey, ref lipTalkId))
+            this.realNpcSpawn.SetActorLipTalkPreset(actor.RuntimeId, lipTalkKey);
 
         var lipLoopIntervalMs = (int)MathF.Round(Math.Max(0.05f, actor.LipTalkLoopIntervalSeconds) * 1000f);
         if (ImGui.InputInt("口型循环间隔 ms", ref lipLoopIntervalMs))
@@ -1628,7 +1632,7 @@ public sealed class MainWindow : Window
 
         ImGui.TextWrapped($"动画状态：enabled={actor.AnimationEnabled}, current={actor.CurrentAnimationId}, error={(string.IsNullOrWhiteSpace(actor.LastAnimationError) ? "无" : actor.LastAnimationError)}");
         ImGui.TextWrapped($"表情 blend：current={actor.CurrentExpressionId}, layer={actor.CurrentExpressionLayer}, loop={actor.ExpressionBlendLoopEnabled}, result={(string.IsNullOrWhiteSpace(actor.LastExpressionResult) ? "无" : actor.LastExpressionResult)}, error={(string.IsNullOrWhiteSpace(actor.LastExpressionError) ? "无" : actor.LastExpressionError)}");
-        ImGui.TextWrapped($"口型：current={actor.CurrentLipTalkId}, loop={actor.LipTalkLoopEnabled}, result={(string.IsNullOrWhiteSpace(actor.LastLipTalkResult) ? "无" : actor.LastLipTalkResult)}, error={(string.IsNullOrWhiteSpace(actor.LastLipTalkError) ? "无" : actor.LastLipTalkError)}");
+        ImGui.TextWrapped($"口型：current={actor.CurrentLipTalkKey} ({actor.CurrentLipTalkId}), loop={actor.LipTalkLoopEnabled}, result={(string.IsNullOrWhiteSpace(actor.LastLipTalkResult) ? "无" : actor.LastLipTalkResult)}, error={(string.IsNullOrWhiteSpace(actor.LastLipTalkError) ? "无" : actor.LastLipTalkError)}");
         ImGui.TextWrapped($"看向状态：enabled={actor.LookAtPlayerEnabled}, registered={actor.LookAtRegistered}, target={actor.LookAtTargetDebug}, looking={actor.IsLookingAtPlayer}, error={(string.IsNullOrWhiteSpace(actor.LastLookAtError) ? "无" : actor.LastLookAtError)}");
 
         ImGui.BeginDisabled(!actor.IsValid || actor.CharacterObject == null);
@@ -1652,10 +1656,10 @@ public sealed class MainWindow : Window
             this.realNpcSpawn.ClearExpressionBlend(actor.RuntimeId);
 
         if (ImGui.Button("口型单次应用"))
-            this.realNpcSpawn.ApplyLipTalk(actor.RuntimeId, actor.CurrentLipTalkId);
+            this.realNpcSpawn.ApplyLipTalkPreset(actor.RuntimeId, actor.CurrentLipTalkKey);
         ImGui.SameLine();
         if (ImGui.Button("口型 Loop"))
-            this.realNpcSpawn.StartLipTalkLoop(actor.RuntimeId, actor.CurrentLipTalkId, actor.LipTalkLoopIntervalSeconds);
+            this.realNpcSpawn.StartLipTalkLoopPreset(actor.RuntimeId, actor.CurrentLipTalkKey, actor.LipTalkLoopIntervalSeconds);
         ImGui.SameLine();
         if (ImGui.Button("口型 Stop"))
             this.realNpcSpawn.StopLipTalkLoop(actor.RuntimeId);
@@ -1897,6 +1901,46 @@ public sealed class MainWindow : Window
         if (ImGui.SliderFloat("ExpressionWeight", ref expressionWeight, 0f, 1f))
             step.ExpressionWeight = Math.Clamp(expressionWeight, 0f, 1f);
 
+        var lipOptionsChanged = false;
+        var playLipTalk = step.PlayLipTalkWithAction;
+        if (ImGui.Checkbox("随动作播放口型", ref playLipTalk))
+        {
+            step.PlayLipTalkWithAction = playLipTalk;
+            lipOptionsChanged = true;
+        }
+        ImGui.SameLine();
+        var loopLipTalk = step.LoopLipTalk;
+        if (ImGui.Checkbox("LoopLipTalk", ref loopLipTalk))
+        {
+            step.LoopLipTalk = loopLipTalk;
+            lipOptionsChanged = true;
+        }
+
+        var lipTalkKey = step.LipTalkKey;
+        var lipTalkId = (uint)step.LipTalkId;
+        if (this.DrawLipAnimationCombo("步骤口型 / Lips", ref lipTalkKey, ref lipTalkId))
+        {
+            step.LipTalkKey = lipTalkKey;
+            step.LipTalkId = (ushort)Math.Min(lipTalkId, ushort.MaxValue);
+            lipOptionsChanged = true;
+        }
+
+        var lipDelay = step.LipTalkDelaySeconds;
+        if (ImGui.InputFloat("LipTalkDelaySeconds", ref lipDelay))
+        {
+            step.LipTalkDelaySeconds = Math.Max(0f, lipDelay);
+            lipOptionsChanged = true;
+        }
+        var lipDuration = step.LipTalkDurationSeconds;
+        if (ImGui.InputFloat("LipTalkDurationSeconds", ref lipDuration))
+        {
+            step.LipTalkDurationSeconds = Math.Max(0f, lipDuration);
+            lipOptionsChanged = true;
+        }
+
+        if (lipOptionsChanged)
+            this.realNpcSpawn.ResetActionSequence(actor.RuntimeId);
+
         ImGui.TextDisabled("提示：表情会交给游戏 ActionTimeline slot 自动归位；不是所有 ID 都能与基础动作叠加。");
     }
 
@@ -1960,6 +2004,40 @@ public sealed class MainWindow : Window
         var layer = step.ExpressionLayer;
         if (DrawExpressionLayerCombo("ExpressionLayer", ref layer))
             step.ExpressionLayer = layer;
+    }
+
+    private bool DrawLipAnimationCombo(string label, ref string lipKey, ref uint lipTimelineId)
+    {
+        var current = this.lipSyncPresets.Resolve(lipKey, lipTimelineId);
+        var preview = $"{current.DisplayName} [{current.ResolvedTimelineId}]";
+        if (!current.IsResolved && !current.IsLegacy)
+            preview = $"{current.DisplayName} [unresolved]";
+
+        if (!ImGui.BeginCombo(label, preview))
+            return false;
+
+        var changed = false;
+        foreach (var entry in this.lipSyncPresets.EntriesWithLegacy(lipKey, lipTimelineId))
+        {
+            var selected = string.Equals(current.InternalKey, entry.InternalKey, StringComparison.OrdinalIgnoreCase);
+            var display = entry.IsResolved || entry.IsLegacy
+                ? $"{entry.DisplayName} [{entry.ResolvedTimelineId}]"
+                : $"{entry.DisplayName} [unresolved]";
+            if (ImGui.Selectable(display, selected))
+            {
+                lipKey = entry.InternalKey;
+                lipTimelineId = entry.ResolvedTimelineId;
+                changed = true;
+            }
+
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip($"{entry.InternalKey}\n{entry.Status}");
+            if (selected)
+                ImGui.SetItemDefaultFocus();
+        }
+
+        ImGui.EndCombo();
+        return changed;
     }
 
     private static bool DrawExpressionLayerCombo(string label, ref ActorExpressionLayer layer)

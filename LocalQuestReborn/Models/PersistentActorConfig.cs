@@ -40,6 +40,10 @@ public sealed class PersistentActorConfig
 
     public bool AutoPlayDefaultAnimation { get; set; }
 
+    public string CurrentLipTalkKey { get; set; } = "speak/stop";
+
+    public uint CurrentLipTalkId { get; set; }
+
     public bool LookAtPlayerEnabled { get; set; }
 
     public float LookAtRadius { get; set; } = 8f;

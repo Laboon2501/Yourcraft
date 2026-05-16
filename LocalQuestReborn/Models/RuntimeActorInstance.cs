@@ -274,6 +274,8 @@ public sealed class RuntimeActorInstance
 
     public uint CurrentLipTalkId { get; set; }
 
+    public string CurrentLipTalkKey { get; set; } = "speak/stop";
+
     public bool LipTalkLoopEnabled { get; set; }
 
     public float LipTalkLoopIntervalSeconds { get; set; } = 0.5f;
