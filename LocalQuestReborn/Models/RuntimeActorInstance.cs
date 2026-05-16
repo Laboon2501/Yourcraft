@@ -38,6 +38,10 @@ public sealed class RuntimeActorInstance
 
     public Vector3 PendingTransformScale { get; set; } = Vector3.One;
 
+    public int PendingTransformRetryTicksRemaining { get; set; }
+
+    public DateTime LastPendingTransformAttemptAt { get; set; } = DateTime.MinValue;
+
     public int BindingWaitTicks { get; set; }
 
     public int SpawnAttemptCount { get; set; }
@@ -129,6 +133,12 @@ public sealed class RuntimeActorInstance
     public string LastAppearanceMethod { get; set; } = "未应用";
 
     public string LastAppearanceError { get; set; } = string.Empty;
+
+    public ActorSpawnKind SpawnKind { get; set; } = ActorSpawnKind.Character;
+
+    public string SourceActorKind { get; set; } = string.Empty;
+
+    public string SpawnKindStatus { get; set; } = string.Empty;
 
     public string AppearanceSourceType { get; set; } = string.Empty;
 

@@ -54,11 +54,11 @@ public sealed class BrioAssemblyBridgeService
 
     public bool IsBrioAssemblyLoaded => this.FindBrioAssembly() != null;
 
-    public bool CanSpawnNativeActor => this.objectTable.LocalPlayer != null;
+    public unsafe bool CanSpawnNativeActor => ClientObjectManager.Instance() != null;
 
     public string ActorSpawnStatusText => this.CanSpawnNativeActor
         ? "ARR-style native ClientObjectManager actor spawn is available."
-        : "Native actor spawn is waiting for LocalPlayer.";
+        : "Native actor spawn is waiting for ClientObjectManager.";
 
     public string LocalPlayerStatusText
     {
@@ -134,6 +134,8 @@ public sealed class BrioAssemblyBridgeService
             SpawnSource = "ARRNative",
             SpawnTime = DateTime.Now,
             LastKnownPosition = initialWorldPosition ?? new Vector3(config.WorldPosition.X, config.WorldPosition.Y, config.WorldPosition.Z),
+            SpawnKind = config.SpawnKind == ActorSpawnKind.Unknown ? config.Appearance.SpawnKind : config.SpawnKind,
+            SourceActorKind = string.IsNullOrWhiteSpace(config.SourceActorKind) ? config.Appearance.SourceActorKind : config.SourceActorKind,
         };
 
         try
@@ -150,7 +152,7 @@ public sealed class BrioAssemblyBridgeService
                 spawnYaw,
                 localPlayerStatus);
 
-            if (!this.TrySpawnNativeActor(instance, displayName, spawnPosition, spawnYaw, out reason))
+            if (!this.TrySpawnNativeActor(instance, displayName, spawnPosition, spawnYaw, config.Appearance, out reason))
             {
                 instance.LastError = reason;
                 this.log.Warning(
@@ -1118,7 +1120,7 @@ public sealed class BrioAssemblyBridgeService
             this.RefreshRuntimeNpc(pair.Key, pair.Value);
     }
 
-    private unsafe bool TrySpawnNativeActor(RuntimeActorInstance instance, string displayName, Vector3 position, float yawRadians, out string reason)
+    private unsafe bool TrySpawnNativeActor(RuntimeActorInstance instance, string displayName, Vector3 position, float yawRadians, ActorAppearanceData appearance, out string reason)
     {
         var objectManager = ClientObjectManager.Instance();
         if (objectManager == null)
@@ -1144,8 +1146,10 @@ public sealed class BrioAssemblyBridgeService
         var battleCharacter = (BattleChara*)gameObject;
         var character = (Character*)battleCharacter;
         battleCharacter->CharacterSetup.SetupBNpc(0);
-        battleCharacter->ObjectKind = ObjectKind.BattleNpc;
-        battleCharacter->BattleNpcSubKind = (BattleNpcSubKind)4;
+        var spawnKind = appearance.SpawnKind == ActorSpawnKind.Unknown
+            ? appearance.IsHumanoid ? ActorSpawnKind.Character : ActorSpawnKind.Demihuman
+            : appearance.SpawnKind;
+        this.ConfigureNativeSpawnKind(battleCharacter, character, spawnKind, appearance);
         battleCharacter->TargetableStatus &= ~ObjectTargetableFlags.IsTargetable;
         character->GameObject.SetPosition(position.X, position.Y, position.Z);
         character->GameObject.SetRotation(yawRadians);
@@ -1162,19 +1166,83 @@ public sealed class BrioAssemblyBridgeService
             return false;
         }
 
+        this.TryAddActorToBrioGpose(reference, out var gposeReason);
+
         this.FillInstanceFromCharacter(instance, reference);
         instance.CharacterObject = reference;
         instance.ObjectIndex = objectIndex.ToString();
         instance.Address = $"0x{(nint)battleCharacter:X}";
         instance.LastKnownObjectIndex = (int)objectIndex;
+        instance.SpawnKind = spawnKind;
+        instance.SourceActorKind = appearance.SourceActorKind;
+        instance.SpawnKindStatus = $"native spawnKind={spawnKind}, objectKind={battleCharacter->ObjectKind}, modelChara={appearance.ModelCharaId}; {gposeReason}";
         instance.IsValid = true;
         instance.IsStale = false;
         instance.LastKnownPosition = position;
         instance.NativeNameSet = true;
         instance.CurrentNativeName = displayName;
         instance.NativeNameReadback = displayName;
-        reason = $"Native actor spawned. runtime={instance.RuntimeId[..Math.Min(8, instance.RuntimeId.Length)]}, objectIndex={objectIndex}, address={instance.Address}, name={displayName}.";
+        reason = $"Native actor spawned. runtime={instance.RuntimeId[..Math.Min(8, instance.RuntimeId.Length)]}, spawnKind={spawnKind}, objectKind={battleCharacter->ObjectKind}, objectIndex={objectIndex}, address={instance.Address}, name={displayName}. {gposeReason}";
         return true;
+    }
+
+    private unsafe void ConfigureNativeSpawnKind(BattleChara* battleCharacter, Character* character, ActorSpawnKind spawnKind, ActorAppearanceData appearance)
+    {
+        battleCharacter->ObjectKind = spawnKind switch
+        {
+            ActorSpawnKind.Mount => ObjectKind.Mount,
+            ActorSpawnKind.Minion => ObjectKind.Companion,
+            _ => ObjectKind.BattleNpc,
+        };
+        battleCharacter->BattleNpcSubKind = (BattleNpcSubKind)4;
+        if (appearance.ModelCharaId != 0)
+            character->ModelContainer.ModelCharaId = (int)appearance.ModelCharaId;
+        if (appearance.ModelSkeletonId != 0)
+            character->ModelContainer.ModelSkeletonId = (int)appearance.ModelSkeletonId;
+    }
+
+    private bool TryAddActorToBrioGpose(object characterReference, out string reason)
+    {
+        try
+        {
+            if (!this.TryGetActorSpawnService(out var actorSpawnService, out var serviceReason) || actorSpawnService == null)
+            {
+                reason = $"GPose bridge unavailable: {serviceReason}";
+                return false;
+            }
+
+            var gposeService = actorSpawnService.GetType().GetField("_gPoseService", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(actorSpawnService);
+            if (gposeService == null)
+            {
+                reason = "GPose bridge unavailable: Brio ActorSpawnService has no _gPoseService.";
+                return false;
+            }
+
+            var method = gposeService.GetType()
+                .GetMethods(BindingFlags.Instance | BindingFlags.Public)
+                .FirstOrDefault(item =>
+                {
+                    if (!string.Equals(item.Name, "AddCharacterToGPose", StringComparison.Ordinal))
+                        return false;
+                    var parameters = item.GetParameters();
+                    return parameters.Length == 1 && parameters[0].ParameterType.IsInstanceOfType(characterReference);
+                });
+            if (method == null)
+            {
+                reason = "GPose bridge unavailable: AddCharacterToGPose(ICharacter) was not found.";
+                return false;
+            }
+
+            method.Invoke(gposeService, [characterReference]);
+            reason = "GPose bridge notified.";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            reason = $"GPose bridge failed: {ex.Message}";
+            this.log.Warning(ex, "Failed to add spawned actor to Brio GPose service.");
+            return false;
+        }
     }
 
     private unsafe bool TryDeleteNativeActor(RuntimeActorInstance instance, out string reason)

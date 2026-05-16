@@ -35,6 +35,10 @@ public sealed class GameNpcCatalogService
 
     public int ModelCharaCount { get; private set; }
 
+    public int MountCount { get; private set; }
+
+    public int CompanionCount { get; private set; }
+
     public string LastLoadMessage { get; private set; } = string.Empty;
 
     public void ReloadCatalog()
@@ -43,13 +47,18 @@ public sealed class GameNpcCatalogService
         this.ENpcCount = 0;
         this.BNpcCount = 0;
         this.ModelCharaCount = 0;
+        this.MountCount = 0;
+        this.CompanionCount = 0;
 
         this.TryReadENpcResident();
         this.TryReadBNpcName();
         this.TryReadModelChara();
+        this.TryReadMount();
+        this.TryReadCompanion();
 
         this.LastLoadMessage = $"已读取 ENpc {this.ENpcCount} 条，BNpc {this.BNpcCount} 条，ModelChara {this.ModelCharaCount} 条。";
-        this.log.Information("Loaded GameNpc catalog. ENpc={ENpcCount}, BNpc={BNpcCount}, ModelChara={ModelCharaCount}", this.ENpcCount, this.BNpcCount, this.ModelCharaCount);
+        this.LastLoadMessage = $"Loaded GameNpc catalog. ENpc {this.ENpcCount}, BNpc {this.BNpcCount}, ModelChara {this.ModelCharaCount}, Mount {this.MountCount}, Minion {this.CompanionCount}.";
+        this.log.Information("Loaded GameNpc catalog. ENpc={ENpcCount}, BNpc={BNpcCount}, ModelChara={ModelCharaCount}, Mount={MountCount}, Companion={CompanionCount}", this.ENpcCount, this.BNpcCount, this.ModelCharaCount, this.MountCount, this.CompanionCount);
     }
 
     public IReadOnlyList<GameNpcCatalogEntry> Search(string query, int maxResults = 80)
@@ -206,6 +215,54 @@ public sealed class GameNpcCatalogService
         }
     }
 
+    private void TryReadMount()
+    {
+        try
+        {
+            var sheet = this.dataManager.GetExcelSheet<Mount>();
+            if (sheet == null)
+                return;
+
+            foreach (var row in sheet)
+            {
+                var entry = CreateCatalogEntry(row, GameNpcCatalogKind.Mount, null, ReadUInt(row, "RowId"));
+                if (entry == null)
+                    continue;
+
+                this.entries.Add(entry);
+                this.MountCount++;
+            }
+        }
+        catch (Exception ex)
+        {
+            this.log.Warning(ex, "Failed to read Mount sheet for GameNpc catalog");
+        }
+    }
+
+    private void TryReadCompanion()
+    {
+        try
+        {
+            var sheet = this.dataManager.GetExcelSheet<Companion>();
+            if (sheet == null)
+                return;
+
+            foreach (var row in sheet)
+            {
+                var entry = CreateCatalogEntry(row, GameNpcCatalogKind.Companion, null, ReadUInt(row, "RowId"));
+                if (entry == null)
+                    continue;
+
+                this.entries.Add(entry);
+                this.CompanionCount++;
+            }
+        }
+        catch (Exception ex)
+        {
+            this.log.Warning(ex, "Failed to read Companion sheet for GameNpc catalog");
+        }
+    }
+
     private Dictionary<uint, object> BuildRowMap<T>()
         where T : struct, IExcelRow<T>
     {
@@ -239,6 +296,8 @@ public sealed class GameNpcCatalogService
         var modelCharaId = kind == GameNpcCatalogKind.ModelChara
             ? rowId
             : ReadFirstUInt(modelSource, "ModelChara", "ModelCharaId", "Model", "ModelId", "Character", "ModelMain");
+        if (kind is GameNpcCatalogKind.Mount or GameNpcCatalogKind.Companion && modelCharaId == 0)
+            modelCharaId = ReadFirstUInt(modelSource, "ModelCharaRow", "ModelRow", "Model");
         var customizeId = ReadNullableUInt(modelSource, "Customize", "CustomizeId", "CustomizeData", "Base");
         var baseRowId = baseRow == null ? 0 : ReadUInt(baseRow, "RowId");
         var equipmentInfo = ReadEquipmentInfo(modelSource);
@@ -414,10 +473,43 @@ public sealed class GameNpcCatalogService
         if (value is int intValue && intValue >= 0)
             return (uint)intValue;
 
+        if (TryReadRowId(value, out var rowId))
+            return rowId;
+
         if (uint.TryParse(value.ToString(), out var parsed))
             return parsed;
 
         return 0;
+    }
+
+    private static bool TryReadRowId(object value, out uint rowId)
+    {
+        rowId = 0;
+        try
+        {
+            var type = value.GetType();
+            var raw = type.GetProperty("RowId", BindingFlags.Instance | BindingFlags.Public)?.GetValue(value) ??
+                      type.GetField("RowId", BindingFlags.Instance | BindingFlags.Public)?.GetValue(value);
+            if (raw is uint u32)
+            {
+                rowId = u32;
+                return rowId != 0;
+            }
+
+            if (raw is int i32 && i32 >= 0)
+            {
+                rowId = (uint)i32;
+                return rowId != 0;
+            }
+
+            if (raw != null && uint.TryParse(raw.ToString(), out rowId))
+                return rowId != 0;
+        }
+        catch
+        {
+        }
+
+        return false;
     }
 
     private static object? ReadMember(object source, string memberName)
@@ -465,6 +557,8 @@ public sealed class GameNpcCatalogService
             GameNpcCatalogKind.ENpc => GameNpcKind.ENpc,
             GameNpcCatalogKind.BNpc => GameNpcKind.BNpc,
             GameNpcCatalogKind.ModelChara => GameNpcKind.ModelChara,
+            GameNpcCatalogKind.Mount => GameNpcKind.Mount,
+            GameNpcCatalogKind.Companion => GameNpcKind.Companion,
             _ => GameNpcKind.Unknown,
         };
 }

@@ -19,6 +19,15 @@ public sealed class ActorAppearanceData
     [JsonPropertyName("isHumanoid")]
     public bool IsHumanoid { get; set; } = true;
 
+    [JsonPropertyName("spawnKind")]
+    public ActorSpawnKind SpawnKind { get; set; } = ActorSpawnKind.Character;
+
+    [JsonPropertyName("sourceActorKind")]
+    public string SourceActorKind { get; set; } = string.Empty;
+
+    [JsonPropertyName("objectKind")]
+    public string ObjectKind { get; set; } = string.Empty;
+
     [JsonPropertyName("modelCharaId")]
     public uint ModelCharaId { get; set; }
 
@@ -110,4 +119,14 @@ public enum ActorAppearanceSourceKind
     ManualSnapshot,
     GameNpc,
     Local,
+}
+
+public enum ActorSpawnKind
+{
+    Unknown,
+    Character,
+    Demihuman,
+    Mount,
+    Minion,
+    Unsupported,
 }

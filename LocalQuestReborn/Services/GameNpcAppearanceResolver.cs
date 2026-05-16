@@ -37,6 +37,16 @@ public sealed class GameNpcAppearanceResolver
             result.Success = true;
             result.ModelCharaId = appearance.GameNpcModelId;
             result.Appearance.Kind = GameNpcResolvedAppearanceKind.Monster;
+            result.Appearance.SpawnKind = appearance.GameNpcKind switch
+            {
+                GameNpcKind.Mount => ActorSpawnKind.Mount,
+                GameNpcKind.Companion => ActorSpawnKind.Minion,
+                _ => ActorSpawnKind.Demihuman,
+            };
+            result.Appearance.SourceActorKind = appearance.GameNpcKind.ToString();
+            result.Appearance.ObjectKind = result.Appearance.SpawnKind == ActorSpawnKind.Mount
+                ? "Mount"
+                : result.Appearance.SpawnKind == ActorSpawnKind.Minion ? "Companion" : "BattleNpc";
             result.Appearance.ModelCharaId = appearance.GameNpcModelId;
             result.CustomizeId = appearance.GameNpcCustomizeId == 0 ? null : appearance.GameNpcCustomizeId;
             result.Message = $"已解析 ModelCharaId={result.ModelCharaId}。";
@@ -48,6 +58,8 @@ public sealed class GameNpcAppearanceResolver
         result = appearance.GameNpcKind switch
         {
             GameNpcKind.ModelChara => this.ResolveModelCharaRow(appearance.GameNpcBaseId, result),
+            GameNpcKind.Mount => this.ResolveMount(appearance.GameNpcBaseId, result),
+            GameNpcKind.Companion => this.ResolveCompanion(appearance.GameNpcBaseId, result),
             GameNpcKind.ENpc => this.ResolveENpc(appearance.GameNpcBaseId, result),
             GameNpcKind.BNpc or GameNpcKind.Monster => this.ResolveBNpc(appearance.GameNpcBaseId, result),
             _ => this.Fail(result, "GameNpcKind", $"当前 GameNpcKind={appearance.GameNpcKind} 暂无可解析表。"),
@@ -95,10 +107,52 @@ public sealed class GameNpcAppearanceResolver
         result.Success = true;
         result.ModelCharaId = rowId;
         result.Appearance.Kind = GameNpcResolvedAppearanceKind.Monster;
+        result.Appearance.SpawnKind = ActorSpawnKind.Demihuman;
+        result.Appearance.SourceActorKind = GameNpcKind.ModelChara.ToString();
+        result.Appearance.ObjectKind = "BattleNpc";
         result.Appearance.ModelCharaId = rowId;
         result.Message = $"已解析 ModelCharaId={rowId}。";
         result.Chain.Add(result.Message);
         result.RawDebugInfo = DumpPublicMembers(row);
+        return result;
+    }
+
+    private GameNpcAppearanceResolution ResolveMount(uint rowId, GameNpcAppearanceResolution result)
+    {
+        var row = this.FindRow<Mount>(rowId, "Mount", result);
+        if (row == null)
+            return this.Fail(result, "Mount", $"Mount RowId={rowId} not found.");
+
+        result.RawDebugInfo = DumpPublicMembers(row);
+        return this.ResolveSimpleModelRow(row, result, "Mount", ActorSpawnKind.Mount, "Mount");
+    }
+
+    private GameNpcAppearanceResolution ResolveCompanion(uint rowId, GameNpcAppearanceResolution result)
+    {
+        var row = this.FindRow<Companion>(rowId, "Companion", result);
+        if (row == null)
+            return this.Fail(result, "Companion", $"Companion RowId={rowId} not found.");
+
+        result.RawDebugInfo = DumpPublicMembers(row);
+        return this.ResolveSimpleModelRow(row, result, "Companion", ActorSpawnKind.Minion, "Companion");
+    }
+
+    private GameNpcAppearanceResolution ResolveSimpleModelRow(object row, GameNpcAppearanceResolution result, string tableName, ActorSpawnKind spawnKind, string objectKind)
+    {
+        var modelCharaId = ReadFirstUInt(row, "ModelChara", "ModelCharaId", "ModelCharaRow", "Model", "ModelId", "ModelRow");
+        result.Chain.Add($"{tableName} RowId {result.BaseRowId} -> ModelCharaId={modelCharaId}, spawnKind={spawnKind}");
+        if (modelCharaId == 0)
+            return this.Fail(result, tableName, $"{tableName} has no usable ModelChara/Model row id.");
+
+        result.Success = true;
+        result.ModelCharaId = modelCharaId;
+        result.Appearance.Kind = GameNpcResolvedAppearanceKind.Monster;
+        result.Appearance.SpawnKind = spawnKind;
+        result.Appearance.SourceActorKind = result.SourceKind.ToString();
+        result.Appearance.ObjectKind = objectKind;
+        result.Appearance.ModelCharaId = modelCharaId;
+        result.Message = $"Resolved {tableName} modelChara={modelCharaId}, spawnKind={spawnKind}.";
+        result.Chain.Add(result.Message);
         return result;
     }
 
@@ -116,6 +170,9 @@ public sealed class GameNpcAppearanceResolver
             result.Success = true;
             result.Appearance = humanoid;
             result.ModelCharaId = 0;
+            result.Appearance.SpawnKind = ActorSpawnKind.Character;
+            result.Appearance.SourceActorKind = result.SourceKind.ToString();
+            result.Appearance.ObjectKind = "BattleNpc";
             result.CustomizeId = customizeId == 0 ? null : customizeId;
             result.Message = "已解析人形 NPC 外观：Customize + Equipment。";
             result.Chain.Add(result.Message);
@@ -128,6 +185,13 @@ public sealed class GameNpcAppearanceResolver
         result.Success = true;
         result.ModelCharaId = modelCharaId;
         result.Appearance.Kind = GameNpcResolvedAppearanceKind.Monster;
+        result.Appearance.SpawnKind = result.SourceKind == GameNpcKind.Mount
+            ? ActorSpawnKind.Mount
+            : result.SourceKind == GameNpcKind.Companion ? ActorSpawnKind.Minion : ActorSpawnKind.Demihuman;
+        result.Appearance.SourceActorKind = result.SourceKind.ToString();
+        result.Appearance.ObjectKind = result.Appearance.SpawnKind == ActorSpawnKind.Mount
+            ? "Mount"
+            : result.Appearance.SpawnKind == ActorSpawnKind.Minion ? "Companion" : "BattleNpc";
         result.Appearance.ModelCharaId = modelCharaId;
         result.CustomizeId = customizeId == 0 ? null : customizeId;
         result.Message = $"已解析 ModelCharaId={modelCharaId}。";
@@ -144,6 +208,9 @@ public sealed class GameNpcAppearanceResolver
         return new GameNpcResolvedAppearance
         {
             Kind = GameNpcResolvedAppearanceKind.Humanoid,
+            SpawnKind = ActorSpawnKind.Character,
+            SourceActorKind = "Humanoid",
+            ObjectKind = "BattleNpc",
             Customize = new GameNpcResolvedCustomize
             {
                 Race = ReadFirstUInt(row, "Race"),
@@ -274,6 +341,8 @@ public sealed class GameNpcAppearanceResolver
             return byteValue;
         if (value is int intValue && intValue >= 0)
             return (uint)intValue;
+        if (TryReadRowId(value, out var rowId))
+            return rowId;
         return uint.TryParse(value.ToString(), out var parsed) ? parsed : 0;
     }
 
@@ -295,7 +364,39 @@ public sealed class GameNpcAppearanceResolver
             return byteValue;
         if (value is int intValue && intValue >= 0)
             return (uint)intValue;
+        if (TryReadRowId(value, out var rowId))
+            return rowId;
         return ulong.TryParse(value.ToString(), out var parsed) ? parsed : 0;
+    }
+
+    private static bool TryReadRowId(object value, out uint rowId)
+    {
+        rowId = 0;
+        try
+        {
+            var type = value.GetType();
+            var raw = type.GetProperty("RowId", BindingFlags.Instance | BindingFlags.Public)?.GetValue(value) ??
+                      type.GetField("RowId", BindingFlags.Instance | BindingFlags.Public)?.GetValue(value);
+            if (raw is uint u32)
+            {
+                rowId = u32;
+                return rowId != 0;
+            }
+
+            if (raw is int i32 && i32 >= 0)
+            {
+                rowId = (uint)i32;
+                return rowId != 0;
+            }
+
+            if (raw != null && uint.TryParse(raw.ToString(), out rowId))
+                return rowId != 0;
+        }
+        catch
+        {
+        }
+
+        return false;
     }
 
     private static object? ReadMember(object source, string memberName)

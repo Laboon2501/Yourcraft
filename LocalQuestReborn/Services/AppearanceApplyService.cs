@@ -157,6 +157,9 @@ public sealed class AppearanceApplyService
             actor.GlamourerDesignName = appearance.SourceName;
             actor.GlamourerDesignPath = appearance.SourcePath;
             actor.GlamourerIpcAvailable = false;
+            actor.SpawnKind = appearance.SpawnKind == ActorSpawnKind.Unknown ? (appearance.IsHumanoid ? ActorSpawnKind.Character : ActorSpawnKind.Demihuman) : appearance.SpawnKind;
+            actor.SourceActorKind = appearance.SourceActorKind;
+            actor.SpawnKindStatus = $"appearance spawnKind={actor.SpawnKind}, objectKind={appearance.ObjectKind}, sourceActorKind={appearance.SourceActorKind}";
             actor.LastAppearancePresetSummary = appearance.Summary;
             actor.LastAppearanceVerificationState = "PendingAppearance";
             actor.LastAppearanceValidationResult = string.Empty;
@@ -182,6 +185,13 @@ public sealed class AppearanceApplyService
             if (!HasLocalAppearanceSignal(appearance))
                 return this.FailActorAppearance(actor, "LocalActorAppearanceFailed", $"AppearanceFailed: local snapshot has no usable model/customize/equipment fields. source={appearance.SourceKind}, summary={appearance.Summary}");
 
+            var spawnKind = actor.SpawnKind;
+            var isCharacter = spawnKind == ActorSpawnKind.Character;
+            appearance.SpawnKind = spawnKind;
+            appearance.IsHumanoid = isCharacter;
+            if (!isCharacter && appearance.ModelCharaId == 0)
+                return this.FailActorAppearance(actor, "MissingModelData", $"AppearanceFailed: {spawnKind} requires modelCharaId. source={appearance.SourceKind}, summary={appearance.Summary}");
+
             if (actor.CharacterObject == null || actor.IsStale)
                 return this.FailActorAppearance(actor, "LocalAppearance", "Runtime actor is not ready for local appearance apply.");
 
@@ -198,17 +208,20 @@ public sealed class AppearanceApplyService
                 beforeSummary = BuildNativeAppearanceSummary(character);
                 character->GameObject.DisableDraw();
                 character->Scale = 1f;
-                if (appearance.ModelCharaId != 0 || !appearance.IsHumanoid)
+                if (appearance.ModelCharaId != 0 || !isCharacter)
                     character->ModelContainer.ModelCharaId = (int)appearance.ModelCharaId;
                 if (appearance.ModelSkeletonId != 0)
                     character->ModelContainer.ModelSkeletonId = (int)appearance.ModelSkeletonId;
 
-                if (appearance.IsHumanoid && !ApplyCustomize(character, appearance.Customize, out customizeWriteMode))
+                if (isCharacter && !ApplyCustomize(character, appearance.Customize, out customizeWriteMode))
                     return this.FailActorAppearance(actor, "LocalActorAppearanceFailed", $"AppearanceFailed: invalid customize snapshot. {customizeWriteMode}");
 
-                ApplyEquipment(character, appearance.Equipment);
-                character->DrawData.HideWeapons(appearance.Equipment.HideWeapons);
-                character->DrawData.HideHeadgear(0, appearance.Equipment.HideHeadgear);
+                if (isCharacter)
+                {
+                    ApplyEquipment(character, appearance.Equipment);
+                    character->DrawData.HideWeapons(appearance.Equipment.HideWeapons);
+                    character->DrawData.HideHeadgear(0, appearance.Equipment.HideHeadgear);
+                }
                 character->Alpha = 1f;
                 character->GameObject.EnableDraw();
                 afterSummary = BuildNativeAppearanceSummary(character);
@@ -216,7 +229,7 @@ public sealed class AppearanceApplyService
                     return this.FailActorAppearance(actor, "LocalActorAppearanceFailed", $"AppearanceFailed: {verification}. before={beforeSummary}; after={afterSummary}; sourceSummary={appearance.Summary}");
             }
 
-            actor.LastAppearanceMethod = $"LocalActorAppearance:{appearance.SourceKind}";
+            actor.LastAppearanceMethod = $"LocalActorAppearance:{appearance.SourceKind}:{spawnKind}";
             actor.LastAppearanceError = string.Empty;
             actor.LastGlamourerApplyError = string.Empty;
             actor.LastGlamourerApplyStatus = appearance.SourceKind == ActorAppearanceSourceKind.GlamourerDesign
@@ -227,7 +240,7 @@ public sealed class AppearanceApplyService
             actor.LastAppearanceValidationResult = verification;
             actor.LastAppearanceVerificationState = "AppearanceApplied";
             actor.LastAppearanceRedrawFallbackCount = 1;
-            actor.LastAppearanceApplyResult = $"AppearanceApplied: source={appearance.SourceKind}, name={appearance.SourceName}, modelChara={appearance.ModelCharaId}, fields={BuildAppearanceFieldSummary(appearance)}, customizeWrite={customizeWriteMode}, verification={verification}, summary={appearance.Summary}";
+            actor.LastAppearanceApplyResult = $"AppearanceApplied: source={appearance.SourceKind}, spawnKind={spawnKind}, name={appearance.SourceName}, modelChara={appearance.ModelCharaId}, fields={BuildAppearanceFieldSummary(appearance)}, customizeWrite={customizeWriteMode}, verification={verification}, summary={appearance.Summary}";
             actor.LastAppearanceAppliedAt = DateTime.Now;
             return true;
         }
@@ -361,7 +374,7 @@ public sealed class AppearanceApplyService
            data.FacePaint != 0;
 
     private static string BuildAppearanceFieldSummary(ActorAppearanceData appearance)
-        => $"customizeFields={CountCustomizeFields(appearance.Customize)}/26,equipmentSlots={CountEquipment(appearance.Equipment)}/12,hideWeapons={appearance.Equipment.HideWeapons},hideHeadgear={appearance.Equipment.HideHeadgear}";
+        => $"spawnKind={appearance.SpawnKind},customizeFields={CountCustomizeFields(appearance.Customize)}/26,equipmentSlots={CountEquipment(appearance.Equipment)}/12,hideWeapons={appearance.Equipment.HideWeapons},hideHeadgear={appearance.Equipment.HideHeadgear}";
 
     private static int CountCustomizeFields(ActorCustomizeData data)
     {
@@ -478,7 +491,8 @@ public sealed class AppearanceApplyService
     private unsafe static bool VerifyApplied(Character* character, ActorAppearanceData appearance, out string reason)
     {
         var mismatches = new List<string>();
-        if ((appearance.ModelCharaId != 0 || !appearance.IsHumanoid) &&
+        var isCharacter = appearance.SpawnKind == ActorSpawnKind.Character;
+        if ((appearance.ModelCharaId != 0 || !isCharacter) &&
             character->ModelContainer.ModelCharaId != (int)appearance.ModelCharaId)
         {
             mismatches.Add($"ModelChara expected={appearance.ModelCharaId} actual={character->ModelContainer.ModelCharaId}");
@@ -490,7 +504,7 @@ public sealed class AppearanceApplyService
             mismatches.Add($"ModelSkeleton expected={appearance.ModelSkeletonId} actual={character->ModelContainer.ModelSkeletonId}");
         }
 
-        if (appearance.IsHumanoid)
+        if (isCharacter)
         {
             if (!TryBuildCustomizeBytes(appearance.Customize, out var expectedCustomize, out var customizeReason))
             {
@@ -506,18 +520,21 @@ public sealed class AppearanceApplyService
             }
         }
 
-        VerifyWeapon(character, WeaponSlot.MainHand, appearance.Equipment.MainHand, "MainHand", mismatches);
-        VerifyWeapon(character, WeaponSlot.OffHand, appearance.Equipment.OffHand, "OffHand", mismatches);
-        VerifyGear(character, EquipmentSlot.Head, appearance.Equipment.Head, "Head", mismatches);
-        VerifyGear(character, EquipmentSlot.Body, appearance.Equipment.Body, "Body", mismatches);
-        VerifyGear(character, EquipmentSlot.Hands, appearance.Equipment.Hands, "Hands", mismatches);
-        VerifyGear(character, EquipmentSlot.Legs, appearance.Equipment.Legs, "Legs", mismatches);
-        VerifyGear(character, EquipmentSlot.Feet, appearance.Equipment.Feet, "Feet", mismatches);
-        VerifyGear(character, EquipmentSlot.Ears, appearance.Equipment.Ears, "Ears", mismatches);
-        VerifyGear(character, EquipmentSlot.Neck, appearance.Equipment.Neck, "Neck", mismatches);
-        VerifyGear(character, EquipmentSlot.Wrists, appearance.Equipment.Wrists, "Wrists", mismatches);
-        VerifyGear(character, EquipmentSlot.LFinger, appearance.Equipment.LeftRing, "LeftRing", mismatches);
-        VerifyGear(character, EquipmentSlot.RFinger, appearance.Equipment.RightRing, "RightRing", mismatches);
+        if (isCharacter)
+        {
+            VerifyWeapon(character, WeaponSlot.MainHand, appearance.Equipment.MainHand, "MainHand", mismatches);
+            VerifyWeapon(character, WeaponSlot.OffHand, appearance.Equipment.OffHand, "OffHand", mismatches);
+            VerifyGear(character, EquipmentSlot.Head, appearance.Equipment.Head, "Head", mismatches);
+            VerifyGear(character, EquipmentSlot.Body, appearance.Equipment.Body, "Body", mismatches);
+            VerifyGear(character, EquipmentSlot.Hands, appearance.Equipment.Hands, "Hands", mismatches);
+            VerifyGear(character, EquipmentSlot.Legs, appearance.Equipment.Legs, "Legs", mismatches);
+            VerifyGear(character, EquipmentSlot.Feet, appearance.Equipment.Feet, "Feet", mismatches);
+            VerifyGear(character, EquipmentSlot.Ears, appearance.Equipment.Ears, "Ears", mismatches);
+            VerifyGear(character, EquipmentSlot.Neck, appearance.Equipment.Neck, "Neck", mismatches);
+            VerifyGear(character, EquipmentSlot.Wrists, appearance.Equipment.Wrists, "Wrists", mismatches);
+            VerifyGear(character, EquipmentSlot.LFinger, appearance.Equipment.LeftRing, "LeftRing", mismatches);
+            VerifyGear(character, EquipmentSlot.RFinger, appearance.Equipment.RightRing, "RightRing", mismatches);
+        }
 
         if (mismatches.Count > 0)
         {

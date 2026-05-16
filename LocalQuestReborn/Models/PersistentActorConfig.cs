@@ -18,6 +18,10 @@ public sealed class PersistentActorConfig
 
     public ActorAppearanceData Appearance { get; set; } = new();
 
+    public ActorSpawnKind SpawnKind { get; set; } = ActorSpawnKind.Character;
+
+    public string SourceActorKind { get; set; } = string.Empty;
+
     public ushort TerritoryType { get; set; }
 
     public string TerritoryName { get; set; } = string.Empty;

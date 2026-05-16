@@ -10,6 +10,8 @@ public sealed class RealNpcSpawnService
     private const int InitialRebuildDelayTicks = 15;
     private const int SceneRebuildDelayTicks = 45;
     private const int GposeExitRebuildDelayTicks = 90;
+    private const int PostSpawnTransformRetryTicks = 45;
+    private const int PendingTransformRetryIntervalMilliseconds = 50;
 
 
     private readonly IClientState clientState;
@@ -406,6 +408,9 @@ public sealed class RealNpcSpawnService
     }
 
     public bool ApplyActorTransform(string runtimeId, Vector3 position, Vector3 rotationEuler, Vector3 scale)
+        => this.ApplyActorTransformInternal(runtimeId, position, rotationEuler, scale, fromPendingFlush: false);
+
+    private bool ApplyActorTransformInternal(string runtimeId, Vector3 position, Vector3 rotationEuler, Vector3 scale, bool fromPendingFlush)
     {
         var actor = this.registry.GetByRuntimeId(runtimeId);
         var config = this.GetConfig(runtimeId);
@@ -426,7 +431,8 @@ public sealed class RealNpcSpawnService
         actor.SpawnRotationEuler = rotationEuler;
         actor.SpawnScale = normalizedScale;
         actor.HasSavedTransform = true;
-        this.SaveConfigTransform(config, position, rotationEuler, normalizedScale);
+        if (!fromPendingFlush)
+            this.SaveConfigTransform(config, position, rotationEuler, normalizedScale);
 
         if (!this.IsRuntimeReady(actor))
         {
@@ -438,7 +444,9 @@ public sealed class RealNpcSpawnService
         if (!IsGeneratedActorTarget(actor, out var targetReason))
         {
             actor.RuntimeTransformApplied = false;
-            actor.HasPendingTransformApply = false;
+            if (fromPendingFlush)
+                actor.PendingTransformRetryTicksRemaining = Math.Max(0, actor.PendingTransformRetryTicksRemaining - 1);
+            actor.HasPendingTransformApply = fromPendingFlush && actor.PendingTransformRetryTicksRemaining > 0;
             actor.LastTransformError = targetReason;
             actor.LastTransformReadback = $"native readback unavailable: {targetReason}";
             this.LastMessage = actor.LastTransformError;
@@ -458,7 +466,16 @@ public sealed class RealNpcSpawnService
         if (!success && !string.IsNullOrWhiteSpace(mismatchReason))
             reason = $"{reason}; mismatch={mismatchReason}";
 
-        actor.HasPendingTransformApply = false;
+        if (fromPendingFlush)
+        {
+            actor.PendingTransformRetryTicksRemaining = Math.Max(0, actor.PendingTransformRetryTicksRemaining - 1);
+            actor.HasPendingTransformApply = actor.PendingTransformRetryTicksRemaining > 0;
+        }
+        else
+        {
+            actor.PendingTransformRetryTicksRemaining = PostSpawnTransformRetryTicks;
+            actor.HasPendingTransformApply = true;
+        }
         actor.LastMoveTargetPosition = position;
         actor.LastMoveAfterPosition = actor.LastKnownPosition;
         actor.LastMoveActorValidAfter = actor.IsValid;
@@ -480,6 +497,7 @@ public sealed class RealNpcSpawnService
         actor.PendingTransformPosition = position;
         actor.PendingTransformRotationEuler = rotationEuler;
         actor.PendingTransformScale = NormalizeScale(scale);
+        actor.PendingTransformRetryTicksRemaining = Math.Max(actor.PendingTransformRetryTicksRemaining, PostSpawnTransformRetryTicks);
         actor.RuntimeTransformApplied = false;
         actor.LastTransformError = reason;
         actor.LastTransformReadback = $"native readback unavailable; saved position={position}; rotationEuler={rotationEuler}; scale={actor.PendingTransformScale}";
@@ -992,10 +1010,11 @@ public sealed class RealNpcSpawnService
         if (gpose && !this.lastObservedGpose)
         {
             this.ClearRuntimeForRebuild("GPose entered; runtime actor handles invalidated");
-            this.ScheduleRebuild("waiting for GPose exit", GposeExitRebuildDelayTicks);
+            this.ScheduleRebuild("GPose entered; rebuilding actors for GPose scene", SceneRebuildDelayTicks);
         }
         else if (!gpose && this.lastObservedGpose)
         {
+            this.ClearRuntimeForRebuild("GPose exited; runtime actor handles invalidated");
             this.ScheduleRebuild("GPose exited; waiting for actor scene stability", GposeExitRebuildDelayTicks);
         }
 
@@ -1039,12 +1058,17 @@ public sealed class RealNpcSpawnService
 
     private void FlushPendingTransforms(IEnumerable<RuntimeActorInstance> readyActors)
     {
+        var now = DateTime.UtcNow;
         foreach (var actor in readyActors.Where(actor => actor.HasPendingTransformApply).ToList())
         {
+            if ((now - actor.LastPendingTransformAttemptAt).TotalMilliseconds < PendingTransformRetryIntervalMilliseconds)
+                continue;
+
+            actor.LastPendingTransformAttemptAt = now;
             var position = actor.PendingTransformPosition;
             var rotation = actor.PendingTransformRotationEuler;
             var scale = actor.PendingTransformScale == Vector3.Zero ? Vector3.One : actor.PendingTransformScale;
-            if (!this.ApplyActorTransform(actor.RuntimeId, position, rotation, scale) && !this.IsRuntimeReady(actor))
+            if (!this.ApplyActorTransformInternal(actor.RuntimeId, position, rotation, scale, fromPendingFlush: true) && !this.IsRuntimeReady(actor))
                 actor.HasPendingTransformApply = true;
         }
     }
@@ -1149,7 +1173,7 @@ public sealed class RealNpcSpawnService
             actor.LastSceneReadyState = reason;
             actor.LastGposeState = this.validityMonitorService.CurrentIsGposing ? "GPose" : "Normal";
             if (actor.LifecycleState != ActorLifecycleState.Ready && actor.LifecycleState != ActorLifecycleState.Spawning && actor.LifecycleState != ActorLifecycleState.BindingRuntime && actor.LifecycleState != ActorLifecycleState.SpawnFailed)
-                this.SetLifecycle(actor, this.validityMonitorService.CurrentIsGposing ? ActorLifecycleState.Despawned : ActorLifecycleState.SpawnPending, reason);
+                this.SetLifecycle(actor, ActorLifecycleState.SpawnPending, reason);
         }
     }
 
@@ -1197,12 +1221,6 @@ public sealed class RealNpcSpawnService
 
     private bool IsActorSceneReady(out string reason)
     {
-        if (this.validityMonitorService.CurrentIsGposing)
-        {
-            reason = "GPose active";
-            return false;
-        }
-
         if (!this.CanSpawnRealActor)
         {
             reason = $"native actor spawn unavailable: {this.BrioAssemblyStatus}";
@@ -1211,11 +1229,17 @@ public sealed class RealNpcSpawnService
 
         if (!this.TryReadLocalPlayerPosition(out _, out var localPlayerReason))
         {
+            if (this.validityMonitorService.CurrentIsGposing)
+            {
+                reason = $"ready (GPose; local player unavailable but rebuild uses saved ActorConfig transform: {localPlayerReason})";
+                return true;
+            }
+
             reason = $"local player not available: {localPlayerReason}";
             return false;
         }
 
-        reason = "ready";
+        reason = this.validityMonitorService.CurrentIsGposing ? "ready (GPose)" : "ready";
         return true;
     }
 
@@ -1443,6 +1467,11 @@ public sealed class RealNpcSpawnService
         actor.SpawnedTerritoryName = config.TerritoryName;
         actor.SortOrder = config.SortOrder;
         actor.SpawnSequence = config.SpawnSequence;
+        actor.SpawnKind = config.SpawnKind == ActorSpawnKind.Unknown ? (config.Appearance?.SpawnKind ?? ActorSpawnKind.Unknown) : config.SpawnKind;
+        if (actor.SpawnKind == ActorSpawnKind.Unknown)
+            actor.SpawnKind = config.Appearance?.IsHumanoid == true ? ActorSpawnKind.Character : ActorSpawnKind.Demihuman;
+        actor.SourceActorKind = string.IsNullOrWhiteSpace(config.SourceActorKind) ? config.Appearance?.SourceActorKind ?? string.Empty : config.SourceActorKind;
+        actor.SpawnKindStatus = $"config spawnKind={actor.SpawnKind}, sourceActorKind={actor.SourceActorKind}, objectKind={config.Appearance?.ObjectKind}";
         actor.SpawnPosition = position;
         actor.SpawnRotationEuler = rotation;
         actor.SpawnScale = scale;
@@ -1480,6 +1509,12 @@ public sealed class RealNpcSpawnService
     private PersistentActorConfig CreateConfig(CustomNpc npc, string runtimeId, Vector3 position, Vector3 rotationEuler, Vector3 scale, int sortOrder)
     {
         var territory = CurrentTerritory(this.clientState);
+        var appearance = this.appearanceLocalizer.FromNpcTemplate(npc);
+        var spawnKind = appearance.SpawnKind == ActorSpawnKind.Unknown
+            ? appearance.IsHumanoid ? ActorSpawnKind.Character : ActorSpawnKind.Demihuman
+            : appearance.SpawnKind;
+        appearance.SpawnKind = spawnKind;
+        appearance.IsHumanoid = spawnKind == ActorSpawnKind.Character;
         return new PersistentActorConfig
         {
             ConfigId = Guid.NewGuid().ToString("N"),
@@ -1487,7 +1522,9 @@ public sealed class RealNpcSpawnService
             SourceNpcPresetId = npc.Id,
             NpcNameSnapshot = npc.Name,
             DisplayName = BuildDisplayName(npc),
-            Appearance = this.appearanceLocalizer.FromNpcTemplate(npc),
+            Appearance = appearance,
+            SpawnKind = spawnKind,
+            SourceActorKind = appearance.SourceActorKind,
             TerritoryType = territory,
             TerritoryName = $"Territory {territory}",
             WorldPosition = ToData(position),
@@ -1512,6 +1549,11 @@ public sealed class RealNpcSpawnService
     {
         var territory = CurrentTerritory(this.clientState);
         var safeName = string.IsNullOrWhiteSpace(displayName) ? "Actor" : displayName.Trim();
+        var spawnKind = appearance.SpawnKind == ActorSpawnKind.Unknown
+            ? appearance.IsHumanoid ? ActorSpawnKind.Character : ActorSpawnKind.Demihuman
+            : appearance.SpawnKind;
+        appearance.SpawnKind = spawnKind;
+        appearance.IsHumanoid = spawnKind == ActorSpawnKind.Character;
         return new PersistentActorConfig
         {
             ConfigId = Guid.NewGuid().ToString("N"),
@@ -1520,6 +1562,8 @@ public sealed class RealNpcSpawnService
             NpcNameSnapshot = safeName,
             DisplayName = safeName,
             Appearance = appearance,
+            SpawnKind = spawnKind,
+            SourceActorKind = appearance.SourceActorKind,
             TerritoryType = territory,
             TerritoryName = $"Territory {territory}",
             WorldPosition = ToData(position),
@@ -1699,6 +1743,17 @@ public sealed class RealNpcSpawnService
             config.DisplayName = string.IsNullOrWhiteSpace(config.NpcNameSnapshot) ? config.Appearance.SourceName : config.NpcNameSnapshot;
         if (string.IsNullOrWhiteSpace(config.DisplayName))
             config.DisplayName = "Actor";
+        var appearance = config.Appearance ?? new ActorAppearanceData();
+        var spawnKind = config.SpawnKind != ActorSpawnKind.Unknown
+            ? config.SpawnKind
+            : appearance.SpawnKind != ActorSpawnKind.Unknown
+                ? appearance.SpawnKind
+                : appearance.IsHumanoid ? ActorSpawnKind.Character : ActorSpawnKind.Demihuman;
+        config.SpawnKind = spawnKind;
+        appearance.SpawnKind = spawnKind;
+        appearance.IsHumanoid = spawnKind == ActorSpawnKind.Character;
+        if (string.IsNullOrWhiteSpace(config.SourceActorKind))
+            config.SourceActorKind = appearance.SourceActorKind;
         config.WorldScale = ToData(NormalizeScale(ToVector3(config.WorldScale, Vector3.One)));
     }
 

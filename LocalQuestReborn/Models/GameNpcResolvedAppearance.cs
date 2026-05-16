@@ -7,6 +7,15 @@ public sealed class GameNpcResolvedAppearance
     [JsonPropertyName("kind")]
     public GameNpcResolvedAppearanceKind Kind { get; set; } = GameNpcResolvedAppearanceKind.Unknown;
 
+    [JsonPropertyName("spawnKind")]
+    public ActorSpawnKind SpawnKind { get; set; } = ActorSpawnKind.Unknown;
+
+    [JsonPropertyName("sourceActorKind")]
+    public string SourceActorKind { get; set; } = string.Empty;
+
+    [JsonPropertyName("objectKind")]
+    public string ObjectKind { get; set; } = string.Empty;
+
     [JsonPropertyName("modelCharaId")]
     public uint ModelCharaId { get; set; }
 

@@ -58,5 +58,7 @@ public enum GameNpcCatalogKind
     ENpc,
     BNpc,
     ModelChara,
+    Mount,
+    Companion,
     Unknown,
 }

@@ -92,13 +92,29 @@ public sealed class ActorAppearanceLocalizerService
             if (TryGetString(designObject, out var identifier, "Identifier", "Guid", "GUID", "Id", "ID") && !string.IsNullOrWhiteSpace(identifier))
                 data.SourceId = identifier;
 
+            var explicitSpawnKind = ActorSpawnKind.Unknown;
+            var sourceActorKind = string.Empty;
+            if (TryReadSpawnKind(designObject, out var designKind, out var designKindText))
+            {
+                explicitSpawnKind = designKind;
+                sourceActorKind = designKindText;
+            }
+
             if (TryGetPropertyIgnoreCase(designObject, "Customize", out var customize) ||
                 TryGetPropertyIgnoreCase(designObject, "Customization", out customize))
+            {
                 ReadGlamourerCustomize(customize, data);
+                if (TryReadSpawnKind(customize, out var customizeKind, out var customizeKindText))
+                {
+                    explicitSpawnKind = customizeKind;
+                    sourceActorKind = customizeKindText;
+                }
+            }
 
             if (TryGetPropertyIgnoreCase(designObject, "Equipment", out var equipment))
                 ReadGlamourerEquipment(equipment, data);
 
+            NormalizeAppearanceKind(data, explicitSpawnKind, sourceActorKind);
             data.Summary = BuildLocalizedSummary("Glamourer design", data, $"file={design.FilePath}");
             return true;
         }
@@ -146,18 +162,21 @@ public sealed class ActorAppearanceLocalizerService
             return false;
         }
 
-        data.IsHumanoid = resolution.Appearance.Kind == GameNpcResolvedAppearanceKind.Humanoid;
+        data.SpawnKind = NormalizeGameNpcSpawnKind(appearance.GameNpcKind, resolution.Appearance);
+        data.SourceActorKind = appearance.GameNpcKind.ToString();
+        data.ObjectKind = resolution.Appearance.ObjectKind;
+        data.IsHumanoid = data.SpawnKind == ActorSpawnKind.Character && resolution.Appearance.Kind == GameNpcResolvedAppearanceKind.Humanoid;
         data.ModelCharaId = resolution.Appearance.Kind == GameNpcResolvedAppearanceKind.Monster
             ? resolution.Appearance.ModelCharaId
             : resolution.ModelCharaId;
 
-        if (resolution.Appearance.Kind == GameNpcResolvedAppearanceKind.Humanoid)
+        if (data.IsHumanoid)
         {
             CopyCustomize(resolution.Appearance.Customize, data.Customize);
             CopyEquipment(resolution.Appearance.Equipment, data.Equipment);
         }
 
-        data.Summary = BuildLocalizedSummary(sourceKind.ToString(), data, $"kind={resolution.Appearance.Kind}");
+        data.Summary = BuildLocalizedSummary(sourceKind.ToString(), data, $"kind={resolution.Appearance.Kind}, sourceActorKind={appearance.GameNpcKind}");
         reason = data.Summary;
         return true;
     }
@@ -695,14 +714,14 @@ public sealed class ActorAppearanceLocalizerService
         var customizeCount = CountCustomizeFields(data.Customize);
         var equipmentCount = CountEquipment(data.Equipment);
         var missing = new List<string>();
-        if (data.IsHumanoid && customizeCount == 0)
+        if (data.SpawnKind == ActorSpawnKind.Character && customizeCount == 0)
             missing.Add("customize");
-        if (data.IsHumanoid && equipmentCount == 0)
+        if (data.SpawnKind == ActorSpawnKind.Character && equipmentCount == 0)
             missing.Add("equipment");
-        if (!data.IsHumanoid && data.ModelCharaId == 0)
+        if (data.SpawnKind is ActorSpawnKind.Demihuman or ActorSpawnKind.Mount or ActorSpawnKind.Minion && data.ModelCharaId == 0)
             missing.Add("modelChara");
 
-        return $"Localized {source}. humanoid={data.IsHumanoid}, modelChara={data.ModelCharaId}, modelSkeleton={data.ModelSkeletonId}, customizeFields={customizeCount}/26, equipmentSlots={equipmentCount}/12, missing={(missing.Count == 0 ? "none" : string.Join(',', missing))}, {extra}";
+        return $"Localized {source}. spawnKind={data.SpawnKind}, sourceActorKind={data.SourceActorKind}, objectKind={data.ObjectKind}, humanoid={data.IsHumanoid}, modelChara={data.ModelCharaId}, modelSkeleton={data.ModelSkeletonId}, customizeFields={customizeCount}/26, equipmentSlots={equipmentCount}/12, missing={(missing.Count == 0 ? "none" : string.Join(',', missing))}, {extra}";
     }
 
     private static int CountCustomizeFields(ActorCustomizeData data)
@@ -764,6 +783,97 @@ public sealed class ActorAppearanceLocalizerService
             GameNpcCatalogKind.ENpc => GameNpcKind.ENpc,
             GameNpcCatalogKind.BNpc => GameNpcKind.BNpc,
             GameNpcCatalogKind.ModelChara => GameNpcKind.ModelChara,
+            GameNpcCatalogKind.Mount => GameNpcKind.Mount,
+            GameNpcCatalogKind.Companion => GameNpcKind.Companion,
             _ => GameNpcKind.Unknown,
         };
+
+    private static void NormalizeAppearanceKind(ActorAppearanceData data, ActorSpawnKind explicitSpawnKind, string sourceActorKind)
+    {
+        if (explicitSpawnKind != ActorSpawnKind.Unknown)
+        {
+            data.SpawnKind = explicitSpawnKind;
+            data.SourceActorKind = sourceActorKind;
+        }
+        else if (data.IsHumanoid)
+        {
+            data.SpawnKind = ActorSpawnKind.Character;
+            data.SourceActorKind = string.IsNullOrWhiteSpace(data.SourceActorKind) ? "Character" : data.SourceActorKind;
+        }
+        else
+        {
+            data.SpawnKind = ActorSpawnKind.Demihuman;
+            data.SourceActorKind = string.IsNullOrWhiteSpace(data.SourceActorKind) ? "Demihuman" : data.SourceActorKind;
+        }
+
+        data.IsHumanoid = data.SpawnKind == ActorSpawnKind.Character;
+        data.ObjectKind = data.SpawnKind switch
+        {
+            ActorSpawnKind.Mount => "Mount",
+            ActorSpawnKind.Minion => "Companion",
+            ActorSpawnKind.Demihuman => "BattleNpc",
+            ActorSpawnKind.Character => "BattleNpc",
+            _ => data.ObjectKind,
+        };
+    }
+
+    private static ActorSpawnKind NormalizeGameNpcSpawnKind(GameNpcKind sourceKind, GameNpcResolvedAppearance appearance)
+    {
+        if (appearance.SpawnKind != ActorSpawnKind.Unknown)
+            return appearance.SpawnKind;
+
+        return sourceKind switch
+        {
+            GameNpcKind.Mount => ActorSpawnKind.Mount,
+            GameNpcKind.Companion => ActorSpawnKind.Minion,
+            GameNpcKind.Monster or GameNpcKind.ModelChara => ActorSpawnKind.Demihuman,
+            _ when appearance.Kind == GameNpcResolvedAppearanceKind.Humanoid => ActorSpawnKind.Character,
+            _ when appearance.ModelCharaId != 0 => ActorSpawnKind.Demihuman,
+            _ => ActorSpawnKind.Unknown,
+        };
+    }
+
+    private static bool TryReadSpawnKind(JsonElement element, out ActorSpawnKind kind, out string rawKind)
+    {
+        kind = ActorSpawnKind.Unknown;
+        rawKind = string.Empty;
+        if (!TryGetString(element, out rawKind, "SpawnKind", "ActorKind", "ObjectKind", "Kind", "Type", "ObjectType"))
+            return false;
+
+        kind = MapSpawnKind(rawKind);
+        return kind != ActorSpawnKind.Unknown;
+    }
+
+    private static ActorSpawnKind MapSpawnKind(string rawKind)
+    {
+        if (string.IsNullOrWhiteSpace(rawKind))
+            return ActorSpawnKind.Unknown;
+
+        var value = rawKind.Trim();
+        if (uint.TryParse(value, out var numeric))
+        {
+            return numeric switch
+            {
+                8 => ActorSpawnKind.Mount,
+                9 => ActorSpawnKind.Minion,
+                _ => ActorSpawnKind.Unknown,
+            };
+        }
+
+        if (value.Contains("Mount", StringComparison.OrdinalIgnoreCase))
+            return ActorSpawnKind.Mount;
+        if (value.Contains("Companion", StringComparison.OrdinalIgnoreCase) ||
+            value.Contains("Minion", StringComparison.OrdinalIgnoreCase))
+            return ActorSpawnKind.Minion;
+        if (value.Contains("Demi", StringComparison.OrdinalIgnoreCase) ||
+            value.Contains("Monster", StringComparison.OrdinalIgnoreCase))
+            return ActorSpawnKind.Demihuman;
+        if (value.Contains("Character", StringComparison.OrdinalIgnoreCase) ||
+            value.Contains("Human", StringComparison.OrdinalIgnoreCase) ||
+            value.Contains("BattleNpc", StringComparison.OrdinalIgnoreCase) ||
+            value.Contains("EventNpc", StringComparison.OrdinalIgnoreCase))
+            return ActorSpawnKind.Character;
+
+        return ActorSpawnKind.Unknown;
+    }
 }
