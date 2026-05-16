@@ -86,6 +86,12 @@ public sealed unsafe class LayoutObjectTransformService
 
         try
         {
+            if (!ValidateSceneBgObjectWritable(graphicsAddress, out var validationReason))
+            {
+                instance.IsRenderInvalid = true;
+                return validationReason;
+            }
+
             var readback = ReadSceneObjectTransform(graphicsAddress);
             if (readback == null)
             {
@@ -118,6 +124,11 @@ public sealed unsafe class LayoutObjectTransformService
         {
             var rotation = WorldTransformUtil.WorldEulerRadiansToQuaternion(instance.CurrentRotationEuler);
             var target = new SceneTransformSnapshot(instance.CurrentPosition, rotation, instance.CurrentScale, false);
+            if (!IsTransformNormal(target.Position, target.Rotation, target.Scale))
+                return this.Fail(instance, "VisualOnly requested transform is not finite or has invalid scale.");
+            if (!ValidateSceneBgObjectWritable(graphicsAddress, out var validationReason))
+                return this.Fail(instance, validationReason);
+
             WriteSceneObjectTransform(graphicsAddress, target);
             var readback = ReadSceneObjectTransform(graphicsAddress);
             if (readback == null)
@@ -158,6 +169,9 @@ public sealed unsafe class LayoutObjectTransformService
                 Rotation = rotation,
                 Scale = instance.CurrentScale,
             };
+            if (!IsTransformNormal(transform.Translation, transform.Rotation, transform.Scale))
+                return this.Fail(instance, "FullLayout requested transform is not finite or has invalid scale.");
+
             pointer->SetTransform(&transform);
 
             var readback = ReadLayoutTransform(pointer);
@@ -285,6 +299,59 @@ public sealed unsafe class LayoutObjectTransformService
         bg->NotifyTransformChanged();
         bg->UpdateTransforms(true);
         bg->UpdateRender();
+    }
+
+    private static bool ValidateSceneBgObjectWritable(nint graphicsObjectAddress, out string reason)
+    {
+        reason = string.Empty;
+        if (graphicsObjectAddress == 0)
+        {
+            reason = "GraphicsObject address is zero";
+            return false;
+        }
+
+        try
+        {
+            var vtable = *(nint*)graphicsObjectAddress;
+            if (vtable == 0)
+            {
+                reason = "GraphicsObject vtable is zero";
+                return false;
+            }
+
+            var bg = (SceneBgObject*)graphicsObjectAddress;
+            if (bg->ModelResourceHandle == null)
+            {
+                reason = "ModelResourceHandle=null";
+                return false;
+            }
+
+            if (bg->ModelResourceHandle->LoadState < 7)
+            {
+                reason = $"ModelResourceHandle LoadState={bg->ModelResourceHandle->LoadState}";
+                return false;
+            }
+
+            var scene = ReadSceneObjectTransform(graphicsObjectAddress);
+            if (scene == null)
+            {
+                reason = "Scene.Object transform readback failed";
+                return false;
+            }
+
+            if (!IsTransformNormal(scene.Value.Position, scene.Value.Rotation, scene.Value.Scale))
+            {
+                reason = $"Scene.Object transform readback invalid: {FormatSceneSnapshot(scene.Value)}";
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            reason = $"GraphicsObject validation failed: {ex.Message}";
+            return false;
+        }
     }
 
     private static LayoutTransformSnapshot? ReadLayoutTransform(ILayoutInstance* pointer)

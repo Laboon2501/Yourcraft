@@ -77,7 +77,8 @@ public sealed class SceneEditorOverlayWindow : Window
                 marker.Kind == selected.Kind &&
                 string.Equals(marker.RuntimeId, selected.RuntimeId, StringComparison.OrdinalIgnoreCase));
 
-        var handles = selected is { IsValid: true, TransformEditable: true }
+        var handles = selected is { IsValid: true, TransformEditable: true } &&
+                      !this.sceneEditor.IsBgPartCollisionConfirmationRequired(selected.Kind)
             ? this.BuildGizmoHandles(selected)
             : Array.Empty<GizmoHandle>();
 
@@ -186,7 +187,8 @@ public sealed class SceneEditorOverlayWindow : Window
         if (ImGui.Button("Select##MiniPanelSelect"))
             this.selection.Select(editable.Kind, editable.RuntimeId, SceneEditorSelectionSource.Overlay);
 
-        var editableTransform = editable.TransformEditable && editable.IsValid;
+        var bgPartNeedsCollisionConfirmation = this.sceneEditor.IsBgPartCollisionConfirmationRequired(editable.Kind);
+        var editableTransform = editable.TransformEditable && editable.IsValid && !bgPartNeedsCollisionConfirmation;
         ImGui.SameLine();
         this.DrawMiniModeButton("Move", SceneEditorGizmoMode.Move, editableTransform);
         ImGui.SameLine();
@@ -205,6 +207,8 @@ public sealed class SceneEditorOverlayWindow : Window
             ImGui.Separator();
             if (editable.IsPlayer)
                 ImGui.TextDisabled("Player target: read-only.");
+            else if (bgPartNeedsCollisionConfirmation)
+                ImGui.TextDisabled("BgPart collision editing needs confirmation before transform is enabled.");
             else if (!editable.TransformEditable)
                 ImGui.TextDisabled("Native target: read-only. Enable the existing unsafe native-write switch to move it.");
             else
@@ -275,8 +279,25 @@ public sealed class SceneEditorOverlayWindow : Window
         var collisionMode = this.sceneEditor.BgPartCollisionModeEnabled;
         if (ImGui.Checkbox("Collision##MiniBgPartCollision", ref collisionMode))
             this.sceneEditor.SetBgPartCollisionMode(collisionMode, collisionMode && this.sceneEditor.BgPartCollisionModeConfirmed, this.sceneEditor.UnsafeNativeWritesEnabled);
-        if (this.sceneEditor.BgPartCollisionModeEnabled && !this.sceneEditor.BgPartCollisionModeConfirmed)
-            ImGui.TextDisabled("Needs FullLayout confirmation");
+        if (!this.sceneEditor.BgPartCollisionModeEnabled)
+        {
+            ImGui.TextDisabled("VisualOnly: model only; collision stays put.");
+        }
+        else if (!this.sceneEditor.BgPartCollisionModeConfirmed)
+        {
+            ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "Collision transform blocked until confirmed.");
+            ImGui.BeginDisabled(!this.sceneEditor.UnsafeNativeWritesEnabled);
+            if (ImGui.Button("确认启用碰撞编辑##MiniBgPartCollisionConfirm"))
+                this.sceneEditor.SetBgPartCollisionMode(true, true, this.sceneEditor.UnsafeNativeWritesEnabled);
+            ImGui.EndDisabled();
+        }
+        else
+        {
+            ImGui.TextColored(new Vector4(1f, 0.72f, 0.25f, 1f), "FullLayoutWithCollision confirmed.");
+            ImGui.SameLine();
+            if (ImGui.SmallButton("撤销##MiniBgPartCollisionRevoke"))
+                this.sceneEditor.SetBgPartCollisionMode(true, false, this.sceneEditor.UnsafeNativeWritesEnabled);
+        }
         ImGui.TextDisabled(this.sceneEditor.LastBgPartCollisionOperation);
         if (!string.IsNullOrWhiteSpace(editable.MdlPath) && ImGui.Button("Copy mdl##MiniCopyMdl"))
             ImGui.SetClipboardText(editable.MdlPath);

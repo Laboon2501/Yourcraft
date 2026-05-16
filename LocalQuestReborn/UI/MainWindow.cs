@@ -463,6 +463,36 @@ public sealed class MainWindow : Window
             this.realNpcSpawn.EnableUnsafeNativeWrites);
     }
 
+    private void DrawSceneEditorBgPartCollisionControls(string id)
+    {
+        var collisionMode = this.sceneEditor.BgPartCollisionModeEnabled;
+        if (ImGui.Checkbox($"Collision / 模型和碰撞体一起变化##{id}", ref collisionMode))
+            this.SetSceneEditorBgPartCollisionMode(collisionMode, collisionMode && this.sceneEditor.BgPartCollisionModeConfirmed);
+
+        if (!this.sceneEditor.BgPartCollisionModeEnabled)
+        {
+            ImGui.TextDisabled("VisualOnly：只写 Graphics.Scene.Object / BgObject transform，不移动 LayoutInstance / collision。");
+            return;
+        }
+
+        if (this.sceneEditor.BgPartCollisionModeConfirmed)
+        {
+            ImGui.TextColored(new Vector4(1f, 0.72f, 0.25f, 1f), "FullLayoutWithCollision 已确认：transform 会写 LayoutInstance 并移动 collision。");
+            ImGui.SameLine();
+            if (ImGui.SmallButton($"撤销确认##{id}Revoke"))
+                this.SetSceneEditorBgPartCollisionMode(true, false);
+            return;
+        }
+
+        ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "Collision 已开启，但尚未二级确认；会移动 collision 的 transform 已被阻止。");
+        ImGui.BeginDisabled(!this.realNpcSpawn.EnableUnsafeNativeWrites);
+        if (ImGui.Button($"确认启用碰撞编辑##{id}Confirm"))
+            this.SetSceneEditorBgPartCollisionMode(true, true);
+        ImGui.EndDisabled();
+        if (ImGui.IsItemHovered() && !this.realNpcSpawn.EnableUnsafeNativeWrites)
+            ImGui.SetTooltip("需要先启用 Unsafe/native 写入。");
+    }
+
     private void DrawSceneEditorHiddenList()
     {
         this.SyncSceneEditorBgPartCopyMode();
@@ -641,11 +671,7 @@ public sealed class MainWindow : Window
         this.SyncSceneEditorBgPartCopyMode();
         ImGui.Separator();
         ImGui.TextWrapped("BgPart quick actions");
-        var collisionMode = this.sceneEditor.BgPartCollisionModeEnabled;
-        if (ImGui.Checkbox("Collision follows BgPart##SceneEditorBgPartCollision", ref collisionMode))
-            this.SetSceneEditorBgPartCollisionMode(collisionMode, collisionMode && this.sceneEditor.BgPartCollisionModeConfirmed);
-        if (this.sceneEditor.BgPartCollisionModeEnabled && !this.sceneEditor.BgPartCollisionModeConfirmed)
-            ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "Collision mode needs the FullLayout confirmation in 本地场景物体.");
+        this.DrawSceneEditorBgPartCollisionControls("SceneEditorBgPartCollision");
         ImGui.TextDisabled(this.sceneEditor.LastBgPartCollisionOperation);
         if (!string.IsNullOrWhiteSpace(selected.MdlPath))
         {
@@ -687,9 +713,15 @@ public sealed class MainWindow : Window
 
         this.sceneEditorTransformEdit.Bind(selected, this.sceneEditorSelection.Generation + this.sceneEditor.TransformGeneration);
 
-        var disabled = !selected.IsValid || this.IsInGpose();
+        var bgPartNeedsCollisionConfirmation = this.sceneEditor.IsBgPartCollisionConfirmationRequired(selected.Kind);
+        var disabled = !selected.IsValid || this.IsInGpose() || bgPartNeedsCollisionConfirmation;
         if (disabled)
-            ImGui.TextDisabled(selected.IsValid ? "GPose 中禁止写 Transform。" : "对象当前无效。");
+        {
+            if (bgPartNeedsCollisionConfirmation)
+                ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "Collision 已开启但未确认，BgPart transform 已阻止。");
+            else
+                ImGui.TextDisabled(selected.IsValid ? "GPose 中禁止写 Transform。" : "对象当前无效。");
+        }
 
         ImGui.BeginDisabled(disabled);
         var changed = false;
@@ -2150,6 +2182,7 @@ public sealed class MainWindow : Window
 
     private void DrawLocalLayoutObjects()
     {
+        this.SyncSceneEditorBgPartCopyMode();
         ImGui.TextWrapped("Slot-backed 复制：占用当前地图已有 BgPart slot 作为 carrier，可恢复；不会真正新增 LayoutInstance。");
         ImGui.TextWrapped($"状态：{this.localLayoutObjects.LastStatus}");
         ImGui.TextWrapped($"模型状态：{this.localLayoutObjects.LastModelOverrideStatus}");
@@ -2632,20 +2665,7 @@ public sealed class MainWindow : Window
             ImGui.TableSetColumnIndex(10);
             ImGui.TextWrapped(FirstNonEmpty(instance.ApplyMdlError, instance.LastError, instance.LastModelOverrideError));
             ImGui.TableSetColumnIndex(11);
-            ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || instance.IsRestored || instance.IsInvalid || instance.IsDuplicate || !this.realNpcSpawn.EnableUnsafeNativeWrites);
-            DrawEnumCombo("##rowCollisionMode", instance.TransformMode, value =>
-            {
-                if (!value.Equals(instance.TransformMode))
-                {
-                    this.localLayoutObjects.ChangeCollisionMode(
-                        instance.Id,
-                        value,
-                        this.FilteredBgParts(),
-                        this.realNpcSpawn.EnableUnsafeNativeWrites,
-                        this.confirmFullLayoutCollisionMode);
-                }
-            });
-            ImGui.EndDisabled();
+            ImGui.TextWrapped($"effective={this.sceneEditor.CurrentBgPartTransformMode}\ninstance={instance.TransformMode}");
             ImGui.TableSetColumnIndex(12);
             ImGui.TextUnformatted(instance.IsRestored ? "是" : "否");
             ImGui.TableSetColumnIndex(13);
@@ -2653,10 +2673,13 @@ public sealed class MainWindow : Window
             ImGui.TableSetColumnIndex(14);
             ImGui.TextWrapped(FormatVector(instance.CurrentScale));
             ImGui.TableSetColumnIndex(15);
-            var fullLayoutNeedsConfirmation = instance.TransformMode == LocalLayoutTransformMode.FullLayoutWithCollision && !this.confirmFullLayoutCollisionMode;
+            var fullLayoutNeedsConfirmation = this.sceneEditor.IsBgPartCollisionConfirmationRequired(SceneEditableKind.LocalBgPart);
             ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || !this.realNpcSpawn.EnableUnsafeNativeWrites || instance.IsRestored || instance.IsInvalid || instance.IsDuplicate || instance.IsRenderInvalid || fullLayoutNeedsConfirmation);
             if (ImGui.Button("应用 mdl"))
-                this.localLayoutObjects.ApplyMdlPath(instance.Id, instance.CustomModelPath, this.FilteredBgParts(), this.realNpcSpawn.EnableUnsafeNativeWrites, this.confirmFullLayoutCollisionMode);
+            {
+                if (this.sceneEditor.ApplyWorldTransform(SceneEditableKind.LocalBgPart, instance.Id, WorldTransform.FromEuler(instance.CurrentPosition, instance.CurrentRotationEuler, instance.CurrentScale)))
+                    this.localLayoutObjects.ApplyMdlPath(instance.Id, instance.CustomModelPath, this.FilteredBgParts(), this.realNpcSpawn.EnableUnsafeNativeWrites, this.confirmFullLayoutCollisionMode);
+            }
             ImGui.EndDisabled();
             ImGui.TableSetColumnIndex(16);
             ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || !this.realNpcSpawn.EnableUnsafeNativeWrites || instance.IsRestored || instance.IsInvalid);
@@ -3074,22 +3097,9 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"readback：{selected.LastReadback}");
         ImGui.TextWrapped($"错误：{(string.IsNullOrWhiteSpace(selected.LastError) ? "无" : selected.LastError)}");
 
-        ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || selected.IsRestored || selected.IsInvalid || selected.IsDuplicate || !this.realNpcSpawn.EnableUnsafeNativeWrites);
-        DrawEnumCombo("复制体 collision 模式", selected.TransformMode, value =>
-        {
-            if (!value.Equals(selected.TransformMode))
-            {
-                this.localLayoutObjects.ChangeCollisionMode(
-                    selected.Id,
-                    value,
-                    this.FilteredBgParts(),
-                    this.realNpcSpawn.EnableUnsafeNativeWrites,
-                this.confirmFullLayoutCollisionMode);
-            }
-        });
-        ImGui.EndDisabled();
-        var selectedWriteMode = selected.TransformMode;
-        var fullLayoutNeedsConfirmation = selectedWriteMode == LocalLayoutTransformMode.FullLayoutWithCollision && !this.confirmFullLayoutCollisionMode;
+        this.DrawSceneEditorBgPartCollisionControls("SelectedLocalLayoutObjectCollision");
+        var selectedWriteMode = this.sceneEditor.CurrentBgPartTransformMode;
+        var fullLayoutNeedsConfirmation = this.sceneEditor.IsBgPartCollisionConfirmationRequired(SceneEditableKind.LocalBgPart);
         var disabled = this.localLayoutObjects.IsBusy || !this.realNpcSpawn.EnableUnsafeNativeWrites || selected.IsDuplicate || selected.IsRestored || selected.IsRenderInvalid || fullLayoutNeedsConfirmation;
         ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), selectedWriteMode == LocalLayoutTransformMode.VisualOnly
             ? "当前写入路径：Graphics.Scene.Object"
@@ -3113,7 +3123,7 @@ public sealed class MainWindow : Window
         if (ImGui.InputFloat("World Scale Y", ref editScale.Y)) { selected.CurrentScale = Vector3.Max(editScale, new Vector3(0.01f)); transformChanged = true; }
         if (ImGui.InputFloat("World Scale Z", ref editScale.Z)) { selected.CurrentScale = Vector3.Max(editScale, new Vector3(0.01f)); transformChanged = true; }
         if (transformChanged)
-            this.localLayoutObjects.ApplyVisualTransform(selected.Id, selected.CurrentPosition, selected.CurrentRotationEuler, selected.CurrentScale);
+            this.sceneEditor.ApplyWorldTransform(SceneEditableKind.LocalBgPart, selected.Id, WorldTransform.FromEuler(selected.CurrentPosition, selected.CurrentRotationEuler, selected.CurrentScale));
         ImGui.EndDisabled();
         EditString("custom mdl path", selected.CustomModelPath, 512, value => selected.CustomModelPath = value);
         ImGui.TextWrapped($"render invalid：{selected.IsRenderInvalid}");
@@ -3138,30 +3148,33 @@ public sealed class MainWindow : Window
         if (selected.IsRenderInvalid)
             ImGui.TextColored(new Vector4(1f, 0.35f, 0.25f, 1f), "当前实例 render 已失效，不能再写 Graphics.Scene.Object transform。");
         ImGui.BeginDisabled(disabled);
-        if (ImGui.Button("应用 World Transform")) this.localLayoutObjects.ApplyVisualTransform(selected.Id, selected.CurrentPosition, selected.CurrentRotationEuler, selected.CurrentScale);
+        if (ImGui.Button("应用 World Transform")) this.sceneEditor.ApplyWorldTransform(SceneEditableKind.LocalBgPart, selected.Id, WorldTransform.FromEuler(selected.CurrentPosition, selected.CurrentRotationEuler, selected.CurrentScale));
         ImGui.SameLine();
-        if (ImGui.Button("移动到玩家当前位置") && this.runtime.PlayerPosition.HasValue) this.localLayoutObjects.MoveToPlayer(selected.Id, this.runtime.PlayerPosition.Value);
+        if (ImGui.Button("移动到玩家当前位置") && this.runtime.PlayerPosition.HasValue) this.sceneEditor.ApplyWorldTransform(SceneEditableKind.LocalBgPart, selected.Id, WorldTransform.FromEuler(this.runtime.PlayerPosition.Value, selected.CurrentRotationEuler, selected.CurrentScale));
         ImGui.SameLine();
-        if (ImGui.Button("把模型放到玩家脚下") && this.runtime.PlayerPosition.HasValue) this.localLayoutObjects.MoveToPlayer(selected.Id, this.runtime.PlayerPosition.Value);
+        if (ImGui.Button("把模型放到玩家脚下") && this.runtime.PlayerPosition.HasValue) this.sceneEditor.ApplyWorldTransform(SceneEditableKind.LocalBgPart, selected.Id, WorldTransform.FromEuler(this.runtime.PlayerPosition.Value, selected.CurrentRotationEuler, selected.CurrentScale));
         ImGui.SameLine();
         if (ImGui.Button("恢复 transform")) this.localLayoutObjects.RestoreTransformOnly(selected.Id);
         ImGui.SameLine();
         if (ImGui.Button("应用 mdl path"))
-            this.localLayoutObjects.ApplyMdlPath(selected.Id, selected.CustomModelPath, this.FilteredBgParts(), this.realNpcSpawn.EnableUnsafeNativeWrites, this.confirmFullLayoutCollisionMode);
+        {
+            if (this.sceneEditor.ApplyWorldTransform(SceneEditableKind.LocalBgPart, selected.Id, WorldTransform.FromEuler(selected.CurrentPosition, selected.CurrentRotationEuler, selected.CurrentScale)))
+                this.localLayoutObjects.ApplyMdlPath(selected.Id, selected.CustomModelPath, this.FilteredBgParts(), this.realNpcSpawn.EnableUnsafeNativeWrites, this.confirmFullLayoutCollisionMode);
+        }
         ImGui.SameLine();
         if (ImGui.Button("恢复原 mdl / transform"))
             this.localLayoutObjects.RestoreModelAndTransform(selected.Id, this.FilteredBgParts(), this.realNpcSpawn.EnableUnsafeNativeWrites, this.confirmFullLayoutCollisionMode);
-        if (ImGui.Button("X+1")) this.localLayoutObjects.MoveX(selected.Id, 1f);
+        if (ImGui.Button("X+1")) this.sceneEditor.ApplyWorldTransform(SceneEditableKind.LocalBgPart, selected.Id, WorldTransform.FromEuler(selected.CurrentPosition + new Vector3(1f, 0f, 0f), selected.CurrentRotationEuler, selected.CurrentScale));
         ImGui.SameLine();
-        if (ImGui.Button("X-1")) this.localLayoutObjects.MoveX(selected.Id, -1f);
+        if (ImGui.Button("X-1")) this.sceneEditor.ApplyWorldTransform(SceneEditableKind.LocalBgPart, selected.Id, WorldTransform.FromEuler(selected.CurrentPosition + new Vector3(-1f, 0f, 0f), selected.CurrentRotationEuler, selected.CurrentScale));
         ImGui.SameLine();
-        if (ImGui.Button("Y+1")) this.localLayoutObjects.MoveY(selected.Id, 1f);
+        if (ImGui.Button("Y+1")) this.sceneEditor.ApplyWorldTransform(SceneEditableKind.LocalBgPart, selected.Id, WorldTransform.FromEuler(selected.CurrentPosition + new Vector3(0f, 1f, 0f), selected.CurrentRotationEuler, selected.CurrentScale));
         ImGui.SameLine();
-        if (ImGui.Button("Y-1")) this.localLayoutObjects.MoveY(selected.Id, -1f);
+        if (ImGui.Button("Y-1")) this.sceneEditor.ApplyWorldTransform(SceneEditableKind.LocalBgPart, selected.Id, WorldTransform.FromEuler(selected.CurrentPosition + new Vector3(0f, -1f, 0f), selected.CurrentRotationEuler, selected.CurrentScale));
         ImGui.SameLine();
-        if (ImGui.Button("Z+1")) this.localLayoutObjects.MoveZ(selected.Id, 1f);
+        if (ImGui.Button("Z+1")) this.sceneEditor.ApplyWorldTransform(SceneEditableKind.LocalBgPart, selected.Id, WorldTransform.FromEuler(selected.CurrentPosition + new Vector3(0f, 0f, 1f), selected.CurrentRotationEuler, selected.CurrentScale));
         ImGui.SameLine();
-        if (ImGui.Button("Z-1")) this.localLayoutObjects.MoveZ(selected.Id, -1f);
+        if (ImGui.Button("Z-1")) this.sceneEditor.ApplyWorldTransform(SceneEditableKind.LocalBgPart, selected.Id, WorldTransform.FromEuler(selected.CurrentPosition + new Vector3(0f, 0f, -1f), selected.CurrentRotationEuler, selected.CurrentScale));
         if (ImGui.Button("读取当前 World Transform")) this.localLayoutObjects.RefreshWorldTransform(selected.Id);
         ImGui.SameLine();
         if (ImGui.Button("重置 rotation")) this.localLayoutObjects.ResetRotation(selected.Id);

@@ -332,8 +332,33 @@ public sealed unsafe class LayoutProbeService
             return null;
 
         var path = ReadPrimaryPath((ILayoutInstance*)bgPart);
-        var position = transform->Translation;
+        var layoutPosition = transform->Translation;
+        var layoutRotation = transform->Rotation;
+        var layoutScale = transform->Scale;
+        var position = layoutPosition;
+        var rotation = layoutRotation;
+        var scale = layoutScale;
+        var transformSource = "LayoutInstance";
         var visible = bgPart->GraphicsObject != null && bgPart->GraphicsObject->IsVisible;
+        if (bgPart->GraphicsObject != null)
+        {
+            try
+            {
+                var sceneObject = (FFXIVClientStructs.FFXIV.Client.Graphics.Scene.Object*)bgPart->GraphicsObject;
+                position = sceneObject->Position;
+                rotation = sceneObject->Rotation;
+                scale = sceneObject->Scale;
+                transformSource = "GraphicsObject";
+            }
+            catch
+            {
+                position = layoutPosition;
+                rotation = layoutRotation;
+                scale = layoutScale;
+                transformSource = "LayoutInstanceFallback";
+            }
+        }
+
         var modelHandle = ReadBgPartModelHandle(bgPart);
 
         return new LayoutProbeInstance
@@ -345,8 +370,8 @@ public sealed unsafe class LayoutProbeService
                 Address = $"0x{(nint)bgPart:X}",
                 LayerAddress = $"0x{(nint)bgPart->Layer:X}",
             Position = position,
-            Rotation = transform->Rotation.ToString(),
-            Scale = transform->Scale,
+            Rotation = rotation.ToString(),
+            Scale = scale,
             ResourcePath = path,
             Visible = visible,
             LayerId = "LayerManager",
@@ -358,7 +383,7 @@ public sealed unsafe class LayoutProbeService
             ParentAddress = parentAddress,
             ParentKey = parentKey,
             ChildIndex = childIndex,
-            DebugInfo = $"GraphicsObject=0x{(nint)bgPart->GraphicsObject:X}; ModelResourceHandle={modelHandle}; sourceKind={sourceKind}; sharedGroupPath={sharedGroupPath}; parent={parentAddress}; parentKey={parentKey}; childIndex={childIndex}",
+            DebugInfo = $"GraphicsObject=0x{(nint)bgPart->GraphicsObject:X}; ModelResourceHandle={modelHandle}; transformSource={transformSource}; layoutPosition={layoutPosition}; visualPosition={position}; sourceKind={sourceKind}; sharedGroupPath={sharedGroupPath}; parent={parentAddress}; parentKey={parentKey}; childIndex={childIndex}",
         };
     }
 

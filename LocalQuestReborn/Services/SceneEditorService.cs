@@ -116,6 +116,11 @@ public sealed unsafe class SceneEditorService
             ? LocalLayoutTransformMode.FullLayoutWithCollision
             : LocalLayoutTransformMode.VisualOnly;
 
+    public bool IsBgPartCollisionConfirmationRequired(SceneEditableKind kind)
+        => kind is SceneEditableKind.LocalBgPart or SceneEditableKind.NativeBgPart &&
+           this.BgPartCollisionModeEnabled &&
+           !this.BgPartCollisionModeConfirmed;
+
     public uint TransformGeneration { get; private set; }
 
     public string LastStatus { get; private set; } = "Scene Editor ready.";
@@ -171,6 +176,14 @@ public sealed unsafe class SceneEditorService
                 ? "collisionMode=On; collision operation=Moved with layout transform when BgPart transform is applied."
                 : "collisionMode=OnPendingConfirmation; collision operation=Failed until FullLayout confirmation is enabled."
             : "collisionMode=Off; collision operation=Skipped; visual-only BgPart transform.";
+    }
+
+    private bool BlockUnconfirmedBgPartCollisionTransform(SceneEditableKind kind, string source, string handle)
+    {
+        this.LastStatus = "BgPart transform blocked: Collision is enabled, but FullLayoutWithCollision has not been confirmed.";
+        this.LastBgPartCollisionOperation = $"source={source}; collisionMode=OnPendingConfirmation; collision operation=Failed; handle={handle}; confirmation required";
+        this.log.Warning("[SceneEditor] Blocked unconfirmed BgPart collision transform kind={Kind} source={Source} handle={Handle}", kind, source, handle);
+        return false;
     }
 
     public void UpdateLocalActorLookAt(string runtimeId, bool enabled, float radius)
@@ -429,6 +442,12 @@ public sealed unsafe class SceneEditorService
 
     public bool ApplyWorldTransform(SceneEditableKind kind, string runtimeId, WorldTransform transform)
     {
+        if (this.IsBgPartCollisionConfirmationRequired(kind))
+        {
+            var source = kind == SceneEditableKind.NativeBgPart ? "Native" : "Plugin";
+            return this.BlockUnconfirmedBgPartCollisionTransform(kind, source, runtimeId);
+        }
+
         var scale = kind == SceneEditableKind.LocalActor
             ? ActorTransformUtil.NormalizeScale(transform.WorldScale)
             : WorldTransformUtil.NormalizeScale(transform.WorldScale);
@@ -641,13 +660,10 @@ public sealed unsafe class SceneEditorService
 
     private bool ApplyLocalBgPartTransform(string runtimeId, Vector3 position, Vector3 rotationEuler, Vector3 scale, string reason)
     {
+        if (this.IsBgPartCollisionConfirmationRequired(SceneEditableKind.LocalBgPart))
+            return this.BlockUnconfirmedBgPartCollisionTransform(SceneEditableKind.LocalBgPart, "Plugin", runtimeId);
+
         var mode = this.CurrentBgPartTransformMode;
-        if (mode == LocalLayoutTransformMode.FullLayoutWithCollision && !this.NativeFullLayoutTransformConfirmed)
-        {
-            this.LastStatus = "Local BgPart transform blocked: collision mode is ON but FullLayoutWithCollision is not confirmed.";
-            this.LastBgPartCollisionOperation = "source=Plugin; collisionMode=OnPendingConfirmation; collision operation=Failed; handle=unavailable";
-            return false;
-        }
 
         var instance = this.localLayoutObjects.GetById(runtimeId);
         if (instance == null)
@@ -659,17 +675,27 @@ public sealed unsafe class SceneEditorService
 
         if (instance.TransformMode != mode)
         {
-            var changed = this.localLayoutObjects.ChangeCollisionMode(
-                runtimeId,
-                mode,
-                this.GetCurrentBgPartCandidates(),
-                this.AllowNativeTransformWrites,
-                this.NativeFullLayoutTransformConfirmed || mode == LocalLayoutTransformMode.VisualOnly);
-            if (!changed)
+            if (mode == LocalLayoutTransformMode.VisualOnly)
             {
-                this.LastStatus = this.localLayoutObjects.LastStatus;
-                this.LastBgPartCollisionOperation = $"source=Plugin; collisionMode={(mode == LocalLayoutTransformMode.FullLayoutWithCollision ? "On" : "Off")}; collision operation=Failed; handle={instance.OccupiedSlotAddress}; {this.LastStatus}";
-                return false;
+                instance.TransformMode = LocalLayoutTransformMode.VisualOnly;
+                instance.CollisionApplied = false;
+                instance.CollisionSourceResolveResult = "VisualOnly：全局 Collision 开关关闭，本次 transform 只写 Graphics.Scene.Object；不会写 LayoutInstance，也不会移动/重建 collision。";
+                instance.CollisionError = string.Empty;
+            }
+            else
+            {
+                var changed = this.localLayoutObjects.ChangeCollisionMode(
+                    runtimeId,
+                    mode,
+                    this.GetCurrentBgPartCandidates(),
+                    this.AllowNativeTransformWrites,
+                    this.NativeFullLayoutTransformConfirmed);
+                if (!changed)
+                {
+                    this.LastStatus = this.localLayoutObjects.LastStatus;
+                    this.LastBgPartCollisionOperation = $"source=Plugin; collisionMode=On; collision operation=Failed; handle={instance.OccupiedSlotAddress}; {this.LastStatus}";
+                    return false;
+                }
             }
         }
 
@@ -1903,6 +1929,8 @@ public sealed unsafe class SceneEditorService
 
         var beforeTransform = before.Transform;
         var record = this.EnsureNativeRecord(before, beforeTransform, reason);
+        if (before.Kind == SceneEditableKind.NativeBgPart)
+            record.UseFullLayoutTransform = this.NativeFullLayoutTransformConfirmed;
         SetRecordCurrentTransform(record, after);
         record.IsModified = !TransformsApproximatelyEqual(GetOriginalTransform(record), after) || record.IsHidden;
         if (!record.IsHidden)
@@ -2543,6 +2571,11 @@ public sealed unsafe class SceneEditorService
 
     private bool ApplyNativeLayoutTransform(string runtimeId, WorldTransform transform)
     {
+        if (this.IsBgPartCollisionConfirmationRequired(SceneEditableKind.NativeBgPart))
+            return this.BlockUnconfirmedBgPartCollisionTransform(SceneEditableKind.NativeBgPart, "Native", runtimeId);
+
+        this.lastNativeScanUtc = DateTime.MinValue;
+        this.nativeCache.Clear();
         var current = this.GetEditables().FirstOrDefault(item =>
             string.Equals(item.RuntimeId, runtimeId, StringComparison.OrdinalIgnoreCase));
         var slot = current?.LayoutProbe;
@@ -2613,11 +2646,20 @@ public sealed unsafe class SceneEditorService
                 return true;
             }
 
+            var normalizedScale = WorldTransformUtil.NormalizeScale(transform.WorldScale);
+            if (!IsTransformNormal(transform.WorldPosition, transform.WorldRotation, normalizedScale))
+            {
+                this.LastStatus = "Native layout transform skipped: requested transform is not finite or has invalid scale.";
+                if (pointer->Id.Type == InstanceType.BgPart)
+                    this.LastBgPartCollisionOperation = $"source=Native; collisionMode=On; collision operation=Failed; handle=0x{target.Address:X}; invalid requested transform";
+                return false;
+            }
+
             var nativeTransform = new Transform
             {
                 Translation = transform.WorldPosition,
                 Rotation = transform.WorldRotation,
-                Scale = WorldTransformUtil.NormalizeScale(transform.WorldScale),
+                Scale = normalizedScale,
             };
             pointer->SetTransform(&nativeTransform);
             this.TransformGeneration++;
@@ -2698,11 +2740,21 @@ public sealed unsafe class SceneEditorService
         if (!this.ValidateFreshNativeLayoutTarget(target, out reason))
             return false;
 
+        var normalizedScale = WorldTransformUtil.NormalizeScale(transform.WorldScale);
+        if (!IsTransformNormal(transform.WorldPosition, transform.WorldRotation, normalizedScale))
+        {
+            reason = "requested transform is not finite or has invalid scale";
+            return false;
+        }
+
+        if (!ValidateSceneBgObjectWritable(target.Address, out reason))
+            return false;
+
         var obj = (SceneObject*)target.Address;
         var bg = (SceneBgObject*)target.Address;
         obj->Position = transform.WorldPosition;
         obj->Rotation = transform.WorldRotation;
-        obj->Scale = WorldTransformUtil.NormalizeScale(transform.WorldScale);
+        obj->Scale = normalizedScale;
         bg->IsTransformChanged = true;
         bg->NotifyTransformChanged();
         bg->UpdateTransforms(true);
@@ -2710,6 +2762,76 @@ public sealed unsafe class SceneEditorService
         reason = string.Empty;
         return true;
     }
+
+    private static bool ValidateSceneBgObjectWritable(nint graphicsObjectAddress, out string reason)
+    {
+        reason = string.Empty;
+        if (graphicsObjectAddress == 0)
+        {
+            reason = "GraphicsObject address is zero";
+            return false;
+        }
+
+        try
+        {
+            var vtable = *(nint*)graphicsObjectAddress;
+            if (vtable == 0)
+            {
+                reason = "GraphicsObject vtable is zero";
+                return false;
+            }
+
+            var bg = (SceneBgObject*)graphicsObjectAddress;
+            if (bg->ModelResourceHandle == null)
+            {
+                reason = "ModelResourceHandle=null";
+                return false;
+            }
+
+            if (bg->ModelResourceHandle->LoadState < 7)
+            {
+                reason = $"ModelResourceHandle LoadState={bg->ModelResourceHandle->LoadState}";
+                return false;
+            }
+
+            var obj = (SceneObject*)graphicsObjectAddress;
+            if (!IsTransformNormal(obj->Position, obj->Rotation, obj->Scale))
+            {
+                reason = "current Graphics.Scene.Object transform is invalid";
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            reason = $"GraphicsObject validation failed: {ex.Message}";
+            return false;
+        }
+    }
+
+    private static bool IsTransformNormal(Vector3 position, Quaternion rotation, Vector3 scale)
+        => IsVectorNormal(position)
+            && IsQuaternionNormal(rotation)
+            && IsVectorNormal(scale)
+            && Math.Abs(scale.X) > 0.0001f
+            && Math.Abs(scale.Y) > 0.0001f
+            && Math.Abs(scale.Z) > 0.0001f;
+
+    private static bool IsVectorNormal(Vector3 value)
+        => float.IsFinite(value.X)
+            && float.IsFinite(value.Y)
+            && float.IsFinite(value.Z)
+            && Math.Abs(value.X) < 1_000_000f
+            && Math.Abs(value.Y) < 1_000_000f
+            && Math.Abs(value.Z) < 1_000_000f;
+
+    private static bool IsQuaternionNormal(Quaternion value)
+        => float.IsFinite(value.X)
+            && float.IsFinite(value.Y)
+            && float.IsFinite(value.Z)
+            && float.IsFinite(value.W)
+            && value.LengthSquared() is > 0.0001f and < 10f;
 
     private bool ApplyNativeActorTransform(string runtimeId, WorldTransform transform)
     {
