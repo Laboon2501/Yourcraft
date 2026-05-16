@@ -1,18 +1,33 @@
 ﻿using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
 using Dalamud.Interface.Windowing;
+using Dalamud.Plugin.Services;
 using LocalQuestReborn.Models;
 using LocalQuestReborn.Services;
 using System.Globalization;
 using System.Numerics;
+using System.Text.Encodings.Web;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using TerritoryTypeSheet = Lumina.Excel.Sheets.TerritoryType;
 
 namespace LocalQuestReborn.UI;
 
 public sealed class MainWindow : Window
 {
+    private static readonly JsonSerializerOptions MapPresetJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        WriteIndented = true,
+        IncludeFields = true,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        Converters = { new JsonStringEnumConverter() },
+    };
+
     private readonly Configuration configuration;
     private readonly QuestDatabase database;
     private readonly QuestRuntimeService runtime;
+    private readonly IDataManager dataManager;
     private readonly RealNpcSpawnService realNpcSpawn;
     private readonly LayoutProbeService layoutProbe;
     private readonly LayerDumpService layerDump;
@@ -44,6 +59,14 @@ public sealed class MainWindow : Window
     private ProtectedBgPartSlot? pendingProtectedSlotRemove;
     private PreferredModifyBgPartResourcePath? pendingPreferredResourcePathRemove;
     private PreferredModifyBgPartSlot? pendingPreferredSlotRemove;
+    private uint selectedMapPresetTerritory;
+    private string mapPresetImportPath = string.Empty;
+    private string mapPresetStatus = string.Empty;
+    private MapModificationPreset? pendingImportPreset;
+    private string pendingImportPath = string.Empty;
+    private List<string> pendingImportConflicts = [];
+    private bool pendingImportConfirmChecked;
+    private readonly Dictionary<uint, string> territoryNameCache = [];
 
     private string selectedNpcId = string.Empty;
     private string selectedActorRuntimeId = string.Empty;
@@ -95,6 +118,7 @@ public sealed class MainWindow : Window
         Configuration configuration,
         QuestDatabase database,
         QuestRuntimeService runtime,
+        IDataManager dataManager,
         ExperimentalNpcService experimentalNpc,
         RealNpcSpawnService realNpcSpawn,
         PropRuntimeService propRuntime,
@@ -132,6 +156,7 @@ public sealed class MainWindow : Window
         this.configuration = configuration;
         this.database = database;
         this.runtime = runtime;
+        this.dataManager = dataManager;
         this.realNpcSpawn = realNpcSpawn;
         this.layoutProbe = layoutProbe;
         this.layerDump = layerDump;
@@ -285,9 +310,490 @@ public sealed class MainWindow : Window
         }
 
         ImGui.TextDisabled(T("语言切换会立即保存并在当前窗口刷新。", "Language changes are saved immediately and refresh this window."));
+        ImGui.Separator();
+        this.DrawMapPresetImportExportSettings();
     }
 
     private static string T(string chinese, string english) => Localization.T(chinese, english);
+
+    private void DrawMapPresetImportExportSettings()
+    {
+        DrawYellowSectionLabel("地图预设导入 / 导出", "Map Preset Import / Export");
+        var territories = this.GetModifiedTerritories().ToList();
+        if (territories.Count == 0)
+        {
+            ImGui.TextDisabled(T("当前没有可导出的地图修改。", "There are no modified maps to export."));
+        }
+        else
+        {
+            if (this.selectedMapPresetTerritory == 0 || !territories.Contains(this.selectedMapPresetTerritory))
+                this.selectedMapPresetTerritory = territories[0];
+
+            if (ImGui.BeginCombo(T("导出地图", "Export Map"), this.FormatTerritoryPresetLabel(this.selectedMapPresetTerritory)))
+            {
+                foreach (var territory in territories)
+                {
+                    var selected = territory == this.selectedMapPresetTerritory;
+                    if (ImGui.Selectable(this.FormatTerritoryPresetLabel(territory), selected))
+                        this.selectedMapPresetTerritory = territory;
+                    if (selected)
+                        ImGui.SetItemDefaultFocus();
+                }
+                ImGui.EndCombo();
+            }
+
+            if (ImGui.Button(T("导出 JSON", "Export JSON")))
+            {
+                try
+                {
+                    var path = this.ExportMapPreset(this.selectedMapPresetTerritory);
+                    this.mapPresetStatus = T($"已导出：{path}", $"Exported: {path}");
+                }
+                catch (Exception ex)
+                {
+                    this.mapPresetStatus = T($"导出失败：{ex.Message}", $"Export failed: {ex.Message}");
+                }
+            }
+        }
+
+        ImGui.Spacing();
+        var presetFiles = this.GetMapPresetFiles();
+        var selectedImportLabel = string.IsNullOrWhiteSpace(this.mapPresetImportPath)
+            ? T("选择 JSON 文件", "Select JSON File")
+            : Path.GetFileName(this.mapPresetImportPath);
+        if (ImGui.BeginCombo(T("导入文件", "Import File"), selectedImportLabel))
+        {
+            foreach (var path in presetFiles)
+            {
+                var selected = string.Equals(path, this.mapPresetImportPath, StringComparison.OrdinalIgnoreCase);
+                if (ImGui.Selectable(Path.GetFileName(path), selected))
+                    this.mapPresetImportPath = path;
+                if (selected)
+                    ImGui.SetItemDefaultFocus();
+            }
+            ImGui.EndCombo();
+        }
+
+        ImGui.SetNextItemWidth(-1f);
+        ImGui.InputText(T("JSON 路径", "JSON Path"), ref this.mapPresetImportPath, 512);
+        ImGui.BeginDisabled(string.IsNullOrWhiteSpace(this.mapPresetImportPath));
+        if (ImGui.Button(T("导入 JSON", "Import JSON")))
+            this.BeginMapPresetImport(this.mapPresetImportPath);
+        ImGui.EndDisabled();
+
+        if (!string.IsNullOrWhiteSpace(this.mapPresetStatus))
+            ImGui.TextWrapped(this.mapPresetStatus);
+
+        this.DrawMapPresetImportConflictPopup();
+    }
+
+    private IEnumerable<uint> GetModifiedTerritories()
+    {
+        return this.database.ActorConfigs.Select(item => (uint)item.TerritoryType)
+            .Concat(this.database.Npcs.Select(item => (uint)item.TerritoryType))
+            .Concat(this.configuration.SceneEditorLocalBgParts.Select(item => item.TerritoryId))
+            .Concat(this.configuration.SceneEditorLocalActors.Select(item => item.TerritoryId))
+            .Concat(this.configuration.SceneEditorNativeModifications.Where(item => item.IsHidden || item.IsModified).Select(item => item.TerritoryId))
+            .Concat(this.configuration.LocalLights.Select(item => item.TerritoryId))
+            .Concat(this.configuration.ProtectedBgPartSlots.Select(item => item.TerritoryType))
+            .Concat(this.configuration.ProtectedBgPartResourcePaths.Where(item => item.AppliesToCurrentTerritoryOnly).Select(item => item.TerritoryType))
+            .Concat(this.configuration.PreferredModifyBgPartSlots.Select(item => item.TerritoryType))
+            .Concat(this.configuration.PreferredModifyBgPartResourcePaths.Where(item => item.AppliesToCurrentTerritoryOnly).Select(item => item.TerritoryType))
+            .Where(item => item != 0)
+            .Distinct()
+            .OrderBy(item => item);
+    }
+
+    private string FormatTerritoryPresetLabel(uint territory)
+    {
+        var name = this.GetTerritoryDisplayName(territory);
+        return string.IsNullOrWhiteSpace(name)
+            ? T($"地图 {territory}", $"Territory {territory}")
+            : $"{name}({territory})";
+    }
+
+    private string GetTerritoryDisplayName(uint territory)
+    {
+        if (this.territoryNameCache.TryGetValue(territory, out var cached))
+            return cached;
+
+        var name = string.Empty;
+        try
+        {
+            var sheet = this.dataManager.GetExcelSheet<TerritoryTypeSheet>();
+            foreach (var row in sheet)
+            {
+                if (ReadUIntMember(row, "RowId") != territory)
+                    continue;
+
+                name = FirstNonEmpty(
+                    ExtractDisplayText(ReadMemberValue(row, "PlaceName")),
+                    ExtractDisplayText(ReadMemberValue(row, "Place")),
+                    ExtractDisplayText(ReadMemberValue(row, "Zone")),
+                    ExtractDisplayText(ReadMemberValue(row, "Region")),
+                    ExtractDisplayText(ReadMemberValue(row, "Name")));
+                break;
+            }
+        }
+        catch
+        {
+            name = string.Empty;
+        }
+
+        this.territoryNameCache[territory] = name;
+        return name;
+    }
+
+    private static string ExtractDisplayText(object? value, int depth = 0)
+    {
+        if (value == null || depth > 4)
+            return string.Empty;
+
+        if (value is string text)
+            return text.Trim();
+
+        var type = value.GetType();
+        if (type.IsPrimitive || value is decimal)
+            return string.Empty;
+
+        foreach (var memberName in new[] { "ValueNullable", "Value", "Name", "Singular", "Text" })
+        {
+            var nested = ReadMemberValue(value, memberName);
+            var nestedText = ExtractDisplayText(nested, depth + 1);
+            if (!string.IsNullOrWhiteSpace(nestedText))
+                return nestedText;
+        }
+
+        var fallback = value.ToString()?.Trim() ?? string.Empty;
+        if (type.Name.Contains("SeString", StringComparison.OrdinalIgnoreCase))
+            return fallback;
+        if ((type.FullName?.Contains("RowRef", StringComparison.OrdinalIgnoreCase) ?? false) ||
+            (type.Namespace?.StartsWith("Lumina.Excel.Sheets", StringComparison.Ordinal) ?? false))
+        {
+            return string.Empty;
+        }
+
+        return fallback.Length == 0 || fallback.StartsWith(type.FullName ?? type.Name, StringComparison.Ordinal)
+            ? string.Empty
+            : fallback;
+    }
+
+    private static uint ReadUIntMember(object source, string name)
+    {
+        var value = ReadMemberValue(source, name);
+        return value switch
+        {
+            byte byteValue => byteValue,
+            ushort ushortValue => ushortValue,
+            uint uintValue => uintValue,
+            int intValue when intValue >= 0 => (uint)intValue,
+            long longValue when longValue >= 0 => (uint)Math.Min(longValue, uint.MaxValue),
+            ulong ulongValue => (uint)Math.Min(ulongValue, uint.MaxValue),
+            _ => 0,
+        };
+    }
+
+    private static object? ReadMemberValue(object source, string name)
+    {
+        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public;
+        var type = source.GetType();
+        var property = type.GetProperty(name, flags);
+        if (property != null)
+        {
+            try
+            {
+                return property.GetValue(source);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        var field = type.GetField(name, flags);
+        if (field == null)
+            return null;
+
+        try
+        {
+            return field.GetValue(source);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private string MapPresetDirectory
+        => Path.Combine(this.database.DataDirectory, "MapPresets");
+
+    private IReadOnlyList<string> GetMapPresetFiles()
+    {
+        Directory.CreateDirectory(this.MapPresetDirectory);
+        return Directory.EnumerateFiles(this.MapPresetDirectory, "*.json")
+            .OrderByDescending(File.GetLastWriteTimeUtc)
+            .ToList();
+    }
+
+    private string ExportMapPreset(uint territory)
+    {
+        Directory.CreateDirectory(this.MapPresetDirectory);
+        var preset = this.BuildMapPreset(territory);
+        var path = Path.Combine(this.MapPresetDirectory, $"yourcraft-map-{territory}-{DateTimeOffset.Now:yyyyMMdd-HHmmss}.json");
+        File.WriteAllText(path, JsonSerializer.Serialize(preset, MapPresetJsonOptions));
+        return path;
+    }
+
+    private MapModificationPreset BuildMapPreset(uint territory)
+    {
+        var actorNpcIds = this.database.ActorConfigs
+            .Where(item => item.TerritoryType == territory)
+            .Select(item => item.SourceNpcPresetId)
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        return new MapModificationPreset
+        {
+            TerritoryId = territory,
+            ExportedAtUtc = DateTime.UtcNow,
+            ActorConfigs = CloneForPreset(this.database.ActorConfigs.Where(item => item.TerritoryType == territory)),
+            Npcs = CloneForPreset(this.database.Npcs.Where(item => item.TerritoryType == territory || actorNpcIds.Contains(item.Id))),
+            LocalBgParts = CloneForPreset(this.configuration.SceneEditorLocalBgParts.Where(item => item.TerritoryId == territory)),
+            LocalActors = CloneForPreset(this.configuration.SceneEditorLocalActors.Where(item => item.TerritoryId == territory)),
+            NativeModifications = CloneForPreset(this.configuration.SceneEditorNativeModifications.Where(item => item.TerritoryId == territory && (item.IsHidden || item.IsModified))),
+            LocalLights = CloneForPreset(this.configuration.LocalLights.Where(item => item.TerritoryId == territory)),
+            ProtectedSlots = CloneForPreset(this.configuration.ProtectedBgPartSlots.Where(item => item.TerritoryType == territory)),
+            ProtectedResourcePaths = CloneForPreset(this.configuration.ProtectedBgPartResourcePaths.Where(item => item.AppliesToCurrentTerritoryOnly && item.TerritoryType == territory)),
+            PreferredSlots = CloneForPreset(this.configuration.PreferredModifyBgPartSlots.Where(item => item.TerritoryType == territory)),
+            PreferredResourcePaths = CloneForPreset(this.configuration.PreferredModifyBgPartResourcePaths.Where(item => item.AppliesToCurrentTerritoryOnly && item.TerritoryType == territory)),
+        };
+    }
+
+    private void BeginMapPresetImport(string path)
+    {
+        try
+        {
+            var preset = ReadMapPreset(path);
+            if (preset.TerritoryId == 0)
+            {
+                this.mapPresetStatus = T("导入失败：预设没有地图 ID。", "Import failed: preset has no territory id.");
+                return;
+            }
+
+            var conflicts = this.FindMapPresetConflicts(preset);
+            if (conflicts.Count > 0)
+            {
+                this.pendingImportPreset = preset;
+                this.pendingImportPath = path;
+                this.pendingImportConflicts = conflicts;
+                this.pendingImportConfirmChecked = false;
+                this.OpenConfirmPopupAtMouse("ConfirmImportMapPresetConflict");
+                return;
+            }
+
+            this.ApplyMapPreset(preset);
+            this.mapPresetStatus = T("导入成功。为保证稳定，请重新进入该地图或重载插件后加载。", "Import complete. For safety, re-enter the map or reload the plugin before loading it.");
+        }
+        catch (Exception ex)
+        {
+            this.mapPresetStatus = T($"导入失败：{ex.Message}", $"Import failed: {ex.Message}");
+        }
+    }
+
+    private static MapModificationPreset ReadMapPreset(string path)
+    {
+        var normalized = Path.GetFullPath(path.Trim().Trim('"'));
+        var json = File.ReadAllText(normalized);
+        return JsonSerializer.Deserialize<MapModificationPreset>(json, MapPresetJsonOptions)
+               ?? throw new InvalidOperationException("Map preset JSON is empty.");
+    }
+
+    private void DrawMapPresetImportConflictPopup()
+    {
+        ImGui.SetNextWindowPos(this.confirmationPopupPosition, ImGuiCond.Appearing);
+        if (!ImGui.BeginPopupModal("ConfirmImportMapPresetConflict", ImGuiWindowFlags.AlwaysAutoResize))
+            return;
+
+        ImGui.TextWrapped(T("该预设修改了您已经修改过的内容：", "This preset modifies content you have already changed:"));
+        ImGui.BeginChild("MapPresetConflictList", new Vector2(520f, 180f), true);
+        for (var i = 0; i < this.pendingImportConflicts.Count; i++)
+            ImGui.TextWrapped($"{i + 1}. {this.pendingImportConflicts[i]}");
+        ImGui.EndChild();
+
+        ImGui.Checkbox(T("确定导入", "Confirm Import"), ref this.pendingImportConfirmChecked);
+        ImGui.BeginDisabled(!this.pendingImportConfirmChecked || this.pendingImportPreset == null);
+        if (ImGui.Button(T("Yes", "Yes")))
+        {
+            try
+            {
+                this.ApplyMapPreset(this.pendingImportPreset!);
+                this.mapPresetStatus = T("导入成功。为保证稳定，请重新进入该地图或重载插件后加载。", "Import complete. For safety, re-enter the map or reload the plugin before loading it.");
+            }
+            catch (Exception ex)
+            {
+                this.mapPresetStatus = T($"导入失败：{ex.Message}", $"Import failed: {ex.Message}");
+            }
+            finally
+            {
+                this.pendingImportPreset = null;
+                this.pendingImportPath = string.Empty;
+                this.pendingImportConflicts = [];
+                this.pendingImportConfirmChecked = false;
+                ImGui.CloseCurrentPopup();
+            }
+        }
+        ImGui.EndDisabled();
+        ImGui.SameLine();
+        if (ImGui.Button(T("No", "No")))
+        {
+            this.pendingImportPreset = null;
+            this.pendingImportPath = string.Empty;
+            this.pendingImportConflicts = [];
+            this.pendingImportConfirmChecked = false;
+            ImGui.CloseCurrentPopup();
+        }
+
+        ImGui.EndPopup();
+    }
+
+    private List<string> FindMapPresetConflicts(MapModificationPreset preset)
+    {
+        var territory = preset.TerritoryId;
+        var conflicts = new List<string>();
+        foreach (var actor in preset.ActorConfigs)
+        {
+            if (this.database.ActorConfigs.Any(existing =>
+                    existing.TerritoryType == territory &&
+                    (string.Equals(existing.ConfigId, actor.ConfigId, StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(existing.RuntimeId, actor.RuntimeId, StringComparison.OrdinalIgnoreCase))))
+            {
+                conflicts.Add(T($"Actor：{FirstNonEmpty(actor.DisplayName, actor.NpcNameSnapshot, actor.ConfigId)}", $"Actor: {FirstNonEmpty(actor.DisplayName, actor.NpcNameSnapshot, actor.ConfigId)}"));
+            }
+        }
+
+        foreach (var npc in preset.Npcs)
+        {
+            if (this.database.Npcs.Any(existing => existing.TerritoryType == territory && string.Equals(existing.Id, npc.Id, StringComparison.OrdinalIgnoreCase)))
+                conflicts.Add(T($"NPC：{npc.Name}", $"NPC: {npc.Name}"));
+        }
+
+        foreach (var bg in preset.LocalBgParts)
+        {
+            if (this.configuration.SceneEditorLocalBgParts.Any(existing =>
+                    existing.TerritoryId == territory &&
+                    (string.Equals(existing.InstanceId, bg.InstanceId, StringComparison.OrdinalIgnoreCase) ||
+                     (!string.IsNullOrWhiteSpace(existing.SourceBgPartStableKey) && string.Equals(existing.SourceBgPartStableKey, bg.SourceBgPartStableKey, StringComparison.OrdinalIgnoreCase)))))
+            {
+                conflicts.Add(T($"本地场景物体：{FirstNonEmpty(bg.CurrentMdlPath, bg.SourceMdlPath, bg.InstanceId)}", $"Local Scene Object: {FirstNonEmpty(bg.CurrentMdlPath, bg.SourceMdlPath, bg.InstanceId)}"));
+            }
+        }
+
+        foreach (var native in preset.NativeModifications)
+        {
+            if (this.configuration.SceneEditorNativeModifications.Any(existing =>
+                    existing.TerritoryId == territory &&
+                    existing.Kind == native.Kind &&
+                    string.Equals(existing.StableKey, native.StableKey, StringComparison.OrdinalIgnoreCase) &&
+                    (existing.IsHidden || existing.IsModified)))
+            {
+                conflicts.Add(T($"原生场景修改：{native.DisplayName}", $"Native Scene Edit: {native.DisplayName}"));
+            }
+        }
+
+        foreach (var light in preset.LocalLights)
+        {
+            if (this.configuration.LocalLights.Any(existing =>
+                    existing.TerritoryId == territory &&
+                    (string.Equals(existing.Id, light.Id, StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(existing.Name, light.Name, StringComparison.OrdinalIgnoreCase))))
+            {
+                conflicts.Add(T($"灯光：{light.Name}", $"Light: {light.Name}"));
+            }
+        }
+
+        foreach (var slot in preset.ProtectedSlots)
+        {
+            if (this.configuration.ProtectedBgPartSlots.Any(existing => existing.TerritoryType == territory && string.Equals(existing.StableKey, slot.StableKey, StringComparison.OrdinalIgnoreCase)))
+                conflicts.Add(T($"Bgparts 保护：{slot.ResourcePath}", $"BgParts Protection: {slot.ResourcePath}"));
+        }
+        foreach (var resource in preset.ProtectedResourcePaths)
+        {
+            if (this.configuration.ProtectedBgPartResourcePaths.Any(existing => existing.TerritoryType == territory && string.Equals(existing.ResourcePath, resource.ResourcePath, StringComparison.OrdinalIgnoreCase)))
+                conflicts.Add(T($"Bgparts 保护资源：{resource.ResourcePath}", $"BgParts Protected Resource: {resource.ResourcePath}"));
+        }
+
+        foreach (var slot in preset.PreferredSlots)
+        {
+            if (this.configuration.PreferredModifyBgPartSlots.Any(existing => existing.TerritoryType == territory && string.Equals(existing.StableKey, slot.StableKey, StringComparison.OrdinalIgnoreCase)))
+                conflicts.Add(T($"Bgparts 优先改动：{slot.ResourcePath}", $"BgParts Preferred Edit: {slot.ResourcePath}"));
+        }
+        foreach (var resource in preset.PreferredResourcePaths)
+        {
+            if (this.configuration.PreferredModifyBgPartResourcePaths.Any(existing => existing.TerritoryType == territory && string.Equals(existing.ResourcePath, resource.ResourcePath, StringComparison.OrdinalIgnoreCase)))
+                conflicts.Add(T($"Bgparts 优先资源：{resource.ResourcePath}", $"BgParts Preferred Resource: {resource.ResourcePath}"));
+        }
+
+        return conflicts.Distinct(StringComparer.OrdinalIgnoreCase).Take(80).ToList();
+    }
+
+    private void ApplyMapPreset(MapModificationPreset preset)
+    {
+        var territory = preset.TerritoryId;
+        UpsertByKey(this.database.Npcs, preset.Npcs, item => item.Id);
+        UpsertByKey(this.database.ActorConfigs, preset.ActorConfigs, item => FirstNonEmpty(item.ConfigId, item.RuntimeId));
+        UpsertByKey(this.configuration.SceneEditorLocalActors, preset.LocalActors, item => FirstNonEmpty(item.RecordId, item.RuntimeId));
+        UpsertByKey(this.configuration.SceneEditorLocalBgParts, preset.LocalBgParts, MapBgPartRecordKey);
+        UpsertNativeRecords(preset.NativeModifications);
+        UpsertByKey(this.configuration.LocalLights, preset.LocalLights, item => item.Id);
+        UpsertByKey(this.configuration.ProtectedBgPartSlots, preset.ProtectedSlots, item => $"{item.TerritoryType}:{FirstNonEmpty(item.StableKey, item.LayoutInstanceAddress, item.ResourcePath)}");
+        UpsertByKey(this.configuration.ProtectedBgPartResourcePaths, preset.ProtectedResourcePaths, item => $"{item.TerritoryType}:{item.AppliesToCurrentTerritoryOnly}:{item.ResourcePath}");
+        UpsertByKey(this.configuration.PreferredModifyBgPartSlots, preset.PreferredSlots, item => $"{item.TerritoryType}:{FirstNonEmpty(item.StableKey, item.LayoutInstanceAddress, item.ResourcePath)}");
+        UpsertByKey(this.configuration.PreferredModifyBgPartResourcePaths, preset.PreferredResourcePaths, item => $"{item.TerritoryType}:{item.AppliesToCurrentTerritoryOnly}:{item.ResourcePath}");
+
+        foreach (var actor in preset.ActorConfigs.Where(item => item.TerritoryType == 0))
+            actor.TerritoryType = (ushort)Math.Clamp((int)territory, 0, ushort.MaxValue);
+        foreach (var light in preset.LocalLights.Where(item => item.TerritoryId == 0))
+            light.TerritoryId = territory;
+
+        this.database.Save();
+        this.saveConfiguration();
+    }
+
+    private void UpsertNativeRecords(IReadOnlyList<SceneEditorNativeModificationRecord> imported)
+    {
+        foreach (var item in imported)
+        {
+            var index = this.configuration.SceneEditorNativeModifications.FindIndex(existing =>
+                existing.TerritoryId == item.TerritoryId &&
+                existing.Kind == item.Kind &&
+                string.Equals(existing.StableKey, item.StableKey, StringComparison.OrdinalIgnoreCase));
+            if (index >= 0)
+                this.configuration.SceneEditorNativeModifications[index] = item;
+            else
+                this.configuration.SceneEditorNativeModifications.Add(item);
+        }
+    }
+
+    private static void UpsertByKey<T>(List<T> target, IEnumerable<T> imported, Func<T, string> keySelector)
+    {
+        foreach (var item in imported)
+        {
+            var key = keySelector(item);
+            var index = target.FindIndex(existing => string.Equals(keySelector(existing), key, StringComparison.OrdinalIgnoreCase));
+            if (index >= 0)
+                target[index] = item;
+            else
+                target.Add(item);
+        }
+    }
+
+    private static List<T> CloneForPreset<T>(IEnumerable<T> values)
+        => JsonSerializer.Deserialize<List<T>>(JsonSerializer.Serialize(values.ToList(), MapPresetJsonOptions), MapPresetJsonOptions) ?? [];
+
+    private static string MapBgPartRecordKey(SceneEditorLocalBgPartRecord record)
+        => !string.IsNullOrWhiteSpace(record.SourceBgPartStableKey)
+            ? $"{record.TerritoryId}:{record.SourceBgPartStableKey}"
+            : record.InstanceId;
 
     private void DrawRuntimeDebug()
     {
@@ -1619,6 +2125,140 @@ public sealed class MainWindow : Window
         rotationEuler = new Vector3(0f, DegreesToRadians(yawDegrees), 0f);
         scale = new Vector3(MathF.Max(0.01f, uniformScale));
         return true;
+    }
+
+    private static string FormatFullTransformClipboard(string header, Vector3 position, Vector3 rotationEuler, Vector3 scale)
+    {
+        var rotationDegrees = RadiansVectorToDegrees(rotationEuler);
+        return string.Join(
+            Environment.NewLine,
+            $"{header} v1",
+            FormattableString.Invariant($"x={position.X:0.######}"),
+            FormattableString.Invariant($"y={position.Y:0.######}"),
+            FormattableString.Invariant($"z={position.Z:0.######}"),
+            FormattableString.Invariant($"pitch={rotationDegrees.X:0.######}"),
+            FormattableString.Invariant($"yaw={rotationDegrees.Y:0.######}"),
+            FormattableString.Invariant($"roll={rotationDegrees.Z:0.######}"),
+            FormattableString.Invariant($"scaleX={scale.X:0.######}"),
+            FormattableString.Invariant($"scaleY={scale.Y:0.######}"),
+            FormattableString.Invariant($"scaleZ={scale.Z:0.######}"));
+    }
+
+    private static bool TryParseFullTransformClipboard(string? text, out Vector3 position, out Vector3 rotationEuler, out Vector3 scale)
+    {
+        position = Vector3.Zero;
+        rotationEuler = Vector3.Zero;
+        scale = Vector3.One;
+        var values = ParseClipboardValues(text);
+        if (!values.TryGetValue("x", out var x) ||
+            !values.TryGetValue("y", out var y) ||
+            !values.TryGetValue("z", out var z))
+        {
+            return false;
+        }
+
+        var pitch = values.GetValueOrDefault("pitch", 0f);
+        var yaw = values.GetValueOrDefault("yaw", 0f);
+        var roll = values.GetValueOrDefault("roll", 0f);
+        var uniformScale = values.GetValueOrDefault("scale", 1f);
+        var scaleX = values.GetValueOrDefault("scaleX", uniformScale);
+        var scaleY = values.GetValueOrDefault("scaleY", uniformScale);
+        var scaleZ = values.GetValueOrDefault("scaleZ", uniformScale);
+
+        position = ActorTransformUtil.SanitizePosition(new Vector3(x, y, z), Vector3.Zero);
+        rotationEuler = DegreesVectorToRadians(new Vector3(pitch, yaw, roll));
+        scale = Vector3.Max(new Vector3(scaleX, scaleY, scaleZ), new Vector3(0.01f));
+        return true;
+    }
+
+    private static string FormatLightParamsClipboard(LocalLightInstance light)
+        => string.Join(
+            Environment.NewLine,
+            "YourcraftLightParams v1",
+            $"kind={light.LightKind}",
+            $"falloffType={light.FalloffType}",
+            FormattableString.Invariant($"colorR={light.ColorRgb.X:0.######}"),
+            FormattableString.Invariant($"colorG={light.ColorRgb.Y:0.######}"),
+            FormattableString.Invariant($"colorB={light.ColorRgb.Z:0.######}"),
+            FormattableString.Invariant($"intensity={light.Intensity:0.######}"),
+            FormattableString.Invariant($"range={light.Range:0.######}"),
+            FormattableString.Invariant($"falloff={light.Falloff:0.######}"),
+            FormattableString.Invariant($"lightAngle={light.LightAngle:0.######}"),
+            FormattableString.Invariant($"falloffAngle={light.FalloffAngle:0.######}"),
+            FormattableString.Invariant($"areaX={light.AreaAngleX:0.######}"),
+            FormattableString.Invariant($"areaY={light.AreaAngleY:0.######}"),
+            $"specular={light.EnableSpecular}",
+            $"dynamicShadows={light.EnableDynamicShadows}");
+
+    private static bool TryApplyLightParamsClipboard(string? text, LocalLightInstance light)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        var raw = ParseClipboardRawValues(text);
+        var values = ParseClipboardValues(text);
+        if (!raw.ContainsKey("kind") && !values.ContainsKey("intensity") && !values.ContainsKey("range"))
+            return false;
+
+        if (raw.TryGetValue("kind", out var kindText) && Enum.TryParse<LocalLightKind>(kindText, true, out var kind))
+            light.LightKind = kind;
+        if (raw.TryGetValue("falloffType", out var falloffText) && Enum.TryParse<LocalLightFalloffType>(falloffText, true, out var falloffType))
+            light.FalloffType = falloffType;
+        if (values.TryGetValue("colorR", out var r) || values.TryGetValue("r", out r))
+            light.ColorRgb = new Vector3(Math.Clamp(r, 0f, 1f), light.ColorRgb.Y, light.ColorRgb.Z);
+        if (values.TryGetValue("colorG", out var g) || values.TryGetValue("g", out g))
+            light.ColorRgb = new Vector3(light.ColorRgb.X, Math.Clamp(g, 0f, 1f), light.ColorRgb.Z);
+        if (values.TryGetValue("colorB", out var b) || values.TryGetValue("b", out b))
+            light.ColorRgb = new Vector3(light.ColorRgb.X, light.ColorRgb.Y, Math.Clamp(b, 0f, 1f));
+        if (values.TryGetValue("intensity", out var intensity))
+            light.Intensity = MathF.Max(0f, intensity);
+        if (values.TryGetValue("range", out var range))
+            light.Range = MathF.Max(0f, range);
+        if (values.TryGetValue("falloff", out var falloff))
+            light.Falloff = MathF.Max(0f, falloff);
+        if (values.TryGetValue("lightAngle", out var lightAngle) || values.TryGetValue("spotAngle", out lightAngle))
+            light.LightAngle = Math.Clamp(lightAngle, 0f, 90f);
+        if (values.TryGetValue("falloffAngle", out var falloffAngle))
+            light.FalloffAngle = Math.Clamp(falloffAngle, 0f, 90f);
+        if (values.TryGetValue("areaX", out var areaX))
+            light.AreaAngleX = Math.Clamp(areaX, 0f, 90f);
+        if (values.TryGetValue("areaY", out var areaY))
+            light.AreaAngleY = Math.Clamp(areaY, 0f, 90f);
+        if (raw.TryGetValue("specular", out var specularText) && bool.TryParse(specularText, out var specular))
+            light.EnableSpecular = specular;
+        if (raw.TryGetValue("dynamicShadows", out var shadowsText) && bool.TryParse(shadowsText, out var shadows))
+            light.EnableDynamicShadows = shadows;
+        return true;
+    }
+
+    private static Dictionary<string, float> ParseClipboardValues(string? text)
+    {
+        var result = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, valueText) in ParseClipboardRawValues(text))
+        {
+            if (float.TryParse(valueText, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) && float.IsFinite(value))
+                result[key] = value;
+        }
+        return result;
+    }
+
+    private static Dictionary<string, string> ParseClipboardRawValues(string? text)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(text))
+            return result;
+
+        foreach (var rawToken in text.Split(['\r', '\n', ';', '|'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var separatorIndex = rawToken.IndexOf('=');
+            if (separatorIndex < 0)
+                separatorIndex = rawToken.IndexOf(':');
+            if (separatorIndex <= 0 || separatorIndex >= rawToken.Length - 1)
+                continue;
+
+            result[rawToken[..separatorIndex].Trim()] = rawToken[(separatorIndex + 1)..].Trim();
+        }
+        return result;
     }
 
 
@@ -3075,6 +3715,30 @@ public sealed class MainWindow : Window
         var disabled = this.localLayoutObjects.IsBusy || !this.realNpcSpawn.EnableUnsafeNativeWrites || selected.IsDuplicate || selected.IsRestored || selected.IsRenderInvalid || fullLayoutNeedsConfirmation;
 
         DrawYellowSectionLabel("选中实例", "Selected Instance");
+        ImGui.SameLine();
+        if (ImGui.SmallButton(T("复制", "Copy") + "##LocalLayoutTransformCopy"))
+        {
+            ImGui.SetClipboardText(FormatFullTransformClipboard("YourcraftLocalSceneTransform", selected.CurrentPosition, selected.CurrentRotationEuler, selected.CurrentScale));
+            this.mapPresetStatus = T("已复制场景物体 Transform。", "Local scene object transform copied.");
+        }
+        ImGui.SameLine();
+        ImGui.BeginDisabled(disabled);
+        if (ImGui.SmallButton(T("粘贴", "Paste") + "##LocalLayoutTransformPaste"))
+        {
+            if (TryParseFullTransformClipboard(ImGui.GetClipboardText(), out var pastedPosition, out var pastedRotation, out var pastedScale))
+            {
+                selected.CurrentPosition = pastedPosition;
+                selected.CurrentRotationEuler = pastedRotation;
+                selected.CurrentScale = pastedScale;
+                this.sceneEditor.ApplyWorldTransform(SceneEditableKind.LocalBgPart, selected.Id, WorldTransform.FromEuler(selected.CurrentPosition, selected.CurrentRotationEuler, selected.CurrentScale));
+                this.mapPresetStatus = T("已粘贴并应用场景物体 Transform。", "Local scene object transform pasted and applied.");
+            }
+            else
+            {
+                this.mapPresetStatus = T("剪贴板中没有可识别的 Transform。", "Clipboard does not contain a recognized transform.");
+            }
+        }
+        ImGui.EndDisabled();
         ImGui.TextWrapped(T($"当前模型：{selected.CurrentResourcePath}", $"Current Model: {selected.CurrentResourcePath}"));
         ImGui.TextWrapped(T($"原始模型：{selected.OriginalModelResourcePath}", $"Original Model: {selected.OriginalModelResourcePath}"));
         if (!string.IsNullOrWhiteSpace(selected.LastError))
@@ -3292,6 +3956,30 @@ public sealed class MainWindow : Window
 
             ImGui.Separator();
             ImGui.TextColored(new Vector4(0.95f, 0.78f, 0.28f, 1f), "Transform");
+            ImGui.SameLine();
+            if (ImGui.SmallButton(T("复制", "Copy") + "##LocalLightTransformCopy"))
+            {
+                ImGui.SetClipboardText(FormatFullTransformClipboard("YourcraftLightTransform", selectedLight.Position, selectedLight.Rotation, selectedLight.Scale));
+                this.mapPresetStatus = T("已复制灯光 Transform。", "Light transform copied.");
+            }
+            ImGui.SameLine();
+            ImGui.BeginDisabled(!unsafeEnabled);
+            if (ImGui.SmallButton(T("粘贴", "Paste") + "##LocalLightTransformPaste"))
+            {
+                if (TryParseFullTransformClipboard(ImGui.GetClipboardText(), out var pastedPosition, out var pastedRotation, out var pastedScale))
+                {
+                    selectedLight.Position = pastedPosition;
+                    selectedLight.Rotation = pastedRotation;
+                    selectedLight.Scale = pastedScale;
+                    this.localLights.RequestApply(selectedLight.Id);
+                    this.mapPresetStatus = T("已粘贴并应用灯光 Transform。", "Light transform pasted and applied.");
+                }
+                else
+                {
+                    this.mapPresetStatus = T("剪贴板中没有可识别的 Transform。", "Clipboard does not contain a recognized transform.");
+                }
+            }
+            ImGui.EndDisabled();
             var transformChanged = false;
             ImGui.BeginDisabled(!unsafeEnabled);
             var position = selectedLight.Position;
@@ -3324,6 +4012,27 @@ public sealed class MainWindow : Window
 
             ImGui.Separator();
             DrawYellowSectionLabel("灯光参数", "Light");
+            ImGui.SameLine();
+            if (ImGui.SmallButton(T("复制", "Copy") + "##LocalLightParamsCopy"))
+            {
+                ImGui.SetClipboardText(FormatLightParamsClipboard(selectedLight));
+                this.mapPresetStatus = T("已复制灯光参数。", "Light parameters copied.");
+            }
+            ImGui.SameLine();
+            ImGui.BeginDisabled(!unsafeEnabled);
+            if (ImGui.SmallButton(T("粘贴", "Paste") + "##LocalLightParamsPaste"))
+            {
+                if (TryApplyLightParamsClipboard(ImGui.GetClipboardText(), selectedLight))
+                {
+                    this.localLights.RequestApply(selectedLight.Id);
+                    this.mapPresetStatus = T("已粘贴并应用灯光参数。", "Light parameters pasted and applied.");
+                }
+                else
+                {
+                    this.mapPresetStatus = T("剪贴板中没有可识别的灯光参数。", "Clipboard does not contain recognized light parameters.");
+                }
+            }
+            ImGui.EndDisabled();
             var parameterChanged = false;
             var color = selectedLight.ColorRgb;
             if (ImGui.ColorEdit3(T("颜色 RGB", "Color RGB"), ref color))
@@ -4283,6 +4992,37 @@ public sealed class MainWindow : Window
 
     private static float DegreesToRadians(float degrees)
         => degrees * MathF.PI / 180f;
+
+    private sealed class MapModificationPreset
+    {
+        public int SchemaVersion { get; set; } = 1;
+
+        public uint TerritoryId { get; set; }
+
+        public DateTime ExportedAtUtc { get; set; } = DateTime.UtcNow;
+
+        public string PluginName { get; set; } = "Yourcraft";
+
+        public List<PersistentActorConfig> ActorConfigs { get; set; } = [];
+
+        public List<CustomNpc> Npcs { get; set; } = [];
+
+        public List<SceneEditorLocalBgPartRecord> LocalBgParts { get; set; } = [];
+
+        public List<SceneEditorLocalActorRecord> LocalActors { get; set; } = [];
+
+        public List<SceneEditorNativeModificationRecord> NativeModifications { get; set; } = [];
+
+        public List<LocalLightInstance> LocalLights { get; set; } = [];
+
+        public List<ProtectedBgPartSlot> ProtectedSlots { get; set; } = [];
+
+        public List<ProtectedBgPartResourcePath> ProtectedResourcePaths { get; set; } = [];
+
+        public List<PreferredModifyBgPartSlot> PreferredSlots { get; set; } = [];
+
+        public List<PreferredModifyBgPartResourcePath> PreferredResourcePaths { get; set; } = [];
+    }
 }
 
 

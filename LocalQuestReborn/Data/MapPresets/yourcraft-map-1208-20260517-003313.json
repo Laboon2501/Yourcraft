@@ -1,0 +1,267 @@
+{
+  "SchemaVersion": 1,
+  "TerritoryId": 1208,
+  "ExportedAtUtc": "2026-05-16T16:33:13.8310655Z",
+  "PluginName": "Yourcraft",
+  "ActorConfigs": [],
+  "Npcs": [],
+  "LocalBgParts": [
+    {
+      "InstanceId": "layout-object-1778946413602-89d4f6d913d6423e8",
+      "SortOrder": 0,
+      "TerritoryId": 1208,
+      "SourceMdlPath": "bg/ex5/01_xkt_x6/dun/x6d2/bgparts/x6d2_a3_obj35.mdl",
+      "CurrentMdlPath": "bg/ex5/01_xkt_x6/dun/x6d2/bgparts/x6d2_a3_obj35.mdl",
+      "CustomMdlPath": "bg/ex5/01_xkt_x6/dun/x6d2/bgparts/x6d2_a3_obj35.mdl",
+      "CollisionMode": "VisualOnly",
+      "SourceBgPartStableKey": "0x1FE1A1987A8",
+      "SourceKind": "LoadedLayout",
+      "SourceSharedGroupPath": "",
+      "SourceChildIndex": -1,
+      "Enabled": true,
+      "Hidden": false,
+      "RestoreStatus": "Restore deferred initial transform apply.",
+      "WorldPosition": {
+        "X": 90.00979,
+        "Y": 5.33,
+        "Z": 152.73456
+      },
+      "WorldRotationEuler": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "WorldScale": {
+        "X": 1.8,
+        "Y": 1.8,
+        "Z": 1.8
+      },
+      "LastSavedAt": "2026-05-16T15:48:17.3117473Z"
+    }
+  ],
+  "LocalActors": [
+    {
+      "RecordId": "d0fefeb6ad324bd9bf3fdd05269dfd25",
+      "RuntimeId": "c84d46252cb2422096e5340c44db5f93",
+      "NpcId": "",
+      "DisplayName": "——MOD测试——",
+      "TerritoryId": 1208,
+      "SortOrder": 3,
+      "Enabled": true,
+      "WorldPosition": {
+        "X": 88.35527,
+        "Y": 0,
+        "Z": 157.13461
+      },
+      "WorldRotationEuler": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "WorldScale": {
+        "X": 1,
+        "Y": 1,
+        "Z": 1
+      },
+      "LastSavedAt": "2026-05-16T15:42:57.1730697Z",
+      "RestoreStatus": "Failed: missing NPC config"
+    },
+    {
+      "RecordId": "a07f4949d52444e9a0ce8feb584addde",
+      "RuntimeId": "2aedadb02ea540e1ad33e07d72064de0",
+      "NpcId": "",
+      "DisplayName": "——MOD测试——",
+      "TerritoryId": 1208,
+      "SortOrder": 1,
+      "Enabled": true,
+      "WorldPosition": {
+        "X": 88.35527,
+        "Y": 0,
+        "Z": 157.13461
+      },
+      "WorldRotationEuler": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "WorldScale": {
+        "X": 1,
+        "Y": 1,
+        "Z": 1
+      },
+      "LastSavedAt": "2026-05-16T15:43:20.1504107Z",
+      "RestoreStatus": "Failed: missing NPC config"
+    },
+    {
+      "RecordId": "553da81174724baa9c7761b9c4246080",
+      "RuntimeId": "0c98f02d35eb4a519d6a3d1b17c94d19",
+      "NpcId": "",
+      "DisplayName": "——MOD测试——",
+      "TerritoryId": 1208,
+      "SortOrder": 2,
+      "Enabled": true,
+      "WorldPosition": {
+        "X": 88.35527,
+        "Y": 0,
+        "Z": 157.1346
+      },
+      "WorldRotationEuler": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "WorldScale": {
+        "X": 1,
+        "Y": 1,
+        "Z": 1
+      },
+      "LastSavedAt": "2026-05-16T15:44:01.2325281Z",
+      "RestoreStatus": "Failed: missing NPC config"
+    },
+    {
+      "RecordId": "5b3b78b530ff45349f5bd4a9d0970f50",
+      "RuntimeId": "a4a1f80634944003bc557f1480cd6f44",
+      "NpcId": "",
+      "DisplayName": "——MOD测试——",
+      "TerritoryId": 1208,
+      "SortOrder": 3,
+      "Enabled": true,
+      "WorldPosition": {
+        "X": 92.59795,
+        "Y": 0,
+        "Z": 157.22934
+      },
+      "WorldRotationEuler": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "WorldScale": {
+        "X": 1,
+        "Y": 1,
+        "Z": 1
+      },
+      "LastSavedAt": "2026-05-16T15:45:27.0476156Z",
+      "RestoreStatus": "Failed: missing NPC config"
+    },
+    {
+      "RecordId": "fbdd3ea7bcfe45c3bf0c134c8abcd5dd",
+      "RuntimeId": "54d1705f644643aea6f3a8955772c2d2",
+      "NpcId": "",
+      "DisplayName": "——MOD测试——",
+      "TerritoryId": 1208,
+      "SortOrder": 4,
+      "Enabled": true,
+      "WorldPosition": {
+        "X": 92.59795,
+        "Y": 0,
+        "Z": 157.22934
+      },
+      "WorldRotationEuler": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "WorldScale": {
+        "X": 1,
+        "Y": 1,
+        "Z": 1
+      },
+      "LastSavedAt": "2026-05-16T15:45:27.0476595Z",
+      "RestoreStatus": "Failed: missing NPC config"
+    }
+  ],
+  "NativeModifications": [],
+  "LocalLights": [
+    {
+      "Id": "local-light-1778946244043-20eaabf411e64e389e1",
+      "Name": "聚焦光1",
+      "Enabled": true,
+      "Hidden": false,
+      "TerritoryId": 1208,
+      "LightKind": "Spot",
+      "Position": {
+        "X": 88.407196,
+        "Y": 4.200001,
+        "Z": 156.68842
+      },
+      "Rotation": {
+        "X": 1.5707964,
+        "Y": 1.5707964,
+        "Z": 1.581268
+      },
+      "Scale": {
+        "X": 1,
+        "Y": 1,
+        "Z": 1
+      },
+      "ColorRgb": {
+        "X": 0.12741315,
+        "Y": 0.3632475,
+        "Z": 1
+      },
+      "Intensity": 10,
+      "Range": 10,
+      "FalloffType": "Quadratic",
+      "Falloff": 1,
+      "LightAngle": 35,
+      "FalloffAngle": 15,
+      "AreaAngleX": 35,
+      "AreaAngleY": 35,
+      "EnableSpecular": true,
+      "EnableDynamicShadows": false,
+      "LastOperation": "Skipped wrong territory: light=1208, current=177",
+      "LastError": "",
+      "LastReadback": "",
+      "ManuallyConfirmedVisible": false,
+      "ManuallyConfirmedNotVisible": false
+    },
+    {
+      "Id": "local-light-1778946345011-8bb0ef635ad246058d6",
+      "Name": "聚焦光2",
+      "Enabled": true,
+      "Hidden": false,
+      "TerritoryId": 1208,
+      "LightKind": "Spot",
+      "Position": {
+        "X": 92.80994,
+        "Y": 4.2,
+        "Z": 156.69
+      },
+      "Rotation": {
+        "X": 1.5707964,
+        "Y": 0,
+        "Z": 0
+      },
+      "Scale": {
+        "X": 1,
+        "Y": 1,
+        "Z": 1
+      },
+      "ColorRgb": {
+        "X": 0.1254902,
+        "Y": 0.3647059,
+        "Z": 1
+      },
+      "Intensity": 10,
+      "Range": 10,
+      "FalloffType": "Quadratic",
+      "Falloff": 1,
+      "LightAngle": 35,
+      "FalloffAngle": 15,
+      "AreaAngleX": 35,
+      "AreaAngleY": 35,
+      "EnableSpecular": true,
+      "EnableDynamicShadows": false,
+      "LastOperation": "Skipped wrong territory: light=1208, current=177",
+      "LastError": "",
+      "LastReadback": "",
+      "ManuallyConfirmedVisible": false,
+      "ManuallyConfirmedNotVisible": false
+    }
+  ],
+  "ProtectedSlots": [],
+  "ProtectedResourcePaths": [],
+  "PreferredSlots": [],
+  "PreferredResourcePaths": []
+}
