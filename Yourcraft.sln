@@ -1,0 +1,24 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Yourcraft", "Yourcraft\Yourcraft.csproj", "{A916B9FA-4F64-43F1-9F30-337A3FA7C00C}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A916B9FA-4F64-43F1-9F30-337A3FA7C00C}.Debug|x64.ActiveCfg = Debug|x64
+		{A916B9FA-4F64-43F1-9F30-337A3FA7C00C}.Debug|x64.Build.0 = Debug|x64
+		{A916B9FA-4F64-43F1-9F30-337A3FA7C00C}.Release|x64.ActiveCfg = Release|x64
+		{A916B9FA-4F64-43F1-9F30-337A3FA7C00C}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {319454AB-D535-497E-A5B3-B749B5BCE272}
+	EndGlobalSection
+EndGlobal

@@ -1,0 +1,258 @@
+﻿{
+  "Npcs": [
+    {
+      "Id": "local-npc-1778679862906",
+      "Name": "本地 NPC",
+      "NameTemplate": "{name}",
+      "TerritoryType": 1186,
+      "Position": {
+        "X": 354.69165,
+        "Y": 50.75,
+        "Z": 175.2336
+      },
+      "LegacyDefaultTerritoryType": 0,
+      "DefaultSpawnOffset": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "DefaultRotationEuler": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "DefaultScale": {
+        "X": 1,
+        "Y": 1,
+        "Z": 1
+      },
+      "InteractRadius": 6,
+      "DefaultAnimationId": 0,
+      "AutoPlayDefaultAnimation": false,
+      "LookAtPlayerEnabled": false,
+      "LookAtRadius": 8,
+      "LookAtMode": "NativeLookAt",
+      "RespawnAfterGpose": true,
+      "PenumbraMode": "DoNotTouch",
+      "PenumbraCollectionId": null,
+      "PenumbraCollectionNameCache": "",
+      "Notes": "",
+      "HostMode": "VirtualActor",
+      "NativeHostMode": "None",
+      "HostDataId": 0,
+      "HostObjectIndex": "",
+      "HostTerritoryType": 0,
+      "HostName": "",
+      "OverrideNativeName": false,
+      "InterceptNativeTalk": false,
+      "UseLocalDialogueOnInteract": false,
+      "InterceptMode": "ManualCommand",
+      "OverrideDialogueEnabled": true,
+      "appearance": {
+        "sourceType": "GlamourerDesign",
+        "displayName": "命令- 宇宙和音",
+        "glamourerDesignId": "4c8f0f9a-1040-4ba6-9135-a6ef10c76cbb",
+        "penumbraCollectionName": "",
+        "mcdfPath": "",
+        "gameNpcName": "",
+        "gameNpcKind": "Unknown",
+        "gameNpcBaseId": 0,
+        "gameNpcModelId": 0,
+        "gameNpcCustomizeId": 0,
+        "notes": "C:\\Users\\kiomo\\AppData\\Roaming\\XIVLauncherCN\\pluginConfigs\\Glamourer\\designs\\4c8f0f9a-1040-4ba6-9135-a6ef10c76cbb.json"
+      }
+    },
+    {
+      "Id": "local-npc-1778679863444",
+      "Name": "阿尔博特",
+      "NameTemplate": "{name}",
+      "TerritoryType": 1186,
+      "Position": {
+        "X": 354.69165,
+        "Y": 50.75,
+        "Z": 175.2336
+      },
+      "LegacyDefaultTerritoryType": 0,
+      "DefaultSpawnOffset": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "DefaultRotationEuler": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "DefaultScale": {
+        "X": 1,
+        "Y": 1,
+        "Z": 1
+      },
+      "InteractRadius": 6,
+      "DefaultAnimationId": 0,
+      "AutoPlayDefaultAnimation": false,
+      "LookAtPlayerEnabled": false,
+      "LookAtRadius": 8,
+      "LookAtMode": "NativeLookAt",
+      "RespawnAfterGpose": true,
+      "PenumbraMode": "DoNotTouch",
+      "PenumbraCollectionId": null,
+      "PenumbraCollectionNameCache": "",
+      "Notes": "",
+      "HostMode": "VirtualActor",
+      "NativeHostMode": "None",
+      "HostDataId": 0,
+      "HostObjectIndex": "",
+      "HostTerritoryType": 0,
+      "HostName": "",
+      "OverrideNativeName": false,
+      "InterceptNativeTalk": false,
+      "UseLocalDialogueOnInteract": false,
+      "InterceptMode": "ManualCommand",
+      "OverrideDialogueEnabled": true,
+      "appearance": {
+        "sourceType": "GameNpc",
+        "displayName": "阿尔博特",
+        "glamourerDesignId": "",
+        "penumbraCollectionName": "",
+        "mcdfPath": "",
+        "gameNpcName": "阿尔博特",
+        "gameNpcKind": "ENpc",
+        "gameNpcBaseId": 1028107,
+        "gameNpcModelId": 0,
+        "gameNpcCustomizeId": 0,
+        "notes": "ENpc ResidentRowId=1028107, BaseRowId=1028107, ModelCharaId=0, CustomizeId=无, Equipment=无, RowType=ENpcResident\nResident: ExcelPage=Lumina.Excel.ExcelPage; RowOffset=1693126; RowId=1028107; Singular=阿尔博特; Plural=; Title=; Adjective=0; PossessivePronoun=0; StartsWithVowel=0; Unknown0=1; Pronoun=0; Article=0; Map=4; Unknown1=False\nBase: ExcelPage=Lumina.Excel.ExcelPage; RowOffset=33142; RowId=1028107; ENpcData=Lumina.Excel.Collection`1[Lumina.Excel.RowRef]; ModelMainHand=17180328337; ModelOffHand=0; Scale=1; ModelHead=0; ModelBody=65573; ModelHands=65573; ModelLegs=65573; ModelFeet=65573; ModelEars=0; ModelNeck=0; ModelWrists=0; ModelLeftRing=0; ModelRightRing=0; EventHandler=783; ModelChara=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.ModelChara]; NpcEquip=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.NpcEquip]; Behavior=Lumina.Excel.SubrowRef`1[Lumina.Excel.Sheets.Behavior]; Unknown_70_1=0; Unknown_70_2=0; Balloon=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Balloon]; Race=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Race]; Gender=0; BodyType=1; Height=50; Tribe=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Tribe]; Face=5; HairStyle=1; HairHighlight=1; SkinColor=10; EyeHeterochromia=145; HairColor=70; HairHighlightColor=0; FacialFeature=1; FacialFeatureColor=1; Eyebrows=0; EyeColor=145; EyeShape=0; Nose=0; Jaw=0; Mouth=0; LipColor=0; BustOrTone1=50; ExtraFeature1=0; ExtraFeature2OrBust=50; FacePaint=0; FacePaintColor=1; Unknown0=0; DyeMainHand=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2MainHand=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeOffHand=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2OffHand=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeHead=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeBody=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeHands=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeLegs=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeFeet=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeEars=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeNeck=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeWrists=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeLeftRing=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeRightRing=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2Head=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2Body=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2Hands=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2Legs=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2Feet=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2Ears=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2Neck=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2Wrists=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2LeftRing=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2RightRing=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Invisibility=0; DefaultBalloon=0; Unknown1=0; Important=False; Visor=False"
+      }
+    },
+    {
+      "Id": "local-npc-1778772395518",
+      "Name": "本地 NPC",
+      "NameTemplate": "{name}",
+      "TerritoryType": 341,
+      "Position": {
+        "X": -655.6472,
+        "Y": 7.999999,
+        "Z": -790.0876
+      },
+      "LegacyDefaultTerritoryType": 341,
+      "DefaultSpawnOffset": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "DefaultRotationEuler": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "DefaultScale": {
+        "X": 1,
+        "Y": 1,
+        "Z": 1
+      },
+      "InteractRadius": 6,
+      "DefaultAnimationId": 0,
+      "AutoPlayDefaultAnimation": false,
+      "LookAtPlayerEnabled": false,
+      "LookAtRadius": 8,
+      "LookAtMode": "NativeLookAt",
+      "RespawnAfterGpose": true,
+      "PenumbraMode": "DoNotTouch",
+      "PenumbraCollectionId": null,
+      "PenumbraCollectionNameCache": "",
+      "Notes": "",
+      "HostMode": "VirtualActor",
+      "NativeHostMode": "None",
+      "HostDataId": 0,
+      "HostObjectIndex": "",
+      "HostTerritoryType": 0,
+      "HostName": "",
+      "OverrideNativeName": false,
+      "InterceptNativeTalk": false,
+      "UseLocalDialogueOnInteract": false,
+      "InterceptMode": "ManualCommand",
+      "OverrideDialogueEnabled": true,
+      "appearance": {
+        "sourceType": "GameNpc",
+        "displayName": "纳扎·阿·嘉布",
+        "glamourerDesignId": "",
+        "penumbraCollectionName": "",
+        "mcdfPath": "",
+        "gameNpcName": "纳扎·阿·嘉布",
+        "gameNpcKind": "ENpc",
+        "gameNpcBaseId": 1026392,
+        "gameNpcModelId": 0,
+        "gameNpcCustomizeId": 0,
+        "notes": "ENpc ResidentRowId=1026392, BaseRowId=1026392, ModelCharaId=0, CustomizeId=无, Equipment=无, RowType=ENpcResident\nResident: ExcelPage=Lumina.Excel.ExcelPage; RowOffset=1618346; RowId=1026392; Singular=纳扎·阿·嘉布; Plural=; Title=; Adjective=0; PossessivePronoun=0; StartsWithVowel=0; Unknown0=1; Pronoun=0; Article=0; Map=4; Unknown1=False\nBase: ExcelPage=Lumina.Excel.ExcelPage; RowOffset=110662; RowId=1026392; ENpcData=Lumina.Excel.Collection`1[Lumina.Excel.RowRef]; ModelMainHand=4296476825; ModelOffHand=4297132235; Scale=1; ModelHead=70540; ModelBody=75439; ModelHands=75439; ModelLegs=524771; ModelFeet=71579; ModelEars=0; ModelNeck=0; ModelWrists=65636; ModelLeftRing=65636; ModelRightRing=131132; EventHandler=783; ModelChara=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.ModelChara]; NpcEquip=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.NpcEquip]; Behavior=Lumina.Excel.SubrowRef`1[Lumina.Excel.Sheets.Behavior]; Unknown_70_1=0; Unknown_70_2=0; Balloon=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Balloon]; Race=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Race]; Gender=0; BodyType=1; Height=50; Tribe=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Tribe]; Face=1; HairStyle=11; HairHighlight=1; SkinColor=139; EyeHeterochromia=161; HairColor=42; HairHighlightColor=0; FacialFeature=2; FacialFeatureColor=1; Eyebrows=4; EyeColor=161; EyeShape=2; Nose=2; Jaw=1; Mouth=0; LipColor=172; BustOrTone1=100; ExtraFeature1=3; ExtraFeature2OrBust=50; FacePaint=4; FacePaintColor=7; Unknown0=0; DyeMainHand=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2MainHand=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeOffHand=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2OffHand=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeHead=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeBody=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeHands=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeLegs=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeFeet=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeEars=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeNeck=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeWrists=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeLeftRing=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; DyeRightRing=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2Head=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2Body=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2Hands=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2Legs=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2Feet=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2Ears=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2Neck=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2Wrists=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2LeftRing=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Dye2RightRing=Lumina.Excel.RowRef`1[Lumina.Excel.Sheets.Stain]; Invisibility=0; DefaultBalloon=0; Unknown1=0; Important=False; Visor=False"
+      }
+    }
+  ],
+  "ActorConfigs": [],
+  "Quests": [
+    {
+      "Id": "local-quest-1778431124",
+      "Title": "本地测试任务",
+      "GiverNpcId": "local-npc-1778403064420",
+      "Summary": "用于测试 Yourcraft 的本地任务。",
+      "StartDialogue": [
+        "你能看见我吗？",
+        "如果能，那说明本地 NPC 系统已经工作了。"
+      ],
+      "AcceptText": "接受任务",
+      "Objectives": [
+        {
+          "Id": "manual-1",
+          "Type": "Manual",
+          "Description": "在任务编辑器里手动完成目标。",
+          "TargetNpcId": null,
+          "TerritoryType": 0,
+          "Position": {
+            "X": 0,
+            "Y": 0,
+            "Z": 0
+          },
+          "Radius": 3
+        }
+      ],
+      "ProgressDialogue": [
+        "任务还在进行中。"
+      ],
+      "CompleteDialogue": [
+        "做得好。"
+      ],
+      "RewardsText": ""
+    }
+  ],
+  "Props": [
+    {
+      "Id": "local-prop-1778555398213",
+      "Name": "本地场景物体",
+      "TerritoryType": 134,
+      "Position": {
+        "X": 237.52287,
+        "Y": 113.064804,
+        "Z": -247.00087
+      },
+      "Rotation": 0,
+      "Scale": 1,
+      "ModelPath": "bg/ffxiv/sea_s1/fld/common/bgparts/s1f0_a0_oba03.mdl",
+      "Visible": true,
+      "Notes": ""
+    },
+    {
+      "Id": "local-prop-1778555430707",
+      "Name": "本地场景物体",
+      "TerritoryType": 134,
+      "Position": {
+        "X": 239.31645,
+        "Y": 113.01689,
+        "Z": -249.49796
+      },
+      "Rotation": 0,
+      "Scale": 1,
+      "ModelPath": "bg/ffxiv/sea_s1/fld/common/bgparts/s1f0_a0_oba03.mdl",
+      "Visible": true,
+      "Notes": ""
+    }
+  ]
+}
