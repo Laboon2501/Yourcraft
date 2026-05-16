@@ -157,9 +157,13 @@ public sealed class AppearanceApplyService
             actor.GlamourerDesignName = appearance.SourceName;
             actor.GlamourerDesignPath = appearance.SourcePath;
             actor.GlamourerIpcAvailable = false;
+            var effectiveModelCharaId = EffectiveModelCharaId(appearance);
+            actor.SourceModelCharaId = appearance.ModelCharaId;
+            actor.ModelCharaOverrideId = appearance.ModelCharaOverrideId;
+            actor.EditingModelCharaId = effectiveModelCharaId;
             actor.SpawnKind = appearance.SpawnKind == ActorSpawnKind.Unknown ? (appearance.IsHumanoid ? ActorSpawnKind.Character : ActorSpawnKind.Demihuman) : appearance.SpawnKind;
             actor.SourceActorKind = appearance.SourceActorKind;
-            actor.SpawnKindStatus = $"appearance spawnKind={actor.SpawnKind}, objectKind={appearance.ObjectKind}, sourceActorKind={appearance.SourceActorKind}";
+            actor.SpawnKindStatus = $"appearance spawnKind={actor.SpawnKind}, objectKind={appearance.ObjectKind}, sourceActorKind={appearance.SourceActorKind}, sourceModelChara={appearance.ModelCharaId}, overrideModelChara={appearance.ModelCharaOverrideId}";
             actor.LastAppearancePresetSummary = appearance.Summary;
             actor.LastAppearanceVerificationState = "PendingAppearance";
             actor.LastAppearanceValidationResult = string.Empty;
@@ -189,7 +193,7 @@ public sealed class AppearanceApplyService
             var isCharacter = spawnKind == ActorSpawnKind.Character;
             appearance.SpawnKind = spawnKind;
             appearance.IsHumanoid = isCharacter;
-            if (!isCharacter && appearance.ModelCharaId == 0)
+            if (!isCharacter && effectiveModelCharaId == 0)
                 return this.FailActorAppearance(actor, "MissingModelData", $"AppearanceFailed: {spawnKind} requires modelCharaId. source={appearance.SourceKind}, summary={appearance.Summary}");
 
             if (actor.CharacterObject == null || actor.IsStale)
@@ -208,8 +212,8 @@ public sealed class AppearanceApplyService
                 beforeSummary = BuildNativeAppearanceSummary(character);
                 character->GameObject.DisableDraw();
                 character->Scale = 1f;
-                if (appearance.ModelCharaId != 0 || !isCharacter)
-                    character->ModelContainer.ModelCharaId = (int)appearance.ModelCharaId;
+                if (effectiveModelCharaId != 0 || !isCharacter)
+                    character->ModelContainer.ModelCharaId = (int)effectiveModelCharaId;
                 if (appearance.ModelSkeletonId != 0)
                     character->ModelContainer.ModelSkeletonId = (int)appearance.ModelSkeletonId;
 
@@ -227,6 +231,7 @@ public sealed class AppearanceApplyService
                 afterSummary = BuildNativeAppearanceSummary(character);
                 if (!VerifyApplied(character, appearance, out verification))
                     return this.FailActorAppearance(actor, "LocalActorAppearanceFailed", $"AppearanceFailed: {verification}. before={beforeSummary}; after={afterSummary}; sourceSummary={appearance.Summary}");
+                actor.LastAppliedModelCharaId = (uint)Math.Max(0, character->ModelContainer.ModelCharaId);
             }
 
             actor.LastAppearanceMethod = $"LocalActorAppearance:{appearance.SourceKind}:{spawnKind}";
@@ -240,7 +245,7 @@ public sealed class AppearanceApplyService
             actor.LastAppearanceValidationResult = verification;
             actor.LastAppearanceVerificationState = "AppearanceApplied";
             actor.LastAppearanceRedrawFallbackCount = 1;
-            actor.LastAppearanceApplyResult = $"AppearanceApplied: source={appearance.SourceKind}, spawnKind={spawnKind}, name={appearance.SourceName}, modelChara={appearance.ModelCharaId}, fields={BuildAppearanceFieldSummary(appearance)}, customizeWrite={customizeWriteMode}, verification={verification}, summary={appearance.Summary}";
+            actor.LastAppearanceApplyResult = $"AppearanceApplied: source={appearance.SourceKind}, spawnKind={spawnKind}, name={appearance.SourceName}, sourceModelChara={appearance.ModelCharaId}, overrideModelChara={appearance.ModelCharaOverrideId}, effectiveModelChara={effectiveModelCharaId}, actualAppliedModelChara={actor.LastAppliedModelCharaId}, fields={BuildAppearanceFieldSummary(appearance)}, customizeWrite={customizeWriteMode}, verification={verification}, summary={appearance.Summary}";
             actor.LastAppearanceAppliedAt = DateTime.Now;
             return true;
         }
@@ -347,10 +352,13 @@ public sealed class AppearanceApplyService
     }
 
     private static bool HasLocalAppearanceSignal(ActorAppearanceData appearance)
-        => appearance.ModelCharaId != 0 ||
+        => EffectiveModelCharaId(appearance) != 0 ||
            appearance.ModelSkeletonId != 0 ||
            HasCustomizeSignal(appearance.Customize) ||
            CountEquipment(appearance.Equipment) > 0;
+
+    private static uint EffectiveModelCharaId(ActorAppearanceData appearance)
+        => appearance.ModelCharaOverrideId != 0 ? appearance.ModelCharaOverrideId : appearance.ModelCharaId;
 
     private static bool HasCustomizeSignal(ActorCustomizeData data)
         => !string.IsNullOrWhiteSpace(data.RawCustomizeBase64) ||
@@ -374,7 +382,7 @@ public sealed class AppearanceApplyService
            data.FacePaint != 0;
 
     private static string BuildAppearanceFieldSummary(ActorAppearanceData appearance)
-        => $"spawnKind={appearance.SpawnKind},customizeFields={CountCustomizeFields(appearance.Customize)}/26,equipmentSlots={CountEquipment(appearance.Equipment)}/12,hideWeapons={appearance.Equipment.HideWeapons},hideHeadgear={appearance.Equipment.HideHeadgear}";
+        => $"spawnKind={appearance.SpawnKind},sourceModelChara={appearance.ModelCharaId},overrideModelChara={appearance.ModelCharaOverrideId},effectiveModelChara={EffectiveModelCharaId(appearance)},customizeFields={CountCustomizeFields(appearance.Customize)}/26,equipmentSlots={CountEquipment(appearance.Equipment)}/12,hideWeapons={appearance.Equipment.HideWeapons},hideHeadgear={appearance.Equipment.HideHeadgear}";
 
     private static int CountCustomizeFields(ActorCustomizeData data)
     {
@@ -492,10 +500,11 @@ public sealed class AppearanceApplyService
     {
         var mismatches = new List<string>();
         var isCharacter = appearance.SpawnKind == ActorSpawnKind.Character;
-        if ((appearance.ModelCharaId != 0 || !isCharacter) &&
-            character->ModelContainer.ModelCharaId != (int)appearance.ModelCharaId)
+        var effectiveModelCharaId = EffectiveModelCharaId(appearance);
+        if ((effectiveModelCharaId != 0 || !isCharacter) &&
+            character->ModelContainer.ModelCharaId != (int)effectiveModelCharaId)
         {
-            mismatches.Add($"ModelChara expected={appearance.ModelCharaId} actual={character->ModelContainer.ModelCharaId}");
+            mismatches.Add($"ModelChara expected={effectiveModelCharaId} actual={character->ModelContainer.ModelCharaId}");
         }
 
         if (appearance.ModelSkeletonId != 0 &&

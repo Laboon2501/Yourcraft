@@ -1175,14 +1175,19 @@ public sealed class BrioAssemblyBridgeService
         instance.LastKnownObjectIndex = (int)objectIndex;
         instance.SpawnKind = spawnKind;
         instance.SourceActorKind = appearance.SourceActorKind;
-        instance.SpawnKindStatus = $"native spawnKind={spawnKind}, objectKind={battleCharacter->ObjectKind}, modelChara={appearance.ModelCharaId}; {gposeReason}";
+        var effectiveModelCharaId = EffectiveModelCharaId(appearance);
+        instance.SourceModelCharaId = appearance.ModelCharaId;
+        instance.ModelCharaOverrideId = appearance.ModelCharaOverrideId;
+        instance.EditingModelCharaId = effectiveModelCharaId;
+        instance.LastAppliedModelCharaId = (uint)Math.Max(0, character->ModelContainer.ModelCharaId);
+        instance.SpawnKindStatus = $"native spawnKind={spawnKind}, objectKind={battleCharacter->ObjectKind}, sourceModelChara={appearance.ModelCharaId}, overrideModelChara={appearance.ModelCharaOverrideId}, effectiveModelChara={effectiveModelCharaId}; {gposeReason}";
         instance.IsValid = true;
         instance.IsStale = false;
         instance.LastKnownPosition = position;
         instance.NativeNameSet = true;
         instance.CurrentNativeName = displayName;
         instance.NativeNameReadback = displayName;
-        reason = $"Native actor spawned. runtime={instance.RuntimeId[..Math.Min(8, instance.RuntimeId.Length)]}, spawnKind={spawnKind}, objectKind={battleCharacter->ObjectKind}, objectIndex={objectIndex}, address={instance.Address}, name={displayName}. {gposeReason}";
+        reason = $"Native actor spawned. runtime={instance.RuntimeId[..Math.Min(8, instance.RuntimeId.Length)]}, spawnKind={spawnKind}, objectKind={battleCharacter->ObjectKind}, effectiveModelChara={effectiveModelCharaId}, objectIndex={objectIndex}, address={instance.Address}, name={displayName}. {gposeReason}";
         return true;
     }
 
@@ -1195,11 +1200,15 @@ public sealed class BrioAssemblyBridgeService
             _ => ObjectKind.BattleNpc,
         };
         battleCharacter->BattleNpcSubKind = (BattleNpcSubKind)4;
-        if (appearance.ModelCharaId != 0)
-            character->ModelContainer.ModelCharaId = (int)appearance.ModelCharaId;
+        var effectiveModelCharaId = EffectiveModelCharaId(appearance);
+        if (effectiveModelCharaId != 0)
+            character->ModelContainer.ModelCharaId = (int)effectiveModelCharaId;
         if (appearance.ModelSkeletonId != 0)
             character->ModelContainer.ModelSkeletonId = (int)appearance.ModelSkeletonId;
     }
+
+    private static uint EffectiveModelCharaId(ActorAppearanceData appearance)
+        => appearance.ModelCharaOverrideId != 0 ? appearance.ModelCharaOverrideId : appearance.ModelCharaId;
 
     private bool TryAddActorToBrioGpose(object characterReference, out string reason)
     {

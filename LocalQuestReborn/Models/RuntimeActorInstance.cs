@@ -140,6 +140,18 @@ public sealed class RuntimeActorInstance
 
     public string SpawnKindStatus { get; set; } = string.Empty;
 
+    public uint SourceModelCharaId { get; set; }
+
+    public uint ModelCharaOverrideId { get; set; }
+
+    public uint EditingModelCharaId { get; set; }
+
+    public uint LastAppliedModelCharaId { get; set; }
+
+    public string LastModelCharaApplyResult { get; set; } = string.Empty;
+
+    public string LastModelCharaApplyError { get; set; } = string.Empty;
+
     public string AppearanceSourceType { get; set; } = string.Empty;
 
     public string GlamourerDesignId { get; set; } = string.Empty;

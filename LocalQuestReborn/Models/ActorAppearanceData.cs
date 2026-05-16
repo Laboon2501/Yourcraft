@@ -31,6 +31,9 @@ public sealed class ActorAppearanceData
     [JsonPropertyName("modelCharaId")]
     public uint ModelCharaId { get; set; }
 
+    [JsonPropertyName("modelCharaOverrideId")]
+    public uint ModelCharaOverrideId { get; set; }
+
     [JsonPropertyName("modelSkeletonId")]
     public uint ModelSkeletonId { get; set; }
 

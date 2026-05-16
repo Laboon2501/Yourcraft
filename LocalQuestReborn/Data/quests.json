@@ -187,7 +187,148 @@
       }
     }
   ],
-  "ActorConfigs": [],
+  "ActorConfigs": [
+    {
+      "SchemaVersion": 2,
+      "ConfigId": "ba653b90c9b04988a2f85ae4700672e1",
+      "RuntimeId": "55704a21661c48539c4ef334e7e035d0",
+      "SourceNpcPresetId": "",
+      "NpcNameSnapshot": "2B",
+      "DisplayName": "2B",
+      "Appearance": {
+        "sourceKind": "GlamourerNpc",
+        "sourceId": "1034045",
+        "sourceName": "2B",
+        "sourcePath": "",
+        "isHumanoid": true,
+        "spawnKind": "Character",
+        "sourceActorKind": "ENpc",
+        "objectKind": "BattleNpc",
+        "modelCharaId": 0,
+        "modelCharaOverrideId": 0,
+        "modelSkeletonId": 0,
+        "customize": {
+          "Race": 1,
+          "Sex": 1,
+          "BodyType": 1,
+          "Height": 255,
+          "Tribe": 1,
+          "Face": 218,
+          "HairStyle": 216,
+          "Highlights": 1,
+          "SkinColor": 2,
+          "EyeColorRight": 2,
+          "HairColor": 20,
+          "HighlightsColor": 0,
+          "FacialFeatures": 0,
+          "FacialFeaturesColor": 0,
+          "Eyebrows": 0,
+          "EyeColorLeft": 2,
+          "EyeShape": 0,
+          "Nose": 0,
+          "Jaw": 0,
+          "Lipstick": 128,
+          "LipColorFurPattern": 42,
+          "MuscleMass": 50,
+          "TailShape": 0,
+          "BustSize": 50,
+          "FacePaint": 0,
+          "FacePaintColor": 0,
+          "RawCustomizeBase64": ""
+        },
+        "equipment": {
+          "MainHand": {
+            "ModelSetId": 1849,
+            "Base": 1,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "OffHand": {
+            "ModelSetId": 1899,
+            "Base": 1,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Head": {
+            "ModelId": 9179,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Body": {
+            "ModelId": 9179,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Hands": {
+            "ModelId": 9179,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Legs": {
+            "ModelId": 9179,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Feet": {
+            "ModelId": 9179,
+            "Variant": 1,
+            "Stain0": 0,
+            "Stain1": 0
+          },
+          "Ears": null,
+          "Neck": null,
+          "Wrists": null,
+          "LeftRing": null,
+          "RightRing": null,
+          "HideWeapons": false,
+          "HideHeadgear": false
+        },
+        "summary": "Localized GlamourerNpc. spawnKind=Character, sourceActorKind=ENpc, objectKind=BattleNpc, humanoid=True, modelChara=0, modelSkeleton=0, customizeFields=15/26, equipmentSlots=7/12, missing=none, kind=Humanoid, sourceActorKind=ENpc"
+      },
+      "SpawnKind": "Character",
+      "SourceActorKind": "ENpc",
+      "TerritoryType": 128,
+      "TerritoryName": "Territory 128",
+      "WorldPosition": {
+        "X": 13.6847725,
+        "Y": 40.00016,
+        "Z": 9.080608
+      },
+      "WorldRotationEuler": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "WorldScale": {
+        "X": 1,
+        "Y": 1,
+        "Z": 1
+      },
+      "DefaultAnimationId": 0,
+      "CurrentAnimationId": 0,
+      "AnimationEnabled": false,
+      "AutoPlayDefaultAnimation": false,
+      "LookAtPlayerEnabled": false,
+      "LookAtRadius": 8,
+      "EnableActionSequence": false,
+      "ActionSequenceLoop": false,
+      "ActionSequenceLoopDelay": 0,
+      "ActionSequence": [],
+      "PenumbraMode": "DoNotTouch",
+      "PenumbraCollectionId": null,
+      "PenumbraCollectionNameCache": "",
+      "AutoSpawn": true,
+      "SortOrder": 1,
+      "SpawnSequence": 5,
+      "Notes": ""
+    }
+  ],
   "Quests": [
     {
       "Id": "local-quest-1778431124",

@@ -1384,7 +1384,7 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"Last transform apply: {(actor.LastSuccessfulTransformApplyAt?.ToLocalTime().ToString("HH:mm:ss") ?? "never")}; appearance: {(actor.LastSuccessfulAppearanceApplyAt?.ToLocalTime().ToString("HH:mm:ss") ?? "never")}");
 
         if (actor.TransformEditScale == Vector3.Zero)
-            actor.TransformEditScale = actor.LastKnownScale == Vector3.Zero ? Vector3.One : actor.LastKnownScale;
+            actor.TransformEditScale = Vector3.One;
 
         var transformChanged = false;
         var editPosition = actor.TransformEditPosition;
@@ -1405,11 +1405,10 @@ public sealed class MainWindow : Window
         if (ImGui.InputFloat("Scale Y", ref editScale.Y)) { actor.TransformEditScale = Vector3.Max(editScale, new Vector3(0.01f)); transformChanged = true; }
         if (ImGui.InputFloat("Scale Z", ref editScale.Z)) { actor.TransformEditScale = Vector3.Max(editScale, new Vector3(0.01f)); transformChanged = true; }
 
-        if (transformChanged)
-            this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
-
         if (!runtimeReady)
-            ImGui.TextWrapped("Runtime is not Ready. Edits are saved to PersistentActorConfig and will apply automatically after spawn/bind.");
+            ImGui.TextWrapped("Runtime is not Ready. Edits remain in the UI until Apply/Save; saved transform will apply automatically after spawn/bind.");
+        if (transformChanged)
+            ImGui.TextDisabled("EditingTransform changed. Use Apply to write native, Save to persist, or Read to copy native readback into the editor.");
 
         ImGui.TextWrapped($"runtime readback position: {FormatVector(actor.LastKnownPosition)}");
         ImGui.TextWrapped($"runtime readback rotation: pitch {RadiansToDegrees(actor.LastKnownRotationEuler.X):F1}, yaw {RadiansToDegrees(actor.LastKnownRotationEuler.Y):F1}, roll {RadiansToDegrees(actor.LastKnownRotationEuler.Z):F1}");
@@ -1444,7 +1443,7 @@ public sealed class MainWindow : Window
 
         if (ImGui.Button("Reset position"))
         {
-            actor.TransformEditPosition = actor.SpawnPosition == Vector3.Zero ? actor.LastKnownPosition : actor.SpawnPosition;
+            actor.TransformEditPosition = actor.SpawnPosition;
             this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
         }
         ImGui.SameLine();
@@ -1482,9 +1481,7 @@ public sealed class MainWindow : Window
         }
 
         if (actor.TransformEditScale == Vector3.Zero)
-            actor.TransformEditScale = actor.LastKnownScale == Vector3.Zero ? Vector3.One : actor.LastKnownScale;
-        if (actor.TransformEditPosition == Vector3.Zero && actor.LastKnownPosition != Vector3.Zero)
-            actor.TransformEditPosition = actor.LastKnownPosition;
+            actor.TransformEditScale = Vector3.One;
 
         var transformChanged = false;
         var editPosition = actor.TransformEditPosition;
@@ -1520,7 +1517,7 @@ public sealed class MainWindow : Window
         if (ImGui.InputFloat("World Scale Z", ref editScale.Z)) { actor.TransformEditScale = Vector3.Max(editScale, new Vector3(0.01f)); transformChanged = true; }
 
         if (transformChanged)
-            this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
+            ImGui.TextDisabled("EditingTransform changed. Use Apply to write native, Save to persist, or Read to copy native readback into the editor.");
 
         ImGui.TextWrapped($"world readback position: {FormatVector(actor.LastKnownPosition)}");
         ImGui.TextWrapped($"world readback rotation: pitch {RadiansToDegrees(actor.LastKnownRotationEuler.X):F1}, yaw {RadiansToDegrees(actor.LastKnownRotationEuler.Y):F1}, roll {RadiansToDegrees(actor.LastKnownRotationEuler.Z):F1}");
@@ -1539,7 +1536,7 @@ public sealed class MainWindow : Window
         ImGui.SameLine();
         if (ImGui.Button("Reset position"))
         {
-            actor.TransformEditPosition = actor.SpawnPosition == Vector3.Zero ? actor.LastKnownPosition : actor.SpawnPosition;
+            actor.TransformEditPosition = actor.SpawnPosition;
             this.realNpcSpawn.ApplyActorTransform(actor.RuntimeId, actor.TransformEditPosition, actor.TransformEditRotationEuler, actor.TransformEditScale);
         }
 
@@ -1792,6 +1789,17 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"外观名称：{actor.GlamourerDesignName}");
         ImGui.TextWrapped($"外观 ID：{actor.GlamourerDesignId}");
         ImGui.TextWrapped($"外观文件：{actor.GlamourerDesignPath}");
+        ImGui.TextWrapped($"ModelChara：source={actor.SourceModelCharaId}, override={actor.ModelCharaOverrideId}, editing={actor.EditingModelCharaId}, actual={actor.LastAppliedModelCharaId}");
+        var modelCharaId = (int)Math.Min(actor.EditingModelCharaId, int.MaxValue);
+        if (ImGui.InputInt("ModelChara ID / Model ID", ref modelCharaId))
+            actor.EditingModelCharaId = (uint)Math.Max(0, modelCharaId);
+        ImGui.SameLine();
+        if (ImGui.Button("Apply Model ID"))
+            this.realNpcSpawn.ApplyActorModelCharaOverride(actor.RuntimeId, actor.EditingModelCharaId);
+        if (!string.IsNullOrWhiteSpace(actor.LastModelCharaApplyResult))
+            ImGui.TextWrapped($"Model ID result：{actor.LastModelCharaApplyResult}");
+        if (!string.IsNullOrWhiteSpace(actor.LastModelCharaApplyError))
+            ImGui.TextWrapped($"Model ID error：{actor.LastModelCharaApplyError}");
         ImGui.TextWrapped($"Penumbra：mode={actor.PenumbraMode}, collection={this.GetCollectionDisplayName(actor.PenumbraCollectionId, actor.PenumbraCollectionNameCache)}");
         ImGui.TextWrapped($"Penumbra result：{(string.IsNullOrWhiteSpace(actor.LastPenumbraCollectionResult) ? "未应用" : actor.LastPenumbraCollectionResult)}");
         if (!string.IsNullOrWhiteSpace(actor.LastPenumbraCollectionError))

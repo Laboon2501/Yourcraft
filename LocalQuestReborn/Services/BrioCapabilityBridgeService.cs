@@ -98,6 +98,9 @@ public sealed class BrioCapabilityBridgeService
     }
 
     public bool TryReadModelTransform(RuntimeActorInstance actor, out string reason)
+        => this.TryReadModelTransform(actor, updateEditingTransform: true, out reason);
+
+    public bool TryReadModelTransform(RuntimeActorInstance actor, bool updateEditingTransform, out string reason)
     {
         try
         {
@@ -122,9 +125,12 @@ public sealed class BrioCapabilityBridgeService
             if (TryGetTransformFieldOrProperty(transform, "Scale", out Vector3 scale))
                 actor.LastKnownScale = NormalizeScale(scale);
 
-            actor.TransformEditPosition = actor.LastKnownPosition;
-            actor.TransformEditRotationEuler = actor.LastKnownRotationEuler;
-            actor.TransformEditScale = actor.LastKnownScale == Vector3.Zero ? Vector3.One : actor.LastKnownScale;
+            if (updateEditingTransform)
+            {
+                actor.TransformEditPosition = actor.LastKnownPosition;
+                actor.TransformEditRotationEuler = actor.LastKnownRotationEuler;
+                actor.TransformEditScale = actor.LastKnownScale == Vector3.Zero ? Vector3.One : actor.LastKnownScale;
+            }
             actor.LastTransformReadback = $"position={actor.LastKnownPosition}; rotationEuler={actor.LastKnownRotationEuler}; scale={actor.LastKnownScale}";
             actor.LastTransformError = string.Empty;
             reason = $"Read Brio ModelPosing.Transform: {actor.LastTransformReadback}";

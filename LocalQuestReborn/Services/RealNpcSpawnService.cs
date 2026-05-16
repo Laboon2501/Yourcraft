@@ -402,7 +402,7 @@ public sealed class RealNpcSpawnService
             return false;
         }
 
-        var success = this.TryRefreshActualActorTransform(actor, out var reason);
+        var success = this.TryRefreshActualActorTransform(actor, updateEditingTransform: true, out var reason);
         this.LastMessage = reason;
         return success;
     }
@@ -424,15 +424,10 @@ public sealed class RealNpcSpawnService
         }
 
         var normalizedScale = NormalizeScale(scale);
-        actor.TransformEditPosition = position;
-        actor.TransformEditRotationEuler = rotationEuler;
-        actor.TransformEditScale = normalizedScale;
         actor.SpawnPosition = position;
         actor.SpawnRotationEuler = rotationEuler;
         actor.SpawnScale = normalizedScale;
         actor.HasSavedTransform = true;
-        if (!fromPendingFlush)
-            this.SaveConfigTransform(config, position, rotationEuler, normalizedScale);
 
         if (!this.IsRuntimeReady(actor))
         {
@@ -453,11 +448,11 @@ public sealed class RealNpcSpawnService
             return false;
         }
 
-        this.TryRefreshActualActorTransform(actor, out _);
+        this.TryRefreshActualActorTransform(actor, updateEditingTransform: false, out _);
         actor.LastMoveBeforePosition = actor.LastKnownPosition;
         var brioSuccess = this.brioCapabilityBridge.TryApplyModelTransform(actor, position, rotationEuler, normalizedScale, out var brioReason);
         var nativeSuccess = this.brioAssemblyBridge.TryApplyActorNativeRootTransform(actor, position, rotationEuler.Y, normalizedScale, out var nativeReason);
-        var readbackSuccess = this.TryRefreshActualActorTransform(actor, out var readbackReason);
+        var readbackSuccess = this.TryRefreshActualActorTransform(actor, updateEditingTransform: false, out var readbackReason);
         var mismatchReason = string.Empty;
         var success = (brioSuccess || nativeSuccess) &&
             readbackSuccess &&
@@ -466,13 +461,21 @@ public sealed class RealNpcSpawnService
         if (!success && !string.IsNullOrWhiteSpace(mismatchReason))
             reason = $"{reason}; mismatch={mismatchReason}";
 
-        if (fromPendingFlush)
+        if (success)
+        {
+            actor.HasPendingTransformApply = false;
+            actor.PendingTransformRetryTicksRemaining = 0;
+        }
+        else if (fromPendingFlush)
         {
             actor.PendingTransformRetryTicksRemaining = Math.Max(0, actor.PendingTransformRetryTicksRemaining - 1);
             actor.HasPendingTransformApply = actor.PendingTransformRetryTicksRemaining > 0;
         }
         else
         {
+            actor.PendingTransformPosition = position;
+            actor.PendingTransformRotationEuler = rotationEuler;
+            actor.PendingTransformScale = normalizedScale;
             actor.PendingTransformRetryTicksRemaining = PostSpawnTransformRetryTicks;
             actor.HasPendingTransformApply = true;
         }
@@ -503,7 +506,7 @@ public sealed class RealNpcSpawnService
         actor.LastTransformReadback = $"native readback unavailable; saved position={position}; rotationEuler={rotationEuler}; scale={actor.PendingTransformScale}";
     }
 
-    private bool TryRefreshActualActorTransform(RuntimeActorInstance actor, out string reason)
+    private bool TryRefreshActualActorTransform(RuntimeActorInstance actor, bool updateEditingTransform, out string reason)
     {
         if (!this.IsRuntimeReady(actor))
         {
@@ -515,16 +518,19 @@ public sealed class RealNpcSpawnService
 
         if (this.brioAssemblyBridge.TryReadActorNativeTransform(actor, out var nativePosition, out var nativeRotationEuler, out var nativeScale, out var nativeReason))
         {
-            actor.TransformEditPosition = nativePosition;
-            actor.TransformEditRotationEuler = nativeRotationEuler;
-            actor.TransformEditScale = nativeScale == Vector3.Zero ? Vector3.One : nativeScale;
+            if (updateEditingTransform)
+            {
+                actor.TransformEditPosition = nativePosition;
+                actor.TransformEditRotationEuler = nativeRotationEuler;
+                actor.TransformEditScale = nativeScale == Vector3.Zero ? Vector3.One : nativeScale;
+            }
             actor.LastTransformError = string.Empty;
             actor.LastTransformReadback = $"native position={nativePosition}; rotationEuler={nativeRotationEuler}; scale={nativeScale}; {nativeReason}";
             reason = actor.LastTransformReadback;
             return true;
         }
 
-        if (this.brioCapabilityBridge.TryReadModelTransform(actor, out var brioReason))
+        if (this.brioCapabilityBridge.TryReadModelTransform(actor, updateEditingTransform, out var brioReason))
         {
             actor.LastTransformReadback = $"brio runtime position={actor.LastKnownPosition}; rotationEuler={actor.LastKnownRotationEuler}; scale={actor.LastKnownScale}; native readback unavailable: {nativeReason}";
             reason = actor.LastTransformReadback;
@@ -602,6 +608,48 @@ public sealed class RealNpcSpawnService
 
     public void PersistActorWorldTransformToNpc(string runtimeId, Vector3 position, Vector3 rotationEuler, Vector3 scale)
         => this.SaveActorTransformSnapshot(runtimeId, position, rotationEuler, scale);
+
+    public bool ApplyActorModelCharaOverride(string runtimeId, uint modelCharaId)
+    {
+        var actor = this.registry.GetByRuntimeId(runtimeId);
+        var config = this.GetConfig(runtimeId);
+        if (actor == null && config != null)
+            actor = this.EnsureShell(config, this.database.GetNpcById(config.SourceNpcPresetId));
+
+        if (config == null || actor == null)
+        {
+            this.LastMessage = $"Runtime actor/config not found: {runtimeId}.";
+            return false;
+        }
+
+        config.Appearance ??= new ActorAppearanceData();
+        config.Appearance.ModelCharaOverrideId = modelCharaId;
+        config.SpawnKind = NormalizeSpawnKindForModelOverride(config.SpawnKind, config.Appearance, modelCharaId);
+        config.Appearance.SpawnKind = config.SpawnKind;
+        config.Appearance.IsHumanoid = config.SpawnKind == ActorSpawnKind.Character;
+        this.database.Save();
+
+        actor.SourceModelCharaId = config.Appearance.ModelCharaId;
+        actor.ModelCharaOverrideId = modelCharaId;
+        actor.EditingModelCharaId = modelCharaId != 0 ? modelCharaId : config.Appearance.ModelCharaId;
+        actor.SpawnKind = config.SpawnKind;
+        actor.SourceActorKind = string.IsNullOrWhiteSpace(config.SourceActorKind) ? config.Appearance.SourceActorKind : config.SourceActorKind;
+        actor.SpawnKindStatus = $"model override saved. sourceModelChara={actor.SourceModelCharaId}, overrideModelChara={actor.ModelCharaOverrideId}, effectiveModelChara={actor.EditingModelCharaId}, spawnKind={actor.SpawnKind}";
+
+        if (!this.IsRuntimeReady(actor))
+        {
+            actor.LastModelCharaApplyError = "Runtime actor is not Ready; ModelChara override saved and will apply after spawn/rebuild.";
+            actor.LastModelCharaApplyResult = string.Empty;
+            this.LastMessage = actor.LastModelCharaApplyError;
+            return false;
+        }
+
+        var ok = this.ApplyNpcAppearance(actor.RuntimeId);
+        actor.LastModelCharaApplyResult = ok ? $"ModelChara override applied. source={actor.SourceModelCharaId}, override={actor.ModelCharaOverrideId}, effective={actor.EditingModelCharaId}, actual={actor.LastAppliedModelCharaId}" : string.Empty;
+        actor.LastModelCharaApplyError = ok ? string.Empty : actor.LastAppearanceError;
+        this.LastMessage = ok ? actor.LastModelCharaApplyResult : $"ModelChara override apply failed: {actor.LastModelCharaApplyError}";
+        return ok;
+    }
 
     public void UpdateActorLookAtSettings(string runtimeId, bool enabled, float radius)
     {
@@ -1503,6 +1551,10 @@ public sealed class RealNpcSpawnService
         actor.GlamourerDesignPath = appearance.SourcePath;
         actor.GlamourerIpcAvailable = false;
         actor.LastAppearancePresetSummary = appearance.Summary;
+        actor.SourceModelCharaId = appearance.ModelCharaId;
+        actor.ModelCharaOverrideId = appearance.ModelCharaOverrideId;
+        actor.EditingModelCharaId = EffectiveModelCharaId(appearance);
+        actor.LastAppliedModelCharaId = actor.EditingModelCharaId;
         actor.PostSpawnBehaviorReady = true;
     }
 
@@ -1515,6 +1567,7 @@ public sealed class RealNpcSpawnService
             : appearance.SpawnKind;
         appearance.SpawnKind = spawnKind;
         appearance.IsHumanoid = spawnKind == ActorSpawnKind.Character;
+        appearance.ModelCharaOverrideId = 0;
         return new PersistentActorConfig
         {
             ConfigId = Guid.NewGuid().ToString("N"),
@@ -1756,6 +1809,23 @@ public sealed class RealNpcSpawnService
             config.SourceActorKind = appearance.SourceActorKind;
         config.WorldScale = ToData(NormalizeScale(ToVector3(config.WorldScale, Vector3.One)));
     }
+
+    private static ActorSpawnKind NormalizeSpawnKindForModelOverride(ActorSpawnKind current, ActorAppearanceData appearance, uint modelCharaOverrideId)
+    {
+        if (modelCharaOverrideId == 0)
+            return appearance.SpawnKind == ActorSpawnKind.Unknown
+                ? appearance.IsHumanoid ? ActorSpawnKind.Character : ActorSpawnKind.Demihuman
+                : appearance.SpawnKind;
+
+        return current switch
+        {
+            ActorSpawnKind.Mount or ActorSpawnKind.Minion => current,
+            _ => ActorSpawnKind.Demihuman,
+        };
+    }
+
+    private static uint EffectiveModelCharaId(ActorAppearanceData appearance)
+        => appearance.ModelCharaOverrideId != 0 ? appearance.ModelCharaOverrideId : appearance.ModelCharaId;
 
     private bool IsValidPersistentActorConfig(PersistentActorConfig config, out string reason)
     {
