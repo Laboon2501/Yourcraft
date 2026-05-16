@@ -3840,6 +3840,16 @@ public sealed class MainWindow : Window
             if (this.sceneEditor.ApplyWorldTransform(SceneEditableKind.LocalBgPart, selected.Id, WorldTransform.FromEuler(selected.CurrentPosition, selected.CurrentRotationEuler, selected.CurrentScale)))
                 this.localLayoutObjects.ApplyMdlPath(selected.Id, selected.CustomModelPath, this.FilteredBgParts(), this.realNpcSpawn.EnableUnsafeNativeWrites, this.confirmFullLayoutCollisionMode);
         }
+        ImGui.SameLine();
+        var originalMdlPath = FirstNonEmpty(selected.OriginalModelResourcePath, selected.OriginalResourcePath, selected.TemplateResourcePath, selected.SourceResourcePath);
+        ImGui.BeginDisabled(string.IsNullOrWhiteSpace(originalMdlPath));
+        if (ImGui.Button(T("恢复 mdl path", "Restore MDL Path")))
+        {
+            selected.CustomModelPath = originalMdlPath;
+            if (this.sceneEditor.ApplyWorldTransform(SceneEditableKind.LocalBgPart, selected.Id, WorldTransform.FromEuler(selected.CurrentPosition, selected.CurrentRotationEuler, selected.CurrentScale)))
+                this.localLayoutObjects.ApplyMdlPath(selected.Id, originalMdlPath, this.FilteredBgParts(), this.realNpcSpawn.EnableUnsafeNativeWrites, this.confirmFullLayoutCollisionMode);
+        }
+        ImGui.EndDisabled();
         ImGui.EndDisabled();
 
         ImGui.Separator();

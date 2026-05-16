@@ -184,6 +184,19 @@ public sealed class SceneEditorOverlayWindow : Window
             return;
         }
 
+        if (selectedPanel)
+        {
+            var clearLabel = T("取消选择", "Deselect");
+            var clearButtonWidth = ImGui.CalcTextSize(clearLabel).X + (ImGui.GetStyle().FramePadding.X * 2f);
+            ImGui.SetCursorPosX(MathF.Max(ImGui.GetCursorPosX(), ImGui.GetWindowContentRegionMax().X - clearButtonWidth));
+            if (ImGui.SmallButton($"{clearLabel}##SceneEditorMiniPanelClearSelection"))
+            {
+                this.selection.Clear(SceneEditorSelectionSource.Overlay);
+                ImGui.End();
+                return;
+            }
+        }
+
         if (selectedPanel && editable.Kind is (SceneEditableKind.LocalBgPart or SceneEditableKind.NativeBgPart))
             ImGui.TextColored(new Vector4(1f, 0.22f, 0.18f, 1f), T("请小心：即便未勾选 collision，也有可能导致模型碰撞体积被一起移动。", "Careful: even when collision is unchecked, the model collision volume may still move with it."));
 
