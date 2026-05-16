@@ -442,11 +442,22 @@ public sealed class MainWindow : Window
 
     private void SyncSceneEditorBgPartCopyMode()
     {
-        this.sceneEditor.AllowNativeTransformWrites =
-            this.realNpcSpawn.EnableUnsafeNativeWrites &&
-            (!this.localLayoutFullCollisionMode || this.confirmFullLayoutCollisionMode);
-        this.sceneEditor.NativeFullLayoutTransformConfirmed =
-            this.localLayoutFullCollisionMode && this.confirmFullLayoutCollisionMode;
+        this.localLayoutFullCollisionMode = this.sceneEditor.BgPartCollisionModeEnabled;
+        this.confirmFullLayoutCollisionMode = this.sceneEditor.BgPartCollisionModeConfirmed;
+        this.sceneEditor.SetBgPartCollisionMode(
+            this.localLayoutFullCollisionMode,
+            this.confirmFullLayoutCollisionMode,
+            this.realNpcSpawn.EnableUnsafeNativeWrites);
+    }
+
+    private void SetSceneEditorBgPartCollisionMode(bool enabled, bool confirmed)
+    {
+        this.localLayoutFullCollisionMode = enabled;
+        this.confirmFullLayoutCollisionMode = enabled && confirmed;
+        this.sceneEditor.SetBgPartCollisionMode(
+            this.localLayoutFullCollisionMode,
+            this.confirmFullLayoutCollisionMode,
+            this.realNpcSpawn.EnableUnsafeNativeWrites);
     }
 
     private void DrawSceneEditorHiddenList()
@@ -627,6 +638,12 @@ public sealed class MainWindow : Window
         this.SyncSceneEditorBgPartCopyMode();
         ImGui.Separator();
         ImGui.TextWrapped("BgPart quick actions");
+        var collisionMode = this.sceneEditor.BgPartCollisionModeEnabled;
+        if (ImGui.Checkbox("Collision follows BgPart##SceneEditorBgPartCollision", ref collisionMode))
+            this.SetSceneEditorBgPartCollisionMode(collisionMode, collisionMode && this.sceneEditor.BgPartCollisionModeConfirmed);
+        if (this.sceneEditor.BgPartCollisionModeEnabled && !this.sceneEditor.BgPartCollisionModeConfirmed)
+            ImGui.TextColored(new Vector4(1f, 0.55f, 0.25f, 1f), "Collision mode needs the FullLayout confirmation in 本地场景物体.");
+        ImGui.TextDisabled(this.sceneEditor.LastBgPartCollisionOperation);
         if (!string.IsNullOrWhiteSpace(selected.MdlPath))
         {
             ImGui.TextWrapped($"mdl: {selected.MdlPath}");
@@ -2083,13 +2100,19 @@ public sealed class MainWindow : Window
 
         var unsafeEnabled = this.realNpcSpawn.EnableUnsafeNativeWrites;
         if (ImGui.Checkbox("启用 Unsafe/native 写入", ref unsafeEnabled))
+        {
             this.realNpcSpawn.EnableUnsafeNativeWrites = unsafeEnabled;
-        if (ImGui.Checkbox("模型和碰撞体一起变化（危险）", ref this.localLayoutFullCollisionMode) && !this.localLayoutFullCollisionMode)
-            this.confirmFullLayoutCollisionMode = false;
+            this.SetSceneEditorBgPartCollisionMode(this.localLayoutFullCollisionMode, this.confirmFullLayoutCollisionMode);
+        }
+        var collisionMode = this.localLayoutFullCollisionMode;
+        if (ImGui.Checkbox("模型和碰撞体一起变化（危险）", ref collisionMode))
+            this.SetSceneEditorBgPartCollisionMode(collisionMode, collisionMode && this.confirmFullLayoutCollisionMode);
         if (this.localLayoutFullCollisionMode)
         {
             ImGui.TextColored(new Vector4(1f, 0.25f, 0.20f, 1f), "会移动碰撞体，其他玩家可能看到异常浮空。");
-            ImGui.Checkbox("我确认启用危险 FullLayoutWithCollision 模式", ref this.confirmFullLayoutCollisionMode);
+            var collisionConfirmed = this.confirmFullLayoutCollisionMode;
+            if (ImGui.Checkbox("我确认启用危险 FullLayoutWithCollision 模式", ref collisionConfirmed))
+                this.SetSceneEditorBgPartCollisionMode(this.localLayoutFullCollisionMode, collisionConfirmed);
         }
 
         this.SyncSceneEditorBgPartCopyMode();

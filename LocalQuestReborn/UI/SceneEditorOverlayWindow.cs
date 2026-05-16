@@ -272,6 +272,12 @@ public sealed class SceneEditorOverlayWindow : Window
     {
         ImGui.Separator();
         ImGui.TextDisabled("BgPart");
+        var collisionMode = this.sceneEditor.BgPartCollisionModeEnabled;
+        if (ImGui.Checkbox("Collision##MiniBgPartCollision", ref collisionMode))
+            this.sceneEditor.SetBgPartCollisionMode(collisionMode, collisionMode && this.sceneEditor.BgPartCollisionModeConfirmed, this.sceneEditor.UnsafeNativeWritesEnabled);
+        if (this.sceneEditor.BgPartCollisionModeEnabled && !this.sceneEditor.BgPartCollisionModeConfirmed)
+            ImGui.TextDisabled("Needs FullLayout confirmation");
+        ImGui.TextDisabled(this.sceneEditor.LastBgPartCollisionOperation);
         if (!string.IsNullOrWhiteSpace(editable.MdlPath) && ImGui.Button("Copy mdl##MiniCopyMdl"))
             ImGui.SetClipboardText(editable.MdlPath);
 

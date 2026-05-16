@@ -440,8 +440,14 @@ public sealed class RealNpcSpawnService
         {
             actor.RuntimeTransformApplied = false;
             if (fromPendingFlush)
+            {
                 actor.PendingTransformRetryTicksRemaining = Math.Max(0, actor.PendingTransformRetryTicksRemaining - 1);
-            actor.HasPendingTransformApply = fromPendingFlush && actor.PendingTransformRetryTicksRemaining > 0;
+                actor.HasPendingTransformApply = actor.PendingTransformRetryTicksRemaining > 0;
+            }
+            else
+            {
+                this.QueuePendingTransform(actor, position, rotationEuler, normalizedScale, targetReason);
+            }
             actor.LastTransformError = targetReason;
             actor.LastTransformReadback = $"native readback unavailable: {targetReason}";
             this.LastMessage = actor.LastTransformError;
@@ -454,7 +460,7 @@ public sealed class RealNpcSpawnService
         var nativeSuccess = this.brioAssemblyBridge.TryApplyActorNativeRootTransform(actor, position, rotationEuler.Y, normalizedScale, out var nativeReason);
         var readbackSuccess = this.TryRefreshActualActorTransform(actor, updateEditingTransform: false, out var readbackReason);
         var mismatchReason = string.Empty;
-        var success = (brioSuccess || nativeSuccess) &&
+        var success = nativeSuccess &&
             readbackSuccess &&
             TransformReadbackMatches(actor, position, rotationEuler, normalizedScale, out mismatchReason);
         var reason = $"brio={brioReason}; nativeRoot={nativeReason}; readback={readbackReason}";
@@ -623,6 +629,9 @@ public sealed class RealNpcSpawnService
         }
 
         config.Appearance ??= new ActorAppearanceData();
+        var previousOverride = config.Appearance.ModelCharaOverrideId;
+        var previousSpawnKind = config.SpawnKind;
+        var overrideCleared = modelCharaId == 0 && previousOverride != 0;
         config.Appearance.ModelCharaOverrideId = modelCharaId;
         config.SpawnKind = NormalizeSpawnKindForModelOverride(config.SpawnKind, config.Appearance, modelCharaId);
         config.Appearance.SpawnKind = config.SpawnKind;
@@ -634,18 +643,35 @@ public sealed class RealNpcSpawnService
         actor.EditingModelCharaId = modelCharaId != 0 ? modelCharaId : config.Appearance.ModelCharaId;
         actor.SpawnKind = config.SpawnKind;
         actor.SourceActorKind = string.IsNullOrWhiteSpace(config.SourceActorKind) ? config.Appearance.SourceActorKind : config.SourceActorKind;
-        actor.SpawnKindStatus = $"model override saved. sourceModelChara={actor.SourceModelCharaId}, overrideModelChara={actor.ModelCharaOverrideId}, effectiveModelChara={actor.EditingModelCharaId}, spawnKind={actor.SpawnKind}";
+        actor.SpawnKindStatus = $"model override saved. sourceModelChara={actor.SourceModelCharaId}, overrideModelChara={actor.ModelCharaOverrideId}, effectiveModelChara={actor.EditingModelCharaId}, spawnKind={actor.SpawnKind}, overrideCleared={overrideCleared}";
+
+        var requiresRebuild = previousSpawnKind != config.SpawnKind || overrideCleared;
+        if (requiresRebuild && this.IsRuntimeReady(actor))
+        {
+            var rebuildReason = overrideCleared
+                ? $"ModelChara override cleared; rebuilding Actor to restore source spawnKind={config.SpawnKind}."
+                : $"ModelChara override changed spawnKind {previousSpawnKind}->{config.SpawnKind}; rebuilding Actor.";
+            actor.LastModelCharaApplyResult = $"{rebuildReason} source={actor.SourceModelCharaId}, override={actor.ModelCharaOverrideId}, effective={actor.EditingModelCharaId}.";
+            actor.LastModelCharaApplyError = string.Empty;
+            this.DespawnRuntimeOnly(actor, rebuildReason);
+            this.SetLifecycle(actor, ActorLifecycleState.SpawnPending, rebuildReason);
+            this.ScheduleRebuild(rebuildReason, 0);
+            this.LastMessage = actor.LastModelCharaApplyResult;
+            return true;
+        }
 
         if (!this.IsRuntimeReady(actor))
         {
-            actor.LastModelCharaApplyError = "Runtime actor is not Ready; ModelChara override saved and will apply after spawn/rebuild.";
+            actor.LastModelCharaApplyError = overrideCleared
+                ? "Runtime actor is not Ready; ModelChara override cleared and source appearance will apply after spawn/rebuild."
+                : "Runtime actor is not Ready; ModelChara override saved and will apply after spawn/rebuild.";
             actor.LastModelCharaApplyResult = string.Empty;
             this.LastMessage = actor.LastModelCharaApplyError;
             return false;
         }
 
         var ok = this.ApplyNpcAppearance(actor.RuntimeId);
-        actor.LastModelCharaApplyResult = ok ? $"ModelChara override applied. source={actor.SourceModelCharaId}, override={actor.ModelCharaOverrideId}, effective={actor.EditingModelCharaId}, actual={actor.LastAppliedModelCharaId}" : string.Empty;
+        actor.LastModelCharaApplyResult = ok ? $"ModelChara override applied. source={actor.SourceModelCharaId}, override={actor.ModelCharaOverrideId}, effective={actor.EditingModelCharaId}, actual={actor.LastAppliedModelCharaId}, overrideCleared={overrideCleared}" : string.Empty;
         actor.LastModelCharaApplyError = ok ? string.Empty : actor.LastAppearanceError;
         this.LastMessage = ok ? actor.LastModelCharaApplyResult : $"ModelChara override apply failed: {actor.LastModelCharaApplyError}";
         return ok;
@@ -1797,11 +1823,13 @@ public sealed class RealNpcSpawnService
         if (string.IsNullOrWhiteSpace(config.DisplayName))
             config.DisplayName = "Actor";
         var appearance = config.Appearance ?? new ActorAppearanceData();
-        var spawnKind = config.SpawnKind != ActorSpawnKind.Unknown
-            ? config.SpawnKind
-            : appearance.SpawnKind != ActorSpawnKind.Unknown
-                ? appearance.SpawnKind
-                : appearance.IsHumanoid ? ActorSpawnKind.Character : ActorSpawnKind.Demihuman;
+        var spawnKind = appearance.ModelCharaOverrideId == 0
+            ? InferSourceSpawnKind(appearance)
+            : config.SpawnKind != ActorSpawnKind.Unknown
+                ? config.SpawnKind
+                : appearance.SpawnKind != ActorSpawnKind.Unknown
+                    ? appearance.SpawnKind
+                    : InferSourceSpawnKind(appearance);
         config.SpawnKind = spawnKind;
         appearance.SpawnKind = spawnKind;
         appearance.IsHumanoid = spawnKind == ActorSpawnKind.Character;
@@ -1813,9 +1841,7 @@ public sealed class RealNpcSpawnService
     private static ActorSpawnKind NormalizeSpawnKindForModelOverride(ActorSpawnKind current, ActorAppearanceData appearance, uint modelCharaOverrideId)
     {
         if (modelCharaOverrideId == 0)
-            return appearance.SpawnKind == ActorSpawnKind.Unknown
-                ? appearance.IsHumanoid ? ActorSpawnKind.Character : ActorSpawnKind.Demihuman
-                : appearance.SpawnKind;
+            return InferSourceSpawnKind(appearance);
 
         return current switch
         {
@@ -1826,6 +1852,53 @@ public sealed class RealNpcSpawnService
 
     private static uint EffectiveModelCharaId(ActorAppearanceData appearance)
         => appearance.ModelCharaOverrideId != 0 ? appearance.ModelCharaOverrideId : appearance.ModelCharaId;
+
+    private static ActorSpawnKind InferSourceSpawnKind(ActorAppearanceData appearance)
+    {
+        var sourceKind = $"{appearance.SourceActorKind} {appearance.ObjectKind}";
+        if (sourceKind.Contains("Mount", StringComparison.OrdinalIgnoreCase))
+            return ActorSpawnKind.Mount;
+        if (sourceKind.Contains("Companion", StringComparison.OrdinalIgnoreCase) ||
+            sourceKind.Contains("Minion", StringComparison.OrdinalIgnoreCase))
+            return ActorSpawnKind.Minion;
+        if (sourceKind.Contains("Character", StringComparison.OrdinalIgnoreCase) ||
+            sourceKind.Contains("Humanoid", StringComparison.OrdinalIgnoreCase) ||
+            sourceKind.Contains("Humanlike", StringComparison.OrdinalIgnoreCase))
+            return ActorSpawnKind.Character;
+        if (sourceKind.Contains("Demihuman", StringComparison.OrdinalIgnoreCase))
+            return ActorSpawnKind.Demihuman;
+        if (HasHumanoidAppearanceSignal(appearance) || appearance.ModelCharaId == 0)
+            return ActorSpawnKind.Character;
+        return appearance.SpawnKind == ActorSpawnKind.Unknown ? ActorSpawnKind.Demihuman : appearance.SpawnKind;
+    }
+
+    private static bool HasHumanoidAppearanceSignal(ActorAppearanceData appearance)
+    {
+        var customize = appearance.Customize;
+        if (!string.IsNullOrWhiteSpace(customize.RawCustomizeBase64) ||
+            customize.Race != 0 ||
+            customize.Sex != 0 ||
+            customize.Tribe != 0 ||
+            customize.Face != 0 ||
+            customize.HairStyle != 0)
+        {
+            return true;
+        }
+
+        var equipment = appearance.Equipment;
+        return equipment.MainHand != null ||
+               equipment.OffHand != null ||
+               equipment.Head != null ||
+               equipment.Body != null ||
+               equipment.Hands != null ||
+               equipment.Legs != null ||
+               equipment.Feet != null ||
+               equipment.Ears != null ||
+               equipment.Neck != null ||
+               equipment.Wrists != null ||
+               equipment.LeftRing != null ||
+               equipment.RightRing != null;
+    }
 
     private bool IsValidPersistentActorConfig(PersistentActorConfig config, out string reason)
     {

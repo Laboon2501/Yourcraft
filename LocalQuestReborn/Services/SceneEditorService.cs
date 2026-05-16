@@ -95,6 +95,14 @@ public sealed unsafe class SceneEditorService
 
     public bool NativeFullLayoutTransformConfirmed { get; set; }
 
+    public bool UnsafeNativeWritesEnabled { get; private set; }
+
+    public bool BgPartCollisionModeEnabled { get; private set; }
+
+    public bool BgPartCollisionModeConfirmed { get; private set; }
+
+    public string LastBgPartCollisionOperation { get; private set; } = "collisionMode=Off; collision operation=Skipped";
+
     public float MarkerRadius { get; set; } = 5.5f;
 
     public SceneEditorGizmoService Gizmo { get; }
@@ -102,6 +110,11 @@ public sealed unsafe class SceneEditorService
     public SceneEditorUndoService Undo { get; }
 
     public SceneEditorGizmoMode GizmoMode => this.Gizmo.Mode;
+
+    public LocalLayoutTransformMode CurrentBgPartTransformMode =>
+        this.BgPartCollisionModeEnabled && this.BgPartCollisionModeConfirmed
+            ? LocalLayoutTransformMode.FullLayoutWithCollision
+            : LocalLayoutTransformMode.VisualOnly;
 
     public uint TransformGeneration { get; private set; }
 
@@ -139,6 +152,26 @@ public sealed unsafe class SceneEditorService
 
     public void SetGizmoMode(SceneEditorGizmoMode mode)
         => this.Gizmo.SetMode(mode);
+
+    public void SetBgPartCollisionMode(bool enabled, bool confirmed, bool unsafeEnabled)
+    {
+        var changed = this.BgPartCollisionModeEnabled != enabled ||
+                      this.BgPartCollisionModeConfirmed != (enabled && confirmed) ||
+                      this.UnsafeNativeWritesEnabled != unsafeEnabled;
+        this.UnsafeNativeWritesEnabled = unsafeEnabled;
+        this.BgPartCollisionModeEnabled = enabled;
+        this.BgPartCollisionModeConfirmed = enabled && confirmed;
+        this.AllowNativeTransformWrites = unsafeEnabled && (!enabled || this.BgPartCollisionModeConfirmed);
+        this.NativeFullLayoutTransformConfirmed = enabled && this.BgPartCollisionModeConfirmed;
+        if (!changed)
+            return;
+
+        this.LastBgPartCollisionOperation = enabled
+            ? this.BgPartCollisionModeConfirmed
+                ? "collisionMode=On; collision operation=Moved with layout transform when BgPart transform is applied."
+                : "collisionMode=OnPendingConfirmation; collision operation=Failed until FullLayout confirmation is enabled."
+            : "collisionMode=Off; collision operation=Skipped; visual-only BgPart transform.";
+    }
 
     public void UpdateLocalActorLookAt(string runtimeId, bool enabled, float radius)
     {
@@ -418,7 +451,8 @@ public sealed unsafe class SceneEditorService
                 }
                 return actorResult;
             case SceneEditableKind.LocalBgPart:
-                this.localLayoutObjects.ApplyVisualTransform(runtimeId, transform.WorldPosition, transform.WorldEulerRadians, scale);
+                if (!this.ApplyLocalBgPartTransform(runtimeId, transform.WorldPosition, transform.WorldEulerRadians, scale, "SceneEditor LocalBgPart transform"))
+                    return false;
                 this.LastStatus = this.localLayoutObjects.LastStatus;
                 this.TransformGeneration++;
                 this.SyncLocalBgPartSnapshots();
@@ -584,7 +618,8 @@ public sealed unsafe class SceneEditorService
                 this.LastStatus = this.actors.LastMessage;
                 return true;
             case SceneEditableKind.LocalBgPart:
-                this.localLayoutObjects.ApplyVisualTransform(selected.RuntimeId, transform.WorldPosition, transform.WorldEulerRadians, transform.WorldScale);
+                if (!this.ApplyLocalBgPartTransform(selected.RuntimeId, transform.WorldPosition, transform.WorldEulerRadians, transform.WorldScale, "SceneEditor SaveSelectedTransform"))
+                    return false;
                 this.LastStatus = this.localLayoutObjects.LastStatus;
                 return true;
             case SceneEditableKind.LocalLight:
@@ -593,6 +628,45 @@ public sealed unsafe class SceneEditorService
             default:
                 return false;
         }
+    }
+
+    private bool ApplyLocalBgPartTransform(string runtimeId, Vector3 position, Vector3 rotationEuler, Vector3 scale, string reason)
+    {
+        var mode = this.CurrentBgPartTransformMode;
+        if (mode == LocalLayoutTransformMode.FullLayoutWithCollision && !this.NativeFullLayoutTransformConfirmed)
+        {
+            this.LastStatus = "Local BgPart transform blocked: collision mode is ON but FullLayoutWithCollision is not confirmed.";
+            this.LastBgPartCollisionOperation = "source=Plugin; collisionMode=OnPendingConfirmation; collision operation=Failed; handle=unavailable";
+            return false;
+        }
+
+        var instance = this.localLayoutObjects.GetById(runtimeId);
+        if (instance == null)
+        {
+            this.LastStatus = $"Local BgPart not found: {runtimeId}";
+            this.LastBgPartCollisionOperation = "source=Plugin; collisionMode=Unknown; collision operation=Failed; handle=unavailable";
+            return false;
+        }
+
+        if (instance.TransformMode != mode)
+        {
+            var changed = this.localLayoutObjects.ChangeCollisionMode(
+                runtimeId,
+                mode,
+                this.GetCurrentBgPartCandidates(),
+                this.AllowNativeTransformWrites,
+                this.NativeFullLayoutTransformConfirmed || mode == LocalLayoutTransformMode.VisualOnly);
+            if (!changed)
+            {
+                this.LastStatus = this.localLayoutObjects.LastStatus;
+                this.LastBgPartCollisionOperation = $"source=Plugin; collisionMode={(mode == LocalLayoutTransformMode.FullLayoutWithCollision ? "On" : "Off")}; collision operation=Failed; handle={instance.OccupiedSlotAddress}; {this.LastStatus}";
+                return false;
+            }
+        }
+
+        this.localLayoutObjects.ApplyVisualTransform(runtimeId, position, rotationEuler, scale);
+        this.LastBgPartCollisionOperation = $"source=Plugin; collisionMode={(mode == LocalLayoutTransformMode.FullLayoutWithCollision ? "On" : "Off")}; collision operation={(mode == LocalLayoutTransformMode.FullLayoutWithCollision ? "Moved" : "Skipped")}; handle={instance.OccupiedSlotAddress}; reason={reason}";
+        return true;
     }
 
     public bool TryCopyOneBgPart(SceneEditableRef selected, Vector3 offset)
@@ -635,9 +709,7 @@ public sealed unsafe class SceneEditorService
         }
 
         var candidates = this.GetCurrentBgPartCandidates().ToList();
-        var mode = this.NativeFullLayoutTransformConfirmed
-            ? LocalLayoutTransformMode.FullLayoutWithCollision
-            : LocalLayoutTransformMode.VisualOnly;
+        var mode = this.CurrentBgPartTransformMode;
         var created = this.localLayoutObjects.CreateCopyFromTemplate(
             template,
             candidates,
@@ -656,7 +728,8 @@ public sealed unsafe class SceneEditorService
         }
 
         this.selection.Select(SceneEditableKind.LocalBgPart, created.Id, SceneEditorSelectionSource.SceneEditorPanel);
-        this.LastQuickActionStatus = $"Copied one BgPart: {created.Id}; mode={mode}";
+        this.LastBgPartCollisionOperation = $"source={(template.Source.Contains("Native", StringComparison.OrdinalIgnoreCase) ? "Native" : "Plugin/Probe")}; collisionMode={(mode == LocalLayoutTransformMode.FullLayoutWithCollision ? "On" : "Off")}; collision operation={(mode == LocalLayoutTransformMode.FullLayoutWithCollision ? "Cloned/Moved" : "Skipped")}; handle={created.OccupiedSlotAddress}";
+        this.LastQuickActionStatus = $"Copied one BgPart: {created.Id}; mode={mode}; {this.LastBgPartCollisionOperation}";
         this.TransformGeneration++;
         this.SyncLocalBgPartSnapshots();
         this.MarkPersistDirty("LocalBgPart created");
@@ -2510,6 +2583,7 @@ public sealed unsafe class SceneEditorService
                 if (!TryGetGraphicsObjectAddress(pointer, out var graphicsObjectAddress))
                 {
                     this.LastStatus = "Native BgPart visual transform failed: GraphicsObject unavailable.";
+                    this.LastBgPartCollisionOperation = $"source=Native; collisionMode=Off; collision operation=Failed; handle=0x{target.Address:X}; GraphicsObject unavailable";
                     return false;
                 }
 
@@ -2517,11 +2591,13 @@ public sealed unsafe class SceneEditorService
                 if (!this.TryWriteSceneObjectTransform(graphicsTarget, transform, out var writeReason))
                 {
                     this.LastStatus = $"Native BgPart visual transform failed: {writeReason}";
+                    this.LastBgPartCollisionOperation = $"source=Native; collisionMode=Off; collision operation=Failed; handle=0x{target.Address:X}; {writeReason}";
                     return false;
                 }
 
                 this.TransformGeneration++;
                 this.lastNativeScanUtc = DateTime.MinValue;
+                this.LastBgPartCollisionOperation = $"source=Native; collisionMode=Off; collision operation=Skipped; handle=0x{target.Address:X}; graphics=0x{graphicsObjectAddress:X}";
                 this.LastStatus = $"Native BgPart visual-only transform applied: {runtimeId}";
                 return true;
             }
@@ -2535,12 +2611,15 @@ public sealed unsafe class SceneEditorService
             pointer->SetTransform(&nativeTransform);
             this.TransformGeneration++;
             this.lastNativeScanUtc = DateTime.MinValue;
+            if (pointer->Id.Type == InstanceType.BgPart)
+                this.LastBgPartCollisionOperation = $"source=Native; collisionMode=On; collision operation=Moved; handle=0x{target.Address:X}";
             this.LastStatus = $"Native layout transform applied: {runtimeId}";
             return true;
         }
         catch (Exception ex)
         {
             this.LastStatus = $"Native layout transform failed: {ex.Message}";
+            this.LastBgPartCollisionOperation = $"source=Native; collisionMode={(fullLayoutConfirmed ? "On" : "Off")}; collision operation=Failed; handle=0x{target.Address:X}; {ex.Message}";
             this.log.Warning(ex, "[SceneEditor] Native layout transform failed. id={Id}", runtimeId);
             return false;
         }

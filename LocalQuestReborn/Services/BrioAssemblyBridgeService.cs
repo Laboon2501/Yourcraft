@@ -6,6 +6,7 @@ using LocalQuestReborn.Models;
 using System.Numerics;
 using System.Reflection;
 using System.Text;
+using SceneObject = FFXIVClientStructs.FFXIV.Client.Graphics.Scene.Object;
 
 namespace LocalQuestReborn.Services;
 
@@ -752,10 +753,29 @@ public sealed class BrioAssemblyBridgeService
         try
         {
             var native = (Character*)address;
+            var battle = (BattleChara*)address;
+            var prePosition = native->GameObject.Position;
+            var preYaw = native->GameObject.Rotation;
+            var preScale = MathF.Max(0.01f, native->GameObject.Scale);
+            var drawObject = native->GameObject.DrawObject;
+            if (drawObject == null)
+            {
+                reason = $"draw object unavailable; target objectIndex={instance.ObjectIndex}, address={instance.Address}, objectKind={battle->ObjectKind}, pre native position={prePosition}, requested position={position}";
+                return false;
+            }
+
+            var draw = (SceneObject*)drawObject;
+            var preDrawPosition = draw->Position;
             native->GameObject.SetPosition(position.X, position.Y, position.Z);
             native->GameObject.SetRotation(yawRadians);
             native->GameObject.RotationModified();
             native->GameObject.Scale = normalizedScale.Y;
+            draw->Position = position;
+            draw->Rotation = Quaternion.CreateFromYawPitchRoll(yawRadians, 0f, 0f);
+            draw->Scale = normalizedScale;
+            drawObject->NotifyTransformChanged();
+            drawObject->UpdateTransforms(true);
+            drawObject->UpdateCulling();
 
             if (!this.TryReadActorNativeTransform(instance, out var readPosition, out var readRotationEuler, out var readScale, out var readReason))
             {
@@ -763,11 +783,25 @@ public sealed class BrioAssemblyBridgeService
                 return false;
             }
 
+            var postDrawPosition = draw->Position;
+            var drawMoved = Vector3.Distance(postDrawPosition, position) <= 0.35f;
+            if (!drawMoved)
+            {
+                reason =
+                    $"draw object transform mismatch; target objectIndex={instance.ObjectIndex}, address={instance.Address}, objectKind={battle->ObjectKind}, " +
+                    $"pre native position={prePosition}, yaw={preYaw:F4}, scale={preScale:F4}; requested position={position}, yaw={yawRadians:F4}, scale={normalizedScale}; " +
+                    $"post native position={readPosition}, rotationEuler={readRotationEuler}, scale={readScale}; pre draw position={preDrawPosition}, post draw position={postDrawPosition}";
+                return false;
+            }
+
             instance.LastKnownPosition = readPosition;
             instance.LastKnownRotationEuler = readRotationEuler;
             instance.LastKnownRotation = Quaternion.CreateFromYawPitchRoll(readRotationEuler.Y, readRotationEuler.X, readRotationEuler.Z);
             instance.LastKnownScale = readScale;
-            reason = $"native root transform applied; readback position={readPosition}; rotationEuler={readRotationEuler}; scale={readScale}";
+            reason =
+                $"native root/draw transform applied; target objectIndex={instance.ObjectIndex}, address={instance.Address}, objectKind={battle->ObjectKind}, " +
+                $"pre native position={prePosition}, yaw={preYaw:F4}, scale={preScale:F4}; requested position={position}, yaw={yawRadians:F4}, scale={normalizedScale}; " +
+                $"post native position={readPosition}, rotationEuler={readRotationEuler}, scale={readScale}; pre draw position={preDrawPosition}, post draw position={postDrawPosition}";
             return true;
         }
         catch (Exception ex)
