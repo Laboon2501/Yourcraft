@@ -2888,7 +2888,7 @@ public sealed unsafe class SceneEditorService
             record.NativeBgPartInitialAddress,
             GetOriginalTransform(record).WorldPosition);
 
-        if (this.TryResolveNativeBgPartByStoredPointer(record, currentTerritory, out var pointerItem, out var pointerReason))
+        if (this.TryResolveNativeBgPartByStoredPointer(record, out var pointerItem, out var pointerReason))
         {
             return this.CompleteNativeResolve(
                 record,
@@ -3058,21 +3058,36 @@ public sealed unsafe class SceneEditorService
 
     private bool TryResolveNativeBgPartByStoredPointer(
         SceneEditorNativeModificationRecord record,
-        uint currentTerritory,
         out SceneEditableRef? item,
         out string reason)
     {
         item = null;
         var checkedPointers = new List<string>();
-        foreach (var (address, label) in NativeBgPartStoredPointers(record))
+        var storedPointers = NativeBgPartStoredPointers(record).ToList();
+        if (storedPointers.Count == 0)
+        {
+            reason = "no stored pointer fields were available";
+            return false;
+        }
+
+        var currentBgParts = this.GetNativeEditablesForRestore()
+            .Where(candidate => candidate is { IsNativeGameObject: true, Kind: SceneEditableKind.NativeBgPart })
+            .ToList();
+        foreach (var (address, label) in storedPointers)
         {
             checkedPointers.Add($"{label}=0x{address:X}");
-            if (!this.TryCreateNativeBgPartEditableFromPointer(record, address, currentTerritory, out var candidate, out var pointerReason))
+            var matches = currentBgParts
+                .Where(candidate => candidate.NativePtr == address || ParsePointer(candidate.LayoutProbe?.Address ?? string.Empty) == address)
+                .ToList();
+            if (matches.Count == 0)
             {
-                this.log.Debug("[RestoreNativeBgPart] pointer invalid label={Label} address=0x{Address:X} reason={Reason}", label, address, pointerReason);
+                this.log.Debug("[RestoreNativeBgPart] stored pointer not present in current scan label={Label} address=0x{Address:X} scannedBgParts={Scanned}", label, address, currentBgParts.Count);
                 continue;
             }
 
+            var candidate = matches
+                .OrderBy(candidate => Vector3.Distance(candidate.Transform.WorldPosition, GetOriginalTransform(record).WorldPosition))
+                .First();
             if (!this.NativeBgPartPointerIdentityMatches(record, candidate, out var identityReason))
             {
                 this.log.Debug(
@@ -3087,7 +3102,7 @@ public sealed unsafe class SceneEditorService
             }
 
             item = candidate;
-            reason = $"stored pointer valid label={label}; {identityReason}";
+            reason = $"stored pointer matched current scan label={label}; {identityReason}";
             this.log.Debug(
                 "[RestoreNativeBgPart] pointer selected label={Label} address=0x{Address:X} sgb={Sgb} mdl={Mdl} originalDistance={Distance:F3}",
                 label,
@@ -3117,93 +3132,6 @@ public sealed unsafe class SceneEditorService
             var address = ParsePointer(value);
             if (address != 0 && seen.Add(address))
                 yield return (address, label);
-        }
-    }
-
-    private bool TryCreateNativeBgPartEditableFromPointer(
-        SceneEditorNativeModificationRecord record,
-        nint address,
-        uint currentTerritory,
-        out SceneEditableRef item,
-        out string reason)
-    {
-        item = null!;
-        reason = string.Empty;
-        try
-        {
-            var pointer = (ILayoutInstance*)address;
-            if (pointer == null)
-            {
-                reason = "pointer is null";
-                return false;
-            }
-
-            if (pointer->Id.Type != InstanceType.BgPart)
-            {
-                reason = $"pointer type is {pointer->Id.Type}";
-                return false;
-            }
-
-            if (!TryReadNativeBgPartWorldTransform(pointer, out var transform, out reason))
-                return false;
-
-            var bgPart = (BgPartsLayoutInstance*)pointer;
-            var primaryPath = ReadNativeLayoutPrimaryPath(pointer);
-            var modelPath = ReadNativeBgPartModelPath(bgPart);
-            var sgbPath = FirstNonEmpty(primaryPath, record.NativeBgPartSgbPath, record.NativeBgPartAssetPath, record.NamePath);
-            var mdlPath = FirstNonEmpty(modelPath, record.NativeBgPartModelPath, record.MdlPath);
-            var stableKey = FirstNonEmpty(record.NativeBgPartStableKey, record.StableKey);
-            var layoutProbe = new LayoutProbeInstance
-            {
-                Index = GetNativeBgPartRecordInitialIndex(record),
-                Key = $"BgPart:{address:X}",
-                StableKey = stableKey,
-                Type = "BgPart",
-                InstanceType = pointer->Id.Type.ToString(),
-                Address = $"0x{address:X}",
-                LayerAddress = $"0x{(nint)pointer->Layer:X}",
-                Position = transform.WorldPosition,
-                RotationQuaternion = transform.WorldRotation,
-                Rotation = transform.WorldRotation.ToString(),
-                Scale = transform.WorldScale,
-                ResourcePath = sgbPath,
-                ModelResourcePath = mdlPath,
-                Visible = bgPart->GraphicsObject != null && bgPart->GraphicsObject->IsVisible,
-                LayerId = "StoredPointer",
-                GroupId = string.IsNullOrWhiteSpace(GetNativeBgPartRecordSgbPath(record)) ? "BgPart" : "SharedGroupChild",
-                Source = FirstNonEmpty(record.LayoutSource, "StoredPointer"),
-                SourceKind = FirstNonEmpty(record.SourceKind, "LoadedLayout"),
-                SharedGroupPath = record.SharedGroupPath,
-                ParentKey = record.ParentStableKey,
-                ChildIndex = record.ChildIndex,
-                DebugInfo = $"storedPointer=0x{address:X}; primaryPath={primaryPath}; modelPath={modelPath}",
-            };
-
-            item = new SceneEditableRef(
-                $"native-layout:BgPart:{address:X}:stored",
-                SceneEditableKind.NativeBgPart,
-                address,
-                -1,
-                FirstNonEmpty(sgbPath, mdlPath, record.DisplayName, "BgPart"),
-                FirstNonEmpty(mdlPath, sgbPath),
-                false,
-                transform,
-                true,
-                !layoutProbe.Visible)
-            {
-                IsNativeGameObject = true,
-                StableKey = stableKey,
-                TransformEditable = this.AllowNativeTransformWrites,
-                ObjectKind = "BgPart",
-                NativeInfo = layoutProbe.DebugInfo,
-                LayoutProbe = layoutProbe,
-            };
-            return true;
-        }
-        catch (Exception ex)
-        {
-            reason = $"pointer validation failed: {ex.Message}";
-            return false;
         }
     }
 
