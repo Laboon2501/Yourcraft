@@ -19,6 +19,7 @@ public sealed class QuestDatabase
     {
         PropertyNameCaseInsensitive = true,
         WriteIndented = true,
+        IncludeFields = true,
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         Converters = { new JsonStringEnumConverter() },
     };

@@ -611,7 +611,7 @@ public sealed class MainWindow : Window
             }
 
             this.ApplyMapPreset(preset);
-            this.mapPresetStatus = T("导入成功。为保证稳定，请重新进入该地图或重载插件后加载。", "Import complete. For safety, re-enter the map or reload the plugin before loading it.");
+            this.mapPresetStatus = T("导入成功，正在自动应用当前地图内容。", "Import complete; applying current map content automatically.");
         }
         catch (Exception ex)
         {
@@ -646,7 +646,7 @@ public sealed class MainWindow : Window
             try
             {
                 this.ApplyMapPreset(this.pendingImportPreset!);
-                this.mapPresetStatus = T("导入成功。为保证稳定，请重新进入该地图或重载插件后加载。", "Import complete. For safety, re-enter the map or reload the plugin before loading it.");
+                this.mapPresetStatus = T("导入成功，正在自动应用当前地图内容。", "Import complete; applying current map content automatically.");
             }
             catch (Exception ex)
             {
@@ -776,6 +776,8 @@ public sealed class MainWindow : Window
 
         this.database.Save();
         this.saveConfiguration();
+        this.realNpcSpawn.RequestActorRebuild("map preset import");
+        this.sceneEditor.RequestRestore("map preset import");
     }
 
     private void UpsertNativeRecords(IReadOnlyList<SceneEditorNativeModificationRecord> imported)
@@ -1134,7 +1136,7 @@ public sealed class MainWindow : Window
             return;
         }
 
-        if (!ImGui.BeginTable($"SceneEditorRecords-{title}", 6, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 240f)))
+        if (!ImGui.BeginTable($"SceneEditorRecords-{title}", 7, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 240f)))
             return;
 
         ImGui.TableSetupColumn(T("类型", "Kind"), ImGuiTableColumnFlags.WidthFixed, 96f);
@@ -1143,6 +1145,7 @@ public sealed class MainWindow : Window
         ImGui.TableSetupColumn(T("原始", "Original"));
         ImGui.TableSetupColumn(T("当前", "Current"));
         ImGui.TableSetupColumn(T("操作", "Actions"), ImGuiTableColumnFlags.WidthFixed, 96f);
+        ImGui.TableSetupColumn(T("状态", "Status"), ImGuiTableColumnFlags.WidthFixed, 120f);
         ImGui.TableHeadersRow();
 
         var restoreRequested = false;
@@ -1166,6 +1169,8 @@ public sealed class MainWindow : Window
                 this.pendingNativeRestoreRecordId = record.RecordId;
                 restoreRequested = true;
             }
+            ImGui.TableSetColumnIndex(6);
+            ImGui.TextWrapped(string.IsNullOrWhiteSpace(record.Status) ? "-" : record.Status);
             ImGui.PopID();
         }
 
@@ -1715,8 +1720,18 @@ public sealed class MainWindow : Window
             this.deleteAllActorsConfirmPopupPosition = ImGui.GetMousePos();
             ImGui.OpenPopup("ConfirmDeleteAllActors");
         }
+        ImGui.SameLine();
+        if (ImGui.Button(T("删除当前地图 Actor", "Delete Current Map Actors")))
+            this.OpenConfirmPopupAtMouse("ConfirmDeleteCurrentMapActors");
         ImGui.EndDisabled();
         this.DrawDeleteAllActorsConfirmationPopup();
+        if (this.DrawConfirmPopup("ConfirmDeleteCurrentMapActors", T("确认删除当前地图 Actor？", "Delete actors on the current map?")))
+        {
+            this.realNpcSpawn.DespawnCurrentTerritory(deleteConfigs: true);
+            this.sceneEditor.ForgetCurrentTerritoryLocalActorRecords();
+            this.selectedActorRuntimeId = string.Empty;
+            this.sceneEditorSelection.Clear(SceneEditorSelectionSource.MainUi);
+        }
 
         if (inGpose)
             this.DrawGposeBlockedMessage("Actor 创建 / 删除");
@@ -1851,6 +1866,7 @@ public sealed class MainWindow : Window
             this.cachedGameNpcSearchText = "\0";
             this.nextActorSourceSearchRefreshAt = DateTime.MinValue;
         }
+        ImGui.TextWrapped(T("请先生成人物NPC再修改为其他模型ID", "Spawn a character NPC first, then change it to another model ID."));
         ImGui.InputText(T("搜索 NPC", "Search NPCs"), ref this.gameNpcSearchText, 128);
 
         var npcResults = this.cachedGameNpcResults;
@@ -2402,6 +2418,8 @@ public sealed class MainWindow : Window
         if (!ImGui.TreeNode(T("动作序列 + 头顶气泡", "Action Sequence + Bubble")))
             return;
 
+        var sequencePersistenceBefore = BuildActorActionSequencePersistenceKey(actor);
+
         var enabled = actor.EnableActionSequence;
         if (ImGui.Checkbox(T("启用动作序列", "Enable Action Sequence"), ref enabled))
         {
@@ -2524,8 +2542,20 @@ public sealed class MainWindow : Window
             ImGui.PopID();
         }
 
+        if (!string.Equals(BuildActorActionSequencePersistenceKey(actor), sequencePersistenceBefore, StringComparison.Ordinal))
+            this.realNpcSpawn.PersistActorBehavior(actor.RuntimeId);
+
         ImGui.TreePop();
     }
+
+    private static string BuildActorActionSequencePersistenceKey(RuntimeActorInstance actor)
+        => JsonSerializer.Serialize(new ActorActionSequencePersistenceSnapshot
+        {
+            EnableActionSequence = actor.EnableActionSequence,
+            ActionSequenceLoop = actor.ActionSequenceLoop,
+            ActionSequenceLoopDelay = actor.ActionSequenceLoopDelay,
+            ActionSequence = actor.ActionSequence,
+        }, MapPresetJsonOptions);
 
     private void DrawSelectedActorAppearanceEditor(RuntimeActorInstance actor, CustomNpc? npc)
     {
@@ -2917,6 +2947,17 @@ public sealed class MainWindow : Window
             this.sceneEditorSelection.Clear(SceneEditorSelectionSource.MainUi);
         }
 
+        if (this.DrawConfirmPopup("ConfirmRestoreCurrentMapLocalLayoutObjects", T("确认恢复当前地图全部复制体？", "Restore all copied objects on the current map?")))
+        {
+            this.localLayoutObjects.RestoreAll(
+                bgParts: this.AllBgParts(),
+                unsafeEnabled: this.realNpcSpawn.EnableUnsafeNativeWrites,
+                fullLayoutConfirmed: this.confirmFullLayoutCollisionMode);
+            this.sceneEditor.ForgetCurrentTerritoryLocalBgPartRecords();
+            this.selectedLocalLayoutObjectId = string.Empty;
+            this.sceneEditorSelection.Clear(SceneEditorSelectionSource.MainUi);
+        }
+
         ImGui.Separator();
         this.DrawLocalLayoutObjectTable();
     }
@@ -3213,9 +3254,13 @@ public sealed class MainWindow : Window
                 this.SelectBgPartCandidate(nearest);
         }
         ImGui.SameLine();
-        ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || !this.realNpcSpawn.EnableUnsafeNativeWrites || this.localLayoutObjects.Instances.Count == 0);
+        var hasCurrentMapLocalBgPartRecords = this.sceneEditor.LocalBgPartRestoreRecords.Any(item => item.TerritoryId == this.runtime.TerritoryType);
+        ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || !this.realNpcSpawn.EnableUnsafeNativeWrites || (this.localLayoutObjects.Instances.Count == 0 && !hasCurrentMapLocalBgPartRecords));
         if (ImGui.Button(T("恢复全部", "Restore All")))
             this.OpenConfirmPopupAtMouse("ConfirmRestoreAllLocalLayoutObjects");
+        ImGui.SameLine();
+        if (ImGui.Button(T("恢复当前地图全部", "Restore Current Map All")))
+            this.OpenConfirmPopupAtMouse("ConfirmRestoreCurrentMapLocalLayoutObjects");
         ImGui.EndDisabled();
 
         var candidate = this.GetSelectedBgPart();
@@ -5022,6 +5067,17 @@ public sealed class MainWindow : Window
 
     private static float DegreesToRadians(float degrees)
         => degrees * MathF.PI / 180f;
+
+    private sealed class ActorActionSequencePersistenceSnapshot
+    {
+        public bool EnableActionSequence { get; set; }
+
+        public bool ActionSequenceLoop { get; set; }
+
+        public float ActionSequenceLoopDelay { get; set; }
+
+        public List<ActorActionSequenceStep> ActionSequence { get; set; } = [];
+    }
 
     private sealed class MapModificationPreset
     {

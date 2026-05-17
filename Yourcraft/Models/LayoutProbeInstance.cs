@@ -8,6 +8,8 @@ public sealed class LayoutProbeInstance
 
     public string Key { get; set; } = string.Empty;
 
+    public string StableKey { get; set; } = string.Empty;
+
     public string Type { get; set; } = string.Empty;
 
     public string InstanceType { get; set; } = string.Empty;
@@ -17,6 +19,8 @@ public sealed class LayoutProbeInstance
     public string LayerAddress { get; set; } = string.Empty;
 
     public Vector3 Position { get; set; }
+
+    public Quaternion RotationQuaternion { get; set; } = Quaternion.Identity;
 
     public string Rotation { get; set; } = "未读取";
 

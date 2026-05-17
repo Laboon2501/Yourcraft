@@ -393,6 +393,46 @@ public sealed class RealNpcSpawnService
             : $"Despawned all runtime actors; persistent ActorConfig entries were kept. runtime={runtimeCount}.";
     }
 
+    public int DespawnCurrentTerritory(bool deleteConfigs)
+    {
+        var territory = CurrentTerritory(this.clientState);
+        var runtimeIds = this.registry.GetAll()
+            .Where(actor => actor.SpawnedTerritoryType == territory || actor.TerritoryId == territory)
+            .Select(actor => actor.RuntimeId)
+            .Concat(deleteConfigs
+                ? this.database.ActorConfigs.Where(config => config.TerritoryType == territory).Select(config => config.RuntimeId)
+                : [])
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var runtimeCount = 0;
+        foreach (var runtimeId in runtimeIds)
+        {
+            if (this.registry.GetByRuntimeId(runtimeId) is { } actor)
+            {
+                this.DespawnRuntimeOnly(actor, deleteConfigs ? "delete current territory actors" : "current territory runtime cleanup");
+                runtimeCount++;
+            }
+
+            this.registry.Remove(runtimeId);
+            this.appearanceApplyQueue.RemoveJobsForActor(runtimeId);
+        }
+
+        var configCount = 0;
+        if (deleteConfigs)
+        {
+            configCount = this.database.ActorConfigs.RemoveAll(config => config.TerritoryType == territory);
+            if (configCount > 0)
+                this.database.Save();
+        }
+
+        this.LastMessage = deleteConfigs
+            ? $"Deleted current territory ActorConfig/runtime actors. territory={territory}; runtime={runtimeCount}; configs={configCount}."
+            : $"Despawned current territory runtime actors. territory={territory}; runtime={runtimeCount}.";
+        return Math.Max(runtimeCount, configCount);
+    }
+
     public bool MoveActor(string runtimeId, Vector3 position)
     {
         var actor = this.registry.GetByRuntimeId(runtimeId);
@@ -1074,6 +1114,15 @@ public sealed class RealNpcSpawnService
         this.actionSequenceService.Reset(actor);
         this.PersistBehavior(actor);
         this.LastMessage = $"Reset action sequence for Actor {ShortId(runtimeId)}.";
+    }
+
+    public void PersistActorBehavior(string runtimeId)
+    {
+        if (this.registry.GetByRuntimeId(runtimeId) is not { } actor)
+            return;
+
+        this.PersistBehavior(actor);
+        this.LastMessage = $"Saved Actor behavior for {ShortId(runtimeId)}.";
     }
 
     public void TestActionSequenceStep(string runtimeId, Guid stepId)

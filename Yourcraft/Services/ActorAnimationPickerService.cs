@@ -129,6 +129,7 @@ public sealed class ActorAnimationPickerService
         }
 
         actor.CurrentAnimationId = actionTimelineId;
+        this.SaveActorBehavior(actor);
         this.LastResult = $"已写入当前 Actor 动画：{ShortId(actor.RuntimeId)} -> {actionTimelineId}";
         return true;
     }
@@ -151,6 +152,7 @@ public sealed class ActorAnimationPickerService
         actor.CurrentExpressionId = actionTimelineId;
         if (actor.CurrentExpressionLayer == ActorExpressionLayer.None)
             actor.CurrentExpressionLayer = ActorExpressionLayer.Facial;
+        this.SaveActorBehavior(actor);
         this.LastResult = $"Actor expression selected: {ShortId(actor.RuntimeId)} -> {actionTimelineId}";
         return true;
     }
@@ -182,11 +184,72 @@ public sealed class ActorAnimationPickerService
         else
             step.AnimationId = actionTimelineId;
 
+        this.SaveActorBehavior(actor);
         this.LastResult = expression
             ? $"已写入步骤表情 ID：{step.Name} -> {actionTimelineId}"
             : $"已写入步骤动画 ID：{step.Name} -> {actionTimelineId}";
         return true;
     }
+
+    private void SaveActorBehavior(RuntimeActorInstance actor)
+    {
+        var config = this.database.ActorConfigs.FirstOrDefault(item => string.Equals(item.RuntimeId, actor.RuntimeId, StringComparison.OrdinalIgnoreCase));
+        if (config == null)
+            return;
+
+        config.CurrentAnimationId = actor.CurrentAnimationId;
+        config.CurrentExpressionId = actor.CurrentExpressionId;
+        config.CurrentExpressionLayer = actor.CurrentExpressionLayer;
+        config.EnableActionSequence = actor.EnableActionSequence;
+        config.ActionSequenceLoop = actor.ActionSequenceLoop;
+        config.ActionSequenceLoopDelay = actor.ActionSequenceLoopDelay;
+        config.ActionSequence = actor.ActionSequence.Select(CloneStep).ToList();
+        this.database.Save();
+    }
+
+    private static ActorActionSequenceStep CloneStep(ActorActionSequenceStep step)
+        => new()
+        {
+            Id = step.Id,
+            Name = step.Name,
+            Kind = step.Kind,
+            AnimationId = step.AnimationId,
+            LoopAnimation = step.LoopAnimation,
+            StayInPose = step.StayInPose,
+            RepeatAfterSeconds = step.RepeatAfterSeconds,
+            ExpressionId = step.ExpressionId,
+            PlayExpressionWithAction = step.PlayExpressionWithAction,
+            ExpressionDelaySeconds = step.ExpressionDelaySeconds,
+            ExpressionDurationSeconds = step.ExpressionDurationSeconds,
+            LoopExpression = step.LoopExpression,
+            ExpressionWeight = step.ExpressionWeight,
+            ExpressionLayer = step.ExpressionLayer,
+            LipTalkKey = step.LipTalkKey,
+            LipTalkId = step.LipTalkId,
+            PlayLipTalkWithAction = step.PlayLipTalkWithAction,
+            LipTalkDelaySeconds = step.LipTalkDelaySeconds,
+            LipTalkDurationSeconds = step.LipTalkDurationSeconds,
+            LoopLipTalk = step.LoopLipTalk,
+            DurationSeconds = step.DurationSeconds,
+            BubbleText = step.BubbleText,
+            BubbleDurationSeconds = step.BubbleDurationSeconds,
+            BubbleUseAutoDuration = step.BubbleUseAutoDuration,
+            ShowBubbleOnEnter = step.ShowBubbleOnEnter,
+            HideBubbleOnDespawn = step.HideBubbleOnDespawn,
+            AllowLookAtDuringStep = step.AllowLookAtDuringStep,
+            MoveStartWorldOffset = step.MoveStartWorldOffset,
+            MoveEndWorldOffset = step.MoveEndWorldOffset,
+            MoveUseAbsoluteWorldTarget = step.MoveUseAbsoluteWorldTarget,
+            MoveWorldTarget = step.MoveWorldTarget,
+            MoveDurationSeconds = step.MoveDurationSeconds,
+            MoveInterpolation = step.MoveInterpolation,
+            MoveFaceDirection = step.MoveFaceDirection,
+            MoveRestoreAtStepEnd = step.MoveRestoreAtStepEnd,
+            MoveAffectsRotation = step.MoveAffectsRotation,
+            MoveYawDegrees = step.MoveYawDegrees,
+            MoveAnimationId = step.MoveAnimationId,
+            PlayMoveAnimationOnEnter = step.PlayMoveAnimationOnEnter,
+        };
 
     private static string ShortId(string id)
         => string.IsNullOrWhiteSpace(id) ? string.Empty : id[..Math.Min(8, id.Length)];

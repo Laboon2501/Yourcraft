@@ -16,6 +16,18 @@ public sealed class SceneEditorNativeModificationRecord
 
     public string MdlPath { get; set; } = string.Empty;
 
+    public string ObjectKind { get; set; } = string.Empty;
+
+    public string LayoutSource { get; set; } = string.Empty;
+
+    public string SourceKind { get; set; } = string.Empty;
+
+    public string SharedGroupPath { get; set; } = string.Empty;
+
+    public string ParentStableKey { get; set; } = string.Empty;
+
+    public int ChildIndex { get; set; } = -1;
+
     public uint TerritoryId { get; set; }
 
     public int ObjectIndexAtRecordTime { get; set; } = -1;

@@ -12,6 +12,7 @@ public sealed class SceneEditorOverlayWindow : Window
     private const float MarkerVisualMin = 5f;
     private const float MarkerVisualMax = 7f;
     private const float MarkerHitRadius = 12f;
+    private const float LargeObjectMarkerHitRadius = 44f;
     private const float AxisWorldLength = 2.1f;
     private const float AxisHitRadius = 12f;
     private const float RotateRingHitRadius = 10f;
@@ -245,10 +246,13 @@ public sealed class SceneEditorOverlayWindow : Window
             var nativeRecord = this.sceneEditor.GetNativeModificationRecord(editable);
             if (!editable.IsPlayer)
             {
-                if (nativeRecord?.IsHidden == true)
+                var canRestoreNative = nativeRecord != null &&
+                                       ((editable.IsHidden && nativeRecord.IsHidden) ||
+                                        (nativeRecord.IsModified && !nativeRecord.IsHidden));
+                if (canRestoreNative)
                 {
                     if (ImGui.Button($"{T("恢复", "Restore")}##MiniNativeRestore"))
-                        this.sceneEditor.RestoreNativeModification(nativeRecord.RecordId);
+                        this.sceneEditor.RestoreNativeModification(nativeRecord!.RecordId);
                 }
                 else
                 {
@@ -661,7 +665,7 @@ public sealed class SceneEditorOverlayWindow : Window
                 editable.MarkerWorldPosition,
                 screen,
                 Math.Clamp(this.sceneEditor.MarkerRadius, MarkerVisualMin, MarkerVisualMax),
-                MarkerHitRadius,
+                MarkerHitRadiusFor(editable),
                 editable.Transform.WorldPosition.LengthSquared(),
                 editable.DisplayName,
                 editable.MdlPath));
@@ -669,6 +673,13 @@ public sealed class SceneEditorOverlayWindow : Window
 
         return markers;
     }
+
+    private static float MarkerHitRadiusFor(SceneEditableRef editable)
+        => editable.Kind is SceneEditableKind.NativeBgPart or SceneEditableKind.LocalBgPart
+            ? LargeObjectMarkerHitRadius
+            : editable.Kind is SceneEditableKind.NativeActor or SceneEditableKind.EventNpc or SceneEditableKind.LocalActor or SceneEditableKind.LocalLight or SceneEditableKind.NativeLight
+                ? 18f
+                : MarkerHitRadius;
 
     private void DrawMarkers(ImDrawListPtr drawList, IReadOnlyList<SceneMarker> markers, SceneMarker? hovered)
     {

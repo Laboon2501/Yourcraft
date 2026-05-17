@@ -7,9 +7,11 @@ using FFXIVClientStructs.FFXIV.Client.LayoutEngine.Layer;
 using FFXIVClientStructs.FFXIV.Client.LayoutEngine.Terrain;
 using FFXIVClientStructs.FFXIV.Client.System.Resource.Handle;
 using Yourcraft.Models;
+using System.Globalization;
 using System.Numerics;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Text;
 using GameObject = FFXIVClientStructs.FFXIV.Client.Game.Object.GameObject;
 
 namespace Yourcraft.Services;
@@ -47,6 +49,8 @@ public sealed unsafe class LayoutProbeService
     }
 
     public float MaxDistance { get; set; } = 100f;
+
+    public int MaxResults { get; set; } = 250;
 
     public bool SortByDistance { get; set; } = true;
 
@@ -128,7 +132,7 @@ public sealed unsafe class LayoutProbeService
             if (this.SortByDistance && playerPosition.HasValue)
                 filtered = filtered.OrderBy(instance => instance.DistanceToPlayer);
 
-            this.Instances = filtered.Take(250).ToList();
+            this.Instances = filtered.Take(Math.Max(1, this.MaxResults)).ToList();
             this.LastStatus = $"已按 Meddle Layout 页路线读取 Layout instances {results.Count} 个，当前显示 {this.Instances.Count} 个。未读取 EventNPC/ObjectTable。";
         }
         catch (Exception ex)
@@ -150,6 +154,67 @@ public sealed unsafe class LayoutProbeService
     {
         this.SelectedInstances.Clear();
     }
+
+    private static string BuildStableLayoutKey(
+        string type,
+        string sourceKind,
+        string source,
+        string resourcePath,
+        string sharedGroupPath,
+        string parentKey,
+        int childIndex)
+    {
+        return string.Join(
+            "|",
+            NormalizeKeyPart(type),
+            NormalizeKeyPart(sourceKind),
+            NormalizeKeyPart(source),
+            NormalizeKeyPart(resourcePath),
+            NormalizeKeyPart(sharedGroupPath),
+            NormalizeKeyPart(parentKey),
+            childIndex.ToString(CultureInfo.InvariantCulture));
+    }
+
+    private static string NormalizeKeyPart(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return "_";
+
+        var sanitized = StripVolatileHexAddresses(value.Trim());
+        return sanitized.Length <= 260 ? sanitized : sanitized[..260];
+    }
+
+    private static string StripVolatileHexAddresses(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+            return string.Empty;
+
+        var builder = new StringBuilder(value.Length);
+        for (var i = 0; i < value.Length;)
+        {
+            if (i + 2 < value.Length &&
+                value[i] == '0' &&
+                (value[i + 1] == 'x' || value[i + 1] == 'X') &&
+                IsHexDigit(value[i + 2]))
+            {
+                var j = i + 2;
+                while (j < value.Length && IsHexDigit(value[j]))
+                    j++;
+
+                builder.Append("0x*");
+                i = j;
+                continue;
+            }
+
+            builder.Append(value[i]);
+            i++;
+        }
+
+        return builder.ToString();
+    }
+
+    private static bool IsHexDigit(char value)
+        => value is >= '0' and <= '9' or >= 'a' and <= 'f' or >= 'A' and <= 'F';
 
     public void DumpSelected(LayoutProbeInstance instance)
     {
@@ -360,16 +425,19 @@ public sealed unsafe class LayoutProbeService
         }
 
         var modelHandle = ReadBgPartModelHandle(bgPart);
+        var stableKey = BuildStableLayoutKey("BgPart", sourceKind, source, path, sharedGroupPath, parentKey, childIndex);
 
         return new LayoutProbeInstance
             {
                 Index = index,
                 Key = $"BgPart:{(nint)bgPart:X}",
+                StableKey = stableKey,
                 Type = "BgPart",
                 InstanceType = bgPart->Id.Type.ToString(),
                 Address = $"0x{(nint)bgPart:X}",
                 LayerAddress = $"0x{(nint)bgPart->Layer:X}",
             Position = position,
+            RotationQuaternion = rotation,
             Rotation = rotation.ToString(),
             Scale = scale,
             ResourcePath = path,
@@ -383,7 +451,7 @@ public sealed unsafe class LayoutProbeService
             ParentAddress = parentAddress,
             ParentKey = parentKey,
             ChildIndex = childIndex,
-            DebugInfo = $"GraphicsObject=0x{(nint)bgPart->GraphicsObject:X}; ModelResourceHandle={modelHandle}; transformSource={transformSource}; layoutPosition={layoutPosition}; visualPosition={position}; sourceKind={sourceKind}; sharedGroupPath={sharedGroupPath}; parent={parentAddress}; parentKey={parentKey}; childIndex={childIndex}",
+            DebugInfo = $"GraphicsObject=0x{(nint)bgPart->GraphicsObject:X}; ModelResourceHandle={modelHandle}; transformSource={transformSource}; layoutPosition={layoutPosition}; visualPosition={position}; sourceKind={sourceKind}; sharedGroupPath={sharedGroupPath}; parent={parentAddress}; parentKey={parentKey}; childIndex={childIndex}; stableKey={stableKey}",
         };
     }
 
@@ -407,6 +475,7 @@ public sealed unsafe class LayoutProbeService
 
         var path = ReadPrimaryPath((ILayoutInstance*)sharedGroup);
         var position = transform->Translation;
+        var stableKey = BuildStableLayoutKey("SharedGroup", sourceKind, source, path, parentSharedGroupPath, parentKey, childIndex);
         var childCount = 0;
         try
         {
@@ -421,11 +490,13 @@ public sealed unsafe class LayoutProbeService
             {
                 Index = index,
                 Key = $"SharedGroup:{(nint)sharedGroup:X}",
+                StableKey = stableKey,
                 Type = "SharedGroup",
                 InstanceType = sharedGroup->Id.Type.ToString(),
                 Address = $"0x{(nint)sharedGroup:X}",
                 LayerAddress = $"0x{(nint)sharedGroup->Layer:X}",
             Position = position,
+            RotationQuaternion = transform->Rotation,
             Rotation = transform->Rotation.ToString(),
             Scale = transform->Scale,
             ResourcePath = path,
@@ -439,7 +510,7 @@ public sealed unsafe class LayoutProbeService
             ParentAddress = parentAddress,
             ParentKey = parentKey,
             ChildIndex = childIndex,
-            DebugInfo = $"Children={childCount}; sharedGroupPath={path}; parentSharedGroupPath={parentSharedGroupPath}; parent={parentAddress}; parentKey={parentKey}; childIndex={childIndex}",
+            DebugInfo = $"Children={childCount}; sharedGroupPath={path}; parentSharedGroupPath={parentSharedGroupPath}; parent={parentAddress}; parentKey={parentKey}; childIndex={childIndex}; stableKey={stableKey}",
         };
     }
 
@@ -504,18 +575,22 @@ public sealed unsafe class LayoutProbeService
             return null;
 
         var position = transform->Translation;
+        var path = ReadPrimaryPath((ILayoutInstance*)light);
+        var stableKey = BuildStableLayoutKey("Light", sourceKind, source, path, sharedGroupPath, parentKey, childIndex);
         return new LayoutProbeInstance
             {
                 Index = index,
                 Key = $"Light:{(nint)light:X}",
+                StableKey = stableKey,
                 Type = "Light",
                 InstanceType = light->Id.Type.ToString(),
                 Address = $"0x{(nint)light:X}",
                 LayerAddress = $"0x{(nint)light->Layer:X}",
             Position = position,
+            RotationQuaternion = transform->Rotation,
             Rotation = transform->Rotation.ToString(),
             Scale = transform->Scale,
-            ResourcePath = ReadPrimaryPath((ILayoutInstance*)light),
+            ResourcePath = path,
             Visible = true,
             LayerId = "LayerManager",
             GroupId = "Light",
