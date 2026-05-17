@@ -168,18 +168,32 @@ public sealed class SceneEditorOverlayWindow : Window
     private void DrawObjectPanel(SceneMarker marker, SceneEditableRef editable, bool selectedPanel)
     {
         var viewport = ImGui.GetMainViewport();
-        var panelPos = marker.ScreenPosition + new Vector2(18f, -18f);
-        panelPos.X = Math.Clamp(panelPos.X, viewport.Pos.X + 8f, viewport.Pos.X + viewport.Size.X - 360f);
-        panelPos.Y = Math.Clamp(panelPos.Y, viewport.Pos.Y + 8f, viewport.Pos.Y + viewport.Size.Y - 280f);
+        var fixedSelectedPanel = selectedPanel && this.sceneEditor.FixedOverlayPanelPosition;
+        if (fixedSelectedPanel)
+        {
+            var panelPos = new Vector2(
+                viewport.Pos.X + MathF.Max(8f, viewport.Size.X - 380f),
+                viewport.Pos.Y + 96f);
+            ImGui.SetNextWindowPos(panelPos, ImGuiCond.Once);
+        }
+        else
+        {
+            var panelPos = marker.ScreenPosition + new Vector2(18f, -18f);
+            panelPos.X = Math.Clamp(panelPos.X, viewport.Pos.X + 8f, viewport.Pos.X + viewport.Size.X - 360f);
+            panelPos.Y = Math.Clamp(panelPos.Y, viewport.Pos.Y + 8f, viewport.Pos.Y + viewport.Size.Y - 280f);
+            ImGui.SetNextWindowPos(panelPos, ImGuiCond.Always);
+        }
 
-        ImGui.SetNextWindowPos(panelPos, ImGuiCond.Always);
         ImGui.SetNextWindowBgAlpha(selectedPanel ? 0.94f : 0.84f);
         var flags = ImGuiWindowFlags.AlwaysAutoResize |
                     ImGuiWindowFlags.NoSavedSettings |
                     ImGuiWindowFlags.NoCollapse |
                     ImGuiWindowFlags.NoDocking |
                     ImGuiWindowFlags.NoFocusOnAppearing;
-        if (!ImGui.Begin($"{(selectedPanel ? T("已选中的物体", "Selected Object") : T("悬停物体", "Hovered Object"))}##SceneEditorMiniPanel{editable.Kind}{editable.RuntimeId}", flags))
+        var title = fixedSelectedPanel
+            ? $"{T("已选中的物体", "Selected Object")}##SceneEditorMiniPanelFixed"
+            : $"{(selectedPanel ? T("已选中的物体", "Selected Object") : T("悬停物体", "Hovered Object"))}##SceneEditorMiniPanel{editable.Kind}{editable.RuntimeId}";
+        if (!ImGui.Begin(title, flags))
         {
             ImGui.End();
             return;

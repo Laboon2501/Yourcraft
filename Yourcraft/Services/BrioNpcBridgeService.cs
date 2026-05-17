@@ -83,7 +83,7 @@ public sealed class BrioNpcBridgeService
 
             if (this.ipcProbe.SelectedSpawnIpc == null)
             {
-                reason = "Brio 当前未暴露可用 Spawn IPC，需要走插件依赖/引用 Brio assembly 或参考 AQuestReborn 内部实现。";
+                reason = "Brio 当前未暴露可用 Spawn IPC，需要走插件依赖或引用 Brio assembly。";
                 this.LastFailureReason = reason;
                 return false;
             }

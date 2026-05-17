@@ -25,8 +25,8 @@ public sealed class MainWindow : Window
     };
 
     private readonly Configuration configuration;
-    private readonly QuestDatabase database;
-    private readonly QuestRuntimeService runtime;
+    private readonly SceneDataStore database;
+    private readonly PlayerContextService runtime;
     private readonly IDataManager dataManager;
     private readonly RealNpcSpawnService realNpcSpawn;
     private readonly LayoutProbeService layoutProbe;
@@ -117,15 +117,11 @@ public sealed class MainWindow : Window
 
     public MainWindow(
         Configuration configuration,
-        QuestDatabase database,
-        QuestRuntimeService runtime,
+        SceneDataStore database,
+        PlayerContextService runtime,
         IDataManager dataManager,
-        ExperimentalNpcService experimentalNpc,
         RealNpcSpawnService realNpcSpawn,
-        PropRuntimeService propRuntime,
         LayoutProbeService layoutProbe,
-        LayoutInstanceTransformService layoutTransform,
-        LayoutInstanceCloneService layoutClone,
         LayerDumpService layerDump,
         LocalLayoutObjectService localLayoutObjects,
         LocalLightNativeService localLights,
@@ -141,9 +137,7 @@ public sealed class MainWindow : Window
         AnimatedBgPartControllerProbeService animatedBgPartControllerProbe,
         StandaloneBgObjectProbeService standaloneBgObjectProbe,
         StandaloneRenderListProbeService standaloneRenderListProbe,
-        MeddleStyleSceneProbeService meddleSceneProbe,
         GameNpcCatalogService gameNpcCatalog,
-        GameNpcAppearanceResolver gameNpcAppearanceResolver,
         GlamourerDesignCatalogService glamourerDesignCatalog,
         ActorAnimationPickerService actorAnimationPicker,
         ActorLipSyncPresetService lipSyncPresets,
@@ -392,10 +386,10 @@ public sealed class MainWindow : Window
     {
         return this.database.ActorConfigs.Select(item => (uint)item.TerritoryType)
             .Concat(this.database.Npcs.Select(item => (uint)item.TerritoryType))
-            .Concat(this.configuration.SceneEditorLocalBgParts.Select(item => item.TerritoryId))
-            .Concat(this.configuration.SceneEditorLocalActors.Select(item => item.TerritoryId))
-            .Concat(this.configuration.SceneEditorNativeModifications.Where(item => item.IsHidden || item.IsModified).Select(item => item.TerritoryId))
-            .Concat(this.configuration.LocalLights.Select(item => item.TerritoryId))
+            .Concat(this.configuration.SceneEditorLocalBgParts.Where(item => IsExportableLocalBgPartRecord(item, item.TerritoryId)).Select(item => item.TerritoryId))
+            .Concat(this.configuration.SceneEditorLocalActors.Where(item => this.IsExportableLocalActorRecord(item, item.TerritoryId)).Select(item => item.TerritoryId))
+            .Concat(this.configuration.SceneEditorNativeModifications.Where(item => IsExportableNativeModificationRecord(item, item.TerritoryId)).Select(item => item.TerritoryId))
+            .Concat(this.configuration.LocalLights.Where(item => IsExportableLocalLight(item, item.TerritoryId)).Select(item => item.TerritoryId))
             .Concat(this.configuration.ProtectedBgPartSlots.Select(item => item.TerritoryType))
             .Concat(this.configuration.ProtectedBgPartResourcePaths.Where(item => item.AppliesToCurrentTerritoryOnly).Select(item => item.TerritoryType))
             .Concat(this.configuration.PreferredModifyBgPartSlots.Select(item => item.TerritoryType))
@@ -566,9 +560,15 @@ public sealed class MainWindow : Window
 
     private MapModificationPreset BuildMapPreset(uint territory)
     {
+        this.CleanupMapPresetExportRecords(territory);
+
+        var localActors = this.configuration.SceneEditorLocalActors
+            .Where(item => this.IsExportableLocalActorRecord(item, territory))
+            .ToList();
         var actorNpcIds = this.database.ActorConfigs
             .Where(item => item.TerritoryType == territory)
             .Select(item => item.SourceNpcPresetId)
+            .Concat(localActors.Select(item => item.NpcId))
             .Where(item => !string.IsNullOrWhiteSpace(item))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
@@ -578,16 +578,87 @@ public sealed class MainWindow : Window
             ExportedAtUtc = DateTime.UtcNow,
             ActorConfigs = CloneForPreset(this.database.ActorConfigs.Where(item => item.TerritoryType == territory)),
             Npcs = CloneForPreset(this.database.Npcs.Where(item => item.TerritoryType == territory || actorNpcIds.Contains(item.Id))),
-            LocalBgParts = CloneForPreset(this.configuration.SceneEditorLocalBgParts.Where(item => item.TerritoryId == territory)),
-            LocalActors = CloneForPreset(this.configuration.SceneEditorLocalActors.Where(item => item.TerritoryId == territory)),
-            NativeModifications = CloneForPreset(this.configuration.SceneEditorNativeModifications.Where(item => item.TerritoryId == territory && (item.IsHidden || item.IsModified))),
-            LocalLights = CloneForPreset(this.configuration.LocalLights.Where(item => item.TerritoryId == territory)),
+            LocalBgParts = CloneForPreset(this.configuration.SceneEditorLocalBgParts.Where(item => IsExportableLocalBgPartRecord(item, territory))),
+            LocalActors = CloneForPreset(localActors),
+            NativeModifications = CloneForPreset(this.configuration.SceneEditorNativeModifications.Where(item => IsExportableNativeModificationRecord(item, territory))),
+            LocalLights = CloneForPreset(this.configuration.LocalLights.Where(item => IsExportableLocalLight(item, territory))),
             ProtectedSlots = CloneForPreset(this.configuration.ProtectedBgPartSlots.Where(item => item.TerritoryType == territory)),
             ProtectedResourcePaths = CloneForPreset(this.configuration.ProtectedBgPartResourcePaths.Where(item => item.AppliesToCurrentTerritoryOnly && item.TerritoryType == territory)),
             PreferredSlots = CloneForPreset(this.configuration.PreferredModifyBgPartSlots.Where(item => item.TerritoryType == territory)),
             PreferredResourcePaths = CloneForPreset(this.configuration.PreferredModifyBgPartResourcePaths.Where(item => item.AppliesToCurrentTerritoryOnly && item.TerritoryType == territory)),
         };
     }
+
+    private void CleanupMapPresetExportRecords(uint territory)
+    {
+        var removed =
+            this.configuration.SceneEditorLocalBgParts.RemoveAll(item => item.TerritoryId == territory && !IsExportableLocalBgPartRecord(item, territory)) +
+            this.configuration.SceneEditorLocalActors.RemoveAll(item => item.TerritoryId == territory && !this.IsExportableLocalActorRecord(item, territory)) +
+            this.configuration.SceneEditorNativeModifications.RemoveAll(item => item.TerritoryId == territory && !IsExportableNativeModificationRecord(item, territory));
+
+        if (removed > 0)
+            this.saveConfiguration();
+    }
+
+    private static bool IsExportableLocalBgPartRecord(SceneEditorLocalBgPartRecord record, uint territory)
+        => record.TerritoryId == territory &&
+           record.Enabled &&
+           (!string.IsNullOrWhiteSpace(record.InstanceId) ||
+            !string.IsNullOrWhiteSpace(record.CurrentMdlPath) ||
+            !string.IsNullOrWhiteSpace(record.SourceMdlPath) ||
+            !string.IsNullOrWhiteSpace(record.CustomMdlPath));
+
+    private bool IsExportableLocalActorRecord(SceneEditorLocalActorRecord record, uint territory)
+        => record.TerritoryId == territory &&
+           record.Enabled &&
+           (!string.IsNullOrWhiteSpace(record.RuntimeId) || !string.IsNullOrWhiteSpace(record.NpcId)) &&
+           this.HasActorConfigForLocalActorRecord(record, territory);
+
+    private bool HasActorConfigForLocalActorRecord(SceneEditorLocalActorRecord record, uint territory)
+    {
+        foreach (var config in this.database.ActorConfigs.Where(item => item.TerritoryType == territory))
+        {
+            if (!string.IsNullOrWhiteSpace(record.RuntimeId) &&
+                string.Equals(config.RuntimeId, record.RuntimeId, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (string.IsNullOrWhiteSpace(record.NpcId) ||
+                !string.Equals(config.SourceNpcPresetId, record.NpcId, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (record.SortOrder != int.MaxValue &&
+                config.SortOrder != int.MaxValue &&
+                record.SortOrder == config.SortOrder)
+            {
+                return true;
+            }
+
+            if (Vector3.Distance(ToVector3(config.WorldPosition), record.WorldPosition) < 0.5f)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsExportableNativeModificationRecord(SceneEditorNativeModificationRecord record, uint territory)
+        => record.TerritoryId == territory &&
+           (record.IsHidden || record.IsModified) &&
+           !IsInactiveNativeExportStatus(record.Status);
+
+    private static bool IsInactiveNativeExportStatus(string status)
+        => !string.IsNullOrWhiteSpace(status) &&
+           (status.Contains("Restored", StringComparison.OrdinalIgnoreCase) ||
+            status.Contains("TrulyMissing", StringComparison.OrdinalIgnoreCase) ||
+            status.Contains("LegacyNoTerritory", StringComparison.OrdinalIgnoreCase) ||
+            status.Contains("Deleted", StringComparison.OrdinalIgnoreCase) ||
+            status.Contains("Removed", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsExportableLocalLight(LocalLightInstance light, uint territory)
+        => light.TerritoryId == territory && light.Enabled;
 
     private void BeginMapPresetImport(string path)
     {
@@ -827,8 +898,8 @@ public sealed class MainWindow : Window
             this.saveConfiguration();
         }
         ImGui.TextWrapped($"GPose 状态：{(this.IsInGpose() ? "当前在 GPose；Actor 运行态操作可用" : "普通状态")}");
-        ImGui.TextWrapped($"NPC/数据文件：{this.database.QuestFilePath}");
-        ImGui.TextWrapped($"使用开发路径：{this.database.IsUsingDevelopmentQuestPath}");
+        ImGui.TextWrapped($"NPC/Actor 数据文件：{this.database.DataFilePath}");
+        ImGui.TextWrapped($"使用开发路径：{this.database.IsUsingDevelopmentDataPath}");
         ImGui.TextWrapped($"当前地图 territory：{this.runtime.TerritoryType}");
         ImGui.TextWrapped($"玩家位置：{FormatVector(this.runtime.PlayerPosition)}");
         ImGui.Separator();
@@ -929,6 +1000,11 @@ public sealed class MainWindow : Window
         var overlayEnabled = this.sceneEditor.OverlayEnabled;
         if (ImGui.Checkbox(T("启用", "Enabled"), ref overlayEnabled))
             this.sceneEditor.OverlayEnabled = overlayEnabled;
+
+        ImGui.SameLine();
+        var fixedPanel = this.sceneEditor.FixedOverlayPanelPosition;
+        if (ImGui.Checkbox(T("固定窗口位置", "Fixed Panel Position"), ref fixedPanel))
+            this.sceneEditor.FixedOverlayPanelPosition = fixedPanel;
 
         var showPluginObjects = this.sceneEditor.ShowPluginObjects;
         if (ImGui.Checkbox(T("插件对象", "Plugin Objects"), ref showPluginObjects))
@@ -1100,7 +1176,7 @@ public sealed class MainWindow : Window
         ImGui.Separator();
         ImGui.TextWrapped(T("原生场景修改", "Native Scene Edits"));
         this.DrawSceneEditorRecordSection(T("原生 NPC / EventNPC 修改", "Native NPC / EventNPC Edits"), records.Where(item => item.IsModified && item.Kind is SceneEditableKind.NativeActor or SceneEditableKind.EventNpc));
-        this.DrawSceneEditorRecordSection(T("原生 BgPart 修改", "Native BgPart Edits"), records.Where(item => item.Kind == SceneEditableKind.NativeBgPart && (item.IsModified || IsRestoredNativeBgPartRecord(item))));
+        this.DrawSceneEditorRecordSection(T("原生 BgPart 修改", "Native BgPart Edits"), records.Where(item => item.IsModified && item.Kind == SceneEditableKind.NativeBgPart));
         this.DrawSceneEditorRecordSection(T("原生 Light 修改", "Native Light Edits"), records.Where(item => item.IsModified && item.Kind == SceneEditableKind.NativeLight));
 
         if (this.DrawConfirmPopup("ConfirmRestoreNativeRecord", T("确认恢复这条原生修改？", "Restore this native edit?")))
@@ -1431,9 +1507,6 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped($"NPC ID：{currentNpc.Id}");
         EditString("名称", currentNpc.Name, 128, value => currentNpc.Name = value);
         EditString("名称模板", currentNpc.NameTemplate, 128, value => currentNpc.NameTemplate = value);
-        var radius = currentNpc.InteractRadius;
-        if (ImGui.InputFloat("默认交互半径", ref radius))
-            currentNpc.InteractRadius = Math.Max(0.1f, radius);
         EditVector3Data("默认生成偏移", currentNpc.DefaultSpawnOffset);
         EditVector3DataDegrees("默认旋转", currentNpc.DefaultRotationEuler);
         EnsureNpcDefaultScale(currentNpc);
@@ -2878,6 +2951,8 @@ public sealed class MainWindow : Window
         var actors = this.realNpcSpawn.Actors.ToList();
         var selectedIndex = actors.FindIndex(item => string.Equals(item.RuntimeId, actor.RuntimeId, StringComparison.OrdinalIgnoreCase));
         var deleted = this.realNpcSpawn.Despawn(actor.RuntimeId, DespawnReason.UserRequested);
+        if (deleted)
+            this.sceneEditor.ForgetLocalActorRecord(actor.RuntimeId);
         var remaining = this.realNpcSpawn.Actors.ToList();
         if (remaining.Count == 0)
         {
@@ -4322,14 +4397,6 @@ public sealed class MainWindow : Window
             _ => kind.ToString(),
         };
 
-    private static bool IsRestoredNativeBgPartRecord(SceneEditorNativeModificationRecord record)
-        => record.Kind == SceneEditableKind.NativeBgPart &&
-           !record.IsHidden &&
-           !record.IsModified &&
-           (string.Equals(record.Status, "Restored", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(record.Status, "Original", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(record.Status, "Unmodified", StringComparison.OrdinalIgnoreCase));
-
     private void DrawBgPartPool()
     {
         ImGui.TextWrapped("按 resourcePath 分组的 BgPart slot 库存池。");
@@ -4889,7 +4956,6 @@ public sealed class MainWindow : Window
             Position = new Vector3Data { X = position.X, Y = position.Y, Z = position.Z },
             DefaultSpawnOffset = new Vector3Data(),
             DefaultScale = new Vector3Data { X = 1f, Y = 1f, Z = 1f },
-            InteractRadius = 6f,
         };
         this.database.Npcs.Add(npc);
         this.database.Save();

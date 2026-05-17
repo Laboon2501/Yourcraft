@@ -20,9 +20,8 @@ public sealed class Plugin : IDalamudPlugin
     private readonly WindowSystem windowSystem = new("Yourcraft");
 
     private readonly Configuration configuration;
-    private readonly QuestDatabase database;
-    private readonly QuestRuntimeService runtime;
-    private readonly ExperimentalNpcService experimentalNpc;
+    private readonly SceneDataStore database;
+    private readonly PlayerContextService runtime;
     private readonly RealNpcNameService realNpcName;
     private readonly RuntimeActorRegistry runtimeActorRegistry;
     private readonly BrioIpcProbeService brioIpcProbe;
@@ -46,20 +45,8 @@ public sealed class Plugin : IDalamudPlugin
     private readonly PlayerLookAtActorService playerLookAtActor;
     private readonly ActorValidityMonitorService actorValidityMonitor;
     private readonly ActorNameplateService actorNameplate;
-    private readonly ActorTargetabilityService actorTargetability;
-    private readonly TargetProbeService targetProbe;
-    private readonly NativeNpcProbeService nativeNpcProbe;
-    private readonly NativeGameObjectDumpService nativeGameObjectDump;
-    private readonly ExperimentalEventNpcService experimentalEventNpcService;
-    private readonly NativeTalkProbeService nativeTalkProbe;
-    private readonly EventNpcHostService eventNpcHost;
     private readonly RealNpcSpawnService realNpcSpawn;
-    private readonly BrioPropBridgeService brioPropBridge;
-    private readonly PropModelService propModel;
-    private readonly PropRuntimeService propRuntime;
     private readonly LayoutProbeService layoutProbe;
-    private readonly LayoutInstanceTransformService layoutTransform;
-    private readonly LayoutInstanceCloneService layoutClone;
     private readonly LayerDumpService layerDump;
     private readonly ProtectedBgPartRegistry protectedBgParts;
     private readonly PreferredModifyBgPartRegistry preferredModifyBgParts;
@@ -77,7 +64,6 @@ public sealed class Plugin : IDalamudPlugin
     private readonly AnimatedBgPartControllerProbeService animatedBgPartControllerProbe;
     private readonly StandaloneBgObjectProbeService standaloneBgObjectProbe;
     private readonly StandaloneRenderListProbeService standaloneRenderListProbe;
-    private readonly MeddleStyleSceneProbeService meddleSceneProbe;
     private readonly GameNpcCatalogService gameNpcCatalog;
     private readonly GameNpcAppearanceResolver gameNpcAppearanceResolver;
     private readonly GameNpcAppearanceApplyService gameNpcAppearanceApply;
@@ -110,9 +96,8 @@ public sealed class Plugin : IDalamudPlugin
 
         this.configuration = this.pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         Localization.CurrentLanguage = Localization.Normalize(this.configuration.UiLanguage);
-        this.database = new QuestDatabase(pluginInterface, log);
-        this.runtime = new QuestRuntimeService(clientState, objectTable, this.database);
-        this.experimentalNpc = new ExperimentalNpcService(log);
+        this.database = new SceneDataStore(pluginInterface, log);
+        this.runtime = new PlayerContextService(clientState, objectTable);
         this.realNpcName = new RealNpcNameService(log);
         this.runtimeActorRegistry = new RuntimeActorRegistry();
         this.brioIpcProbe = new BrioIpcProbeService(pluginInterface, log);
@@ -140,22 +125,9 @@ public sealed class Plugin : IDalamudPlugin
         this.playerLookAtActor = new PlayerLookAtActorService(objectTable, this.brioAssemblyBridge, log);
         this.actorValidityMonitor = new ActorValidityMonitorService(clientState, objectTable);
         this.actorNameplate = new ActorNameplateService(this.brioAssemblyBridge, log);
-        this.actorTargetability = new ActorTargetabilityService(targetManager, this.brioAssemblyBridge, log);
-        this.targetProbe = new TargetProbeService(targetManager);
-        this.nativeNpcProbe = new NativeNpcProbeService(targetManager);
-        this.nativeGameObjectDump = new NativeGameObjectDumpService(objectTable, targetManager, log);
-        this.experimentalEventNpcService = new ExperimentalEventNpcService(this.brioAssemblyBridge, this.nativeGameObjectDump, log);
-        this.nativeTalkProbe = new NativeTalkProbeService(targetManager);
-        this.eventNpcHost = new EventNpcHostService(targetManager, clientState, this.database);
-        this.realNpcSpawn = new RealNpcSpawnService(clientState, targetManager, this.database, this.runtimeActorRegistry, this.brioNpcBridge, this.brioAssemblyBridge, this.brioCapabilityBridge, this.actorAppearanceLocalizer, this.appearanceApply, this.appearanceApplyQueue, this.actorAnimation, this.actorActionSequence, this.actorLipSyncPresets, this.actorLookAt, this.playerLookAtActor, this.actorValidityMonitor, this.actorNameplate, this.actorTargetability, this.targetProbe, this.nativeNpcProbe, this.nativeGameObjectDump, this.experimentalEventNpcService, this.nativeTalkProbe, this.glamourerIpcProbe, this.glamourerIpcBridge, this.penumbraIpc, log);
-        this.realNpcSpawn.SetEventNpcHostService(this.eventNpcHost);
+        this.realNpcSpawn = new RealNpcSpawnService(clientState, this.database, this.runtimeActorRegistry, this.brioNpcBridge, this.brioAssemblyBridge, this.brioCapabilityBridge, this.actorAppearanceLocalizer, this.appearanceApply, this.appearanceApplyQueue, this.actorAnimation, this.actorActionSequence, this.actorLipSyncPresets, this.actorLookAt, this.playerLookAtActor, this.actorValidityMonitor, this.actorNameplate, this.glamourerIpcProbe, this.glamourerIpcBridge, this.penumbraIpc, log);
         this.realNpcSpawn.CleanupActorsForMissingNpcs();
-        this.brioPropBridge = new BrioPropBridgeService(this.brioAssemblyBridge, log);
-        this.propModel = new PropModelService(this.brioAssemblyBridge, log);
-        this.propRuntime = new PropRuntimeService(objectTable, this.database, this.brioAssemblyBridge, this.brioPropBridge, this.propModel, log);
         this.layoutProbe = new LayoutProbeService(objectTable, log);
-        this.layoutTransform = new LayoutInstanceTransformService();
-        this.layoutClone = new LayoutInstanceCloneService();
         this.layerDump = new LayerDumpService();
         this.protectedBgParts = new ProtectedBgPartRegistry(this.configuration, () => this.runtime.TerritoryType, () => this.pluginInterface.SavePluginConfig(this.configuration));
         this.preferredModifyBgParts = new PreferredModifyBgPartRegistry(this.configuration, () => this.runtime.TerritoryType, () => this.pluginInterface.SavePluginConfig(this.configuration));
@@ -184,7 +156,6 @@ public sealed class Plugin : IDalamudPlugin
         this.animatedBgPartControllerProbe = new AnimatedBgPartControllerProbeService();
         this.standaloneBgObjectProbe = new StandaloneBgObjectProbeService();
         this.standaloneRenderListProbe = new StandaloneRenderListProbeService();
-        this.meddleSceneProbe = new MeddleStyleSceneProbeService(objectTable, log);
         this.glamourerDesignCatalog = new GlamourerDesignCatalogService(pluginInterface, log);
         this.lastLayoutObjectTerritoryType = clientState.TerritoryType;
         this.lastPluginUiGposeState = clientState.IsGPosing;
@@ -194,7 +165,7 @@ public sealed class Plugin : IDalamudPlugin
 
         this.actionTimelinePickerWindow = new ActionTimelinePickerWindow(this.actorAnimationPicker);
         this.sceneEditorOverlayWindow = new SceneEditorOverlayWindow(gameGui, this.sceneEditor, this.sceneEditorSelection);
-        this.mainWindow = new MainWindow(this.configuration, this.database, this.runtime, dataManager, this.experimentalNpc, this.realNpcSpawn, this.propRuntime, this.layoutProbe, this.layoutTransform, this.layoutClone, this.layerDump, this.localLayoutObjects, this.localLights, this.sceneEditor, this.sceneEditorSelection, this.bgPartVisualProbe, this.rotationMatrixExperiment, this.bgPartVisualRescue, this.visualOnlyRotationDeepProbe, this.drawObjectUpdateDirtyProbe, this.graphicsSceneObjectTransform, this.bgPartCollisionSourceProbe, this.animatedBgPartControllerProbe, this.standaloneBgObjectProbe, this.standaloneRenderListProbe, this.meddleSceneProbe, this.gameNpcCatalog, this.gameNpcAppearanceResolver, this.glamourerDesignCatalog, this.actorAnimationPicker, this.actorLipSyncPresets, this.actionTimelinePickerWindow, this.penumbraIpc, this.Reload, () => this.pluginInterface.SavePluginConfig(this.configuration), () => this.clientState.IsGPosing);
+        this.mainWindow = new MainWindow(this.configuration, this.database, this.runtime, dataManager, this.realNpcSpawn, this.layoutProbe, this.layerDump, this.localLayoutObjects, this.localLights, this.sceneEditor, this.sceneEditorSelection, this.bgPartVisualProbe, this.rotationMatrixExperiment, this.bgPartVisualRescue, this.visualOnlyRotationDeepProbe, this.drawObjectUpdateDirtyProbe, this.graphicsSceneObjectTransform, this.bgPartCollisionSourceProbe, this.animatedBgPartControllerProbe, this.standaloneBgObjectProbe, this.standaloneRenderListProbe, this.gameNpcCatalog, this.glamourerDesignCatalog, this.actorAnimationPicker, this.actorLipSyncPresets, this.actionTimelinePickerWindow, this.penumbraIpc, this.Reload, () => this.pluginInterface.SavePluginConfig(this.configuration), () => this.clientState.IsGPosing);
 
         this.windowSystem.AddWindow(this.mainWindow);
         this.windowSystem.AddWindow(this.actionTimelinePickerWindow);
@@ -261,7 +232,6 @@ public sealed class Plugin : IDalamudPlugin
         this.layoutProbe.ClearRuntimeCache("PluginDispose");
         this.realNpcSpawn.DespawnAll();
         this.penumbraIpc.Dispose();
-        this.propRuntime.DespawnAll();
         this.brioAssemblyBridge.DespawnAll(out _);
         this.windowSystem.RemoveAllWindows();
     }
@@ -282,7 +252,6 @@ public sealed class Plugin : IDalamudPlugin
     {
         this.database.Reload();
         this.realNpcSpawn.CleanupActorsForMissingNpcs();
-        this.propRuntime.CleanupPropsForMissingConfigs();
         this.log.Information("Reloaded Yourcraft configuration");
     }
 

@@ -1,6 +1,5 @@
 using Dalamud.Configuration;
 using Yourcraft.Models;
-using System.Numerics;
 
 namespace Yourcraft;
 
@@ -11,15 +10,7 @@ public sealed class Configuration : IPluginConfiguration
 
     public string UiLanguage { get; set; } = "zh";
 
-    public Dictionary<string, QuestProgress> QuestProgresses { get; set; } = [];
-
-    public bool ShowTracker { get; set; } = true;
-
-    public bool ShowInteractionHint { get; set; } = true;
-
     public bool ShowPluginUiInGpose { get; set; } = true;
-
-    public Vector2 TrackerPosition { get; set; } = new(1420f, 340f);
 
     public List<ProtectedBgPartSlot> ProtectedBgPartSlots { get; set; } = [];
 

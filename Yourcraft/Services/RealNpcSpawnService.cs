@@ -15,8 +15,7 @@ public sealed class RealNpcSpawnService
 
 
     private readonly IClientState clientState;
-    private readonly ITargetManager targetManager;
-    private readonly QuestDatabase database;
+    private readonly SceneDataStore database;
     private readonly RuntimeActorRegistry registry;
     private readonly SpawnIntentRegistry spawnIntentRegistry = new();
     private readonly BrioNpcBridgeService brioBridge;
@@ -32,18 +31,10 @@ public sealed class RealNpcSpawnService
     private readonly PlayerLookAtActorService playerLookAtActorService;
     private readonly ActorValidityMonitorService validityMonitorService;
     private readonly ActorNameplateService nameplateService;
-    private readonly ActorTargetabilityService targetabilityService;
-    private readonly TargetProbeService targetProbeService;
-    private readonly NativeNpcProbeService nativeNpcProbeService;
-    private readonly NativeGameObjectDumpService nativeGameObjectDumpService;
-    private readonly ExperimentalEventNpcService experimentalEventNpcService;
-    private readonly NativeTalkProbeService nativeTalkProbeService;
     private readonly GlamourerIpcProbeService glamourerIpcProbe;
     private readonly GlamourerIpcBridgeService glamourerIpcBridge;
     private readonly PenumbraIpcService penumbraIpc;
     private readonly IPluginLog log;
-
-    private EventNpcHostService? eventNpcHostService;
     private uint lastTerritoryType;
     private long nextRuntimeActorSequence;
     private bool initialActorRefreshQueued;
@@ -56,8 +47,7 @@ public sealed class RealNpcSpawnService
 
     public RealNpcSpawnService(
         IClientState clientState,
-        ITargetManager targetManager,
-        QuestDatabase database,
+        SceneDataStore database,
         RuntimeActorRegistry registry,
         BrioNpcBridgeService brioBridge,
         BrioAssemblyBridgeService brioAssemblyBridge,
@@ -72,19 +62,12 @@ public sealed class RealNpcSpawnService
         PlayerLookAtActorService playerLookAtActorService,
         ActorValidityMonitorService validityMonitorService,
         ActorNameplateService nameplateService,
-        ActorTargetabilityService targetabilityService,
-        TargetProbeService targetProbeService,
-        NativeNpcProbeService nativeNpcProbeService,
-        NativeGameObjectDumpService nativeGameObjectDumpService,
-        ExperimentalEventNpcService experimentalEventNpcService,
-        NativeTalkProbeService nativeTalkProbeService,
         GlamourerIpcProbeService glamourerIpcProbe,
         GlamourerIpcBridgeService glamourerIpcBridge,
         PenumbraIpcService penumbraIpc,
         IPluginLog log)
     {
         this.clientState = clientState;
-        this.targetManager = targetManager;
         this.database = database;
         this.registry = registry;
         this.brioBridge = brioBridge;
@@ -100,12 +83,6 @@ public sealed class RealNpcSpawnService
         this.playerLookAtActorService = playerLookAtActorService;
         this.validityMonitorService = validityMonitorService;
         this.nameplateService = nameplateService;
-        this.targetabilityService = targetabilityService;
-        this.targetProbeService = targetProbeService;
-        this.nativeNpcProbeService = nativeNpcProbeService;
-        this.nativeGameObjectDumpService = nativeGameObjectDumpService;
-        this.experimentalEventNpcService = experimentalEventNpcService;
-        this.nativeTalkProbeService = nativeTalkProbeService;
         this.glamourerIpcProbe = glamourerIpcProbe;
         this.glamourerIpcBridge = glamourerIpcBridge;
         this.penumbraIpc = penumbraIpc;
@@ -172,7 +149,6 @@ public sealed class RealNpcSpawnService
         }
     }
 
-    public void SetEventNpcHostService(EventNpcHostService service) => this.eventNpcHostService = service;
     public void SetMessage(string message) => this.LastMessage = message;
 
     public void ProbeBrioIpc()
@@ -1256,22 +1232,6 @@ public sealed class RealNpcSpawnService
     public int GetActorCountForNpc(string npcId)
         => this.database.ActorConfigs.Count(config => string.Equals(config.SourceNpcPresetId, npcId, StringComparison.OrdinalIgnoreCase));
 
-    public CustomNpc? FindInteractableNpc(IEnumerable<CustomNpc> npcs, Vector3? playerPosition, uint territoryType)
-    {
-        if (!playerPosition.HasValue)
-            return null;
-
-        var npcById = npcs.ToDictionary(npc => npc.Id, StringComparer.OrdinalIgnoreCase);
-        var territory = (ushort)Math.Clamp((int)territoryType, 0, ushort.MaxValue);
-        return this.database.ActorConfigs
-            .Where(config => config.TerritoryType == territory && npcById.ContainsKey(config.SourceNpcPresetId))
-            .Select(config => new { Config = config, Npc = npcById[config.SourceNpcPresetId], Distance = Vector3.Distance(playerPosition.Value, ToVector3(config.WorldPosition)) })
-            .Where(item => item.Distance <= MathF.Max(0.1f, item.Npc.InteractRadius))
-            .OrderBy(item => item.Distance)
-            .Select(item => item.Npc)
-            .FirstOrDefault();
-    }
-
     public void Update()
     {
         var runtimeActors = this.registry.GetAll();
@@ -1335,7 +1295,7 @@ public sealed class RealNpcSpawnService
         this.FlushPendingTransforms(readyActors);
         this.UpdateActorBehaviorLoops(this.registry.GetAll().ToList());
         this.actionSequenceService.Update(readyActors);
-        this.lookAtService.Update(readyActors, this.database);
+        this.lookAtService.Update(readyActors);
     }
 
     private void FlushPendingTransforms(IEnumerable<RuntimeActorInstance> readyActors)

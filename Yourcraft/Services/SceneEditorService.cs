@@ -85,6 +85,8 @@ public sealed unsafe class SceneEditorService
 
     public bool OverlayEnabled { get; set; }
 
+    public bool FixedOverlayPanelPosition { get; set; }
+
     public bool ShowActors { get; set; } = true;
 
     public bool ShowBgParts { get; set; } = true;
@@ -771,6 +773,16 @@ public sealed unsafe class SceneEditorService
             this.MarkPersistDirty("LocalBgPart record removed");
     }
 
+    public void ForgetLocalActorRecord(string runtimeId)
+    {
+        if (string.IsNullOrWhiteSpace(runtimeId))
+            return;
+
+        var removed = this.LocalActorRecords.RemoveAll(item => string.Equals(item.RuntimeId, runtimeId, StringComparison.OrdinalIgnoreCase));
+        if (removed > 0)
+            this.MarkPersistDirty("LocalActor record removed");
+    }
+
     public bool RequestDeleteLocalBgPartCopy(string instanceId)
     {
         if (string.IsNullOrWhiteSpace(instanceId))
@@ -1365,8 +1377,7 @@ public sealed unsafe class SceneEditorService
         this.RemoveAutoPreferredModifyForRestoredNativeBgPart(record);
         record.Status = "Restored";
         record.LastModifiedAt = DateTime.UtcNow;
-        if (record.Kind != SceneEditableKind.NativeBgPart)
-            this.NativeRecords.Remove(record);
+        this.NativeRecords.Remove(record);
         this.MarkPersistDirty("Native restore");
         this.SaveDirtyConfigurationNow("Native restore");
         this.LastStatus = $"Native object restored: {record.DisplayName}";
@@ -1840,12 +1851,11 @@ public sealed unsafe class SceneEditorService
         if (record.Kind == SceneEditableKind.Player)
             return false;
 
-        record.NativeAddress = string.Empty;
         var transform = record.IsHidden
             ? GetHiddenOrCurrentTransform(record)
             : GetCurrentTransform(record);
 
-        if (!this.ApplyNativeRecordTransform(record, transform))
+        if (!this.ApplyNativeRecordTransformViaPersistedPath(record, transform, "persisted native modification replay"))
         {
             if (!IsNativeResolveStatus(record.Status))
                 record.Status = ToNativeRestoreFailureStatus(this.LastStatus);
@@ -2440,13 +2450,6 @@ public sealed unsafe class SceneEditorService
             !record.IsModified &&
             string.IsNullOrWhiteSpace(record.UsedByLocalBgPartInstanceId))
         {
-            if (record.Kind == SceneEditableKind.NativeBgPart)
-            {
-                record.Status = "Restored";
-                this.MarkPersistDirty($"Native transform {reason} restored");
-                return;
-            }
-
             this.NativeRecords.Remove(record);
             this.MarkPersistDirty($"Native transform {reason} restored");
             return;
@@ -2599,7 +2602,7 @@ public sealed unsafe class SceneEditorService
     {
         reason = string.Empty;
         if (record.Kind == SceneEditableKind.NativeBgPart)
-            return this.RestoreNativeBgPartToOriginalTransform(record, original, out reason);
+            return this.RestoreNativeBgPartViaPersistedPath(record, original, out reason);
 
         if (!this.ApplyNativeRecordTransform(record, original))
         {
@@ -2613,160 +2616,37 @@ public sealed unsafe class SceneEditorService
         return true;
     }
 
-    private bool RestoreNativeBgPartToOriginalTransform(SceneEditorNativeModificationRecord record, WorldTransform original, out string reason)
+    private bool RestoreNativeBgPartViaPersistedPath(SceneEditorNativeModificationRecord record, WorldTransform original, out string reason)
     {
-        reason = string.Empty;
-        this.EnsureNativeRecordLocatorFields(record);
+        this.log.Debug(
+            "[RestoreNativeBgPart] restore via persisted apply path stableKey={StableKey} sgb={Sgb} model={Model} original={Original}",
+            record.StableKey,
+            GetNativeBgPartRecordSgbPath(record),
+            GetNativeBgPartRecordAssetPath(record),
+            original.WorldPosition);
 
-        if (record.TerritoryId != 0 && record.TerritoryId != this.getTerritoryType())
+        if (!this.ApplyNativeRecordTransformViaPersistedPath(record, original, "manual native BgPart restore to original"))
         {
-            reason = $"{NativeResolveStatus.NotLoadedYet}: record belongs to another territory";
+            reason = this.LastStatus;
             return false;
         }
-
-        if (record.TerritoryId == 0)
-        {
-            record.TerritoryId = this.getTerritoryType();
-            record.TerritoryKey = FormatTerritoryKey(record.TerritoryId);
-            this.MarkPersistDirty("Native BgPart record territory backfilled");
-        }
-
-        if (!this.CanRunRestoreNow(out reason))
-            return false;
-
-        this.lastNativeScanUtc = DateTime.MinValue;
-        this.nativeCache.Clear();
-        var current = this.ResolveNativeObjectFresh(record, out var resolveResult);
-        if (current == null || current.NativePtr == 0 || current.IsPlayer)
-        {
-            reason = $"{resolveResult.Status}: {resolveResult.Reason}";
-            return false;
-        }
-
-        if (!current.IsHidden && TransformsRestoredEnough(current.Transform, original))
-        {
-            reason = string.Empty;
-            return true;
-        }
-
-        var target = new FreshNativeLayoutTarget(
-            current.NativePtr,
-            this.getTerritoryType(),
-            this.sceneGeneration,
-            current.Kind,
-            this.GetStableKey(current),
-            IsFresh: true,
-            ResolveReason: "manual native BgPart restore");
-
-        if (!this.ValidateFreshNativeLayoutTarget(target, out reason))
-            return false;
-
-        var layoutOk = false;
-        var visualOk = false;
-        var layoutReason = string.Empty;
-        var visualReason = string.Empty;
-        try
-        {
-            var pointer = (ILayoutInstance*)target.Address;
-            if (pointer == null || pointer->Id.Type != InstanceType.BgPart)
-            {
-                reason = "resolved target is not a BgPart";
-                return false;
-            }
-
-            var hasGraphicsObject = TryGetGraphicsObjectAddress(pointer, out var graphicsObjectAddress);
-            if (hasGraphicsObject)
-            {
-                var graphicsTarget = target with { Address = graphicsObjectAddress, ResolveReason = $"{target.ResolveReason}; GraphicsObject" };
-                visualOk = this.TryWriteSceneObjectTransform(graphicsTarget, original, out visualReason);
-            }
-            else
-            {
-                visualReason = "GraphicsObject unavailable";
-            }
-
-            if (record.UseFullLayoutTransform)
-                layoutOk = this.TryWriteLayoutInstanceTransform(target, original, out layoutReason);
-
-            if (record.UseFullLayoutTransform && !layoutOk)
-            {
-                reason = $"collision/layout restore failed; layout={layoutReason}; visual={visualReason}";
-                return false;
-            }
-
-            if (!record.UseFullLayoutTransform && hasGraphicsObject && !visualOk)
-            {
-                reason = $"visual restore failed; {visualReason}";
-                return false;
-            }
-
-            if (record.IsHidden && hasGraphicsObject && !visualOk)
-            {
-                reason = $"hidden BgPart restore failed; visual object was not restored; {visualReason}";
-                return false;
-            }
-
-            if (!layoutOk && !visualOk)
-            {
-                reason = $"no runtime transform write succeeded; layout={layoutReason}; visual={visualReason}";
-                return false;
-            }
-
-            this.TransformGeneration++;
-            this.lastNativeScanUtc = DateTime.MinValue;
-            this.nativeCache.Clear();
-            this.LastBgPartCollisionOperation = $"source=Native; collisionMode={(layoutOk ? "Restored" : "VisualOnly")}; collision operation=Restored; handle=0x{target.Address:X}; layout={layoutOk}; visual={visualOk}";
-        }
-        catch (Exception ex)
-        {
-            reason = ex.Message;
-            this.log.Warning(ex, "[SceneEditor] Native BgPart manual restore failed. stableKey={StableKey}", record.StableKey);
-            return false;
-        }
-
-        if (!this.VerifyNativeBgPartTargetRestored(target, original, out reason))
-            return false;
 
         reason = string.Empty;
         return true;
     }
 
-    private bool TryWriteLayoutInstanceTransform(FreshNativeLayoutTarget target, WorldTransform transform, out string reason)
+    private bool ApplyNativeRecordTransformViaPersistedPath(SceneEditorNativeModificationRecord record, WorldTransform transform, string operation)
     {
-        if (!this.ValidateFreshNativeLayoutTarget(target, out reason))
-            return false;
-
-        var normalizedScale = WorldTransformUtil.NormalizeScale(transform.WorldScale);
-        if (!IsTransformNormal(transform.WorldPosition, transform.WorldRotation, normalizedScale))
-        {
-            reason = "requested transform is not finite or has invalid scale";
-            return false;
-        }
-
-        try
-        {
-            var pointer = (ILayoutInstance*)target.Address;
-            if (pointer == null)
-            {
-                reason = "layout pointer is null";
-                return false;
-            }
-
-            var nativeTransform = new Transform
-            {
-                Translation = transform.WorldPosition,
-                Rotation = transform.WorldRotation,
-                Scale = normalizedScale,
-            };
-            pointer->SetTransform(&nativeTransform);
-            reason = string.Empty;
-            return true;
-        }
-        catch (Exception ex)
-        {
-            reason = ex.Message;
-            return false;
-        }
+        var previousNativeAddress = record.NativeAddress;
+        record.NativeAddress = string.Empty;
+        this.log.Debug(
+            "[RestoreNative] persisted-path apply operation={Operation} kind={Kind} stableKey={StableKey} previousNativeAddress={PreviousNativeAddress} target={Target}",
+            operation,
+            record.Kind,
+            record.StableKey,
+            previousNativeAddress,
+            transform.WorldPosition);
+        return this.ApplyNativeRecordTransform(record, transform);
     }
 
     private bool VerifyNativeRestoreApplied(SceneEditorNativeModificationRecord record, WorldTransform expected, out string reason)
@@ -2794,52 +2674,6 @@ public sealed unsafe class SceneEditorService
 
         reason = string.Empty;
         return true;
-    }
-
-    private bool VerifyNativeBgPartTargetRestored(FreshNativeLayoutTarget target, WorldTransform expected, out string reason)
-    {
-        reason = string.Empty;
-        try
-        {
-            var pointer = (ILayoutInstance*)target.Address;
-            if (pointer == null || pointer->Id.Type != InstanceType.BgPart)
-            {
-                reason = "verify failed: target is not a BgPart";
-                return false;
-            }
-
-            if (TryGetGraphicsObjectAddress(pointer, out var graphicsObjectAddress) &&
-                TryReadSceneObjectTransform(graphicsObjectAddress, out var visual))
-            {
-                if (TransformsRestoredEnough(visual, expected))
-                    return true;
-
-                reason = $"verify failed: visual transform differs; actual pos={visual.WorldPosition}, expected pos={expected.WorldPosition}";
-                return false;
-            }
-
-            var native = pointer->GetTransformImpl();
-            if (native == null)
-            {
-                reason = "verify failed: no GraphicsObject and no layout transform";
-                return false;
-            }
-
-            var layout = WorldTransform.FromEuler(
-                native->Translation,
-                WorldTransformUtil.QuaternionToWorldEulerRadians(native->Rotation),
-                native->Scale);
-            if (TransformsRestoredEnough(layout, expected))
-                return true;
-
-            reason = $"verify failed: layout transform differs; actual pos={layout.WorldPosition}, expected pos={expected.WorldPosition}";
-            return false;
-        }
-        catch (Exception ex)
-        {
-            reason = ex.Message;
-            return false;
-        }
     }
 
     private SceneEditableRef? ResolveNativeObjectFresh(SceneEditorNativeModificationRecord record)
@@ -4007,7 +3841,7 @@ public sealed unsafe class SceneEditorService
     {
         foreach (var name in Enum.GetNames(typeof(NativeResolveStatus)))
         {
-            if (reason.StartsWith(name, StringComparison.OrdinalIgnoreCase))
+            if (reason.Contains(name, StringComparison.OrdinalIgnoreCase))
                 return name;
         }
 

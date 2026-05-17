@@ -10,13 +10,13 @@ public sealed class AppearanceApplyQueue
     private const int TimeoutMilliseconds = 500;
 
     private readonly Queue<AppearanceApplyJob> jobs = new();
-    private readonly QuestDatabase database;
+    private readonly SceneDataStore database;
     private readonly RuntimeActorRegistry registry;
     private readonly AppearanceApplyService appearanceApplyService;
     private readonly IPluginLog log;
 
     public AppearanceApplyQueue(
-        QuestDatabase database,
+        SceneDataStore database,
         RuntimeActorRegistry registry,
         AppearanceApplyService appearanceApplyService,
         IPluginLog log)

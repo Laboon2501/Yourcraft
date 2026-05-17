@@ -51,7 +51,7 @@ public sealed class BrioIpcProbeService
              result.InvocationKind == BrioIpcInvocationKind.NoArgumentAsyncSpawn));
 
         this.LastProbeMessage = this.SelectedSpawnIpc == null
-            ? "未发现可用 Spawn IPC。Brio 当前未暴露可用 Spawn IPC，需要走插件依赖/引用 Brio assembly 或参考 AQuestReborn 内部实现。"
+            ? "未发现可用 Spawn IPC。Brio 当前未暴露可用 Spawn IPC，需要走插件依赖或引用 Brio assembly。"
             : $"发现可用 Spawn IPC：{this.SelectedSpawnIpc.Name} ({this.SelectedSpawnIpc.Signature})";
 
         this.log.Information(

@@ -5,13 +5,13 @@ namespace Yourcraft.Services;
 
 public sealed class ActorAnimationPickerService
 {
-    private readonly QuestDatabase database;
+    private readonly SceneDataStore database;
     private readonly RuntimeActorRegistry actorRegistry;
     private readonly ActorAnimationCatalogService catalog;
     private readonly IPluginLog log;
 
     public ActorAnimationPickerService(
-        QuestDatabase database,
+        SceneDataStore database,
         RuntimeActorRegistry actorRegistry,
         ActorAnimationCatalogService catalog,
         IPluginLog log)

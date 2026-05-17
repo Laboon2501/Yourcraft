@@ -24,8 +24,6 @@ public sealed class CustomNpc
 
     public Vector3Data DefaultScale { get; set; } = new() { X = 1f, Y = 1f, Z = 1f };
 
-    public float InteractRadius { get; set; } = 6f;
-
     public uint DefaultAnimationId { get; set; }
 
     public bool AutoPlayDefaultAnimation { get; set; }
@@ -46,50 +44,8 @@ public sealed class CustomNpc
 
     public string Notes { get; set; } = string.Empty;
 
-    public CustomNpcHostMode HostMode { get; set; } = CustomNpcHostMode.VirtualActor;
-
-    public NativeHostMode NativeHostMode { get; set; } = NativeHostMode.None;
-
-    public uint HostDataId { get; set; }
-
-    public string HostObjectIndex { get; set; } = string.Empty;
-
-    public ushort HostTerritoryType { get; set; }
-
-    public string HostName { get; set; } = string.Empty;
-
-    public bool OverrideNativeName { get; set; }
-
-    public bool InterceptNativeTalk { get; set; }
-
-    public bool UseLocalDialogueOnInteract { get; set; }
-
-    public HostInterceptMode InterceptMode { get; set; } = HostInterceptMode.ManualCommand;
-
-    public bool OverrideDialogueEnabled { get; set; } = true;
-
     [JsonPropertyName("appearance")]
     public CustomNpcAppearance Appearance { get; set; } = new();
-}
-
-public enum CustomNpcHostMode
-{
-    VirtualActor,
-    ExistingEventNpcHost,
-}
-
-public enum HostInterceptMode
-{
-    ManualCommand,
-    ConfirmKey,
-    NativeTalkAddon,
-}
-
-public enum NativeHostMode
-{
-    None,
-    SpawnedEventNpcExperiment,
-    ExistingEventNpcHost,
 }
 
 public enum NpcLookAtMode

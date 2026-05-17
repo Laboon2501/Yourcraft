@@ -21,7 +21,7 @@ public sealed class ActorLookAtService
         this.log = log;
     }
 
-    public void Update(IEnumerable<RuntimeActorInstance> actors, QuestDatabase database)
+    public void Update(IEnumerable<RuntimeActorInstance> actors)
     {
         var player = this.objectTable.LocalPlayer;
         if (player == null)
