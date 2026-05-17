@@ -1140,7 +1140,7 @@ public sealed class MainWindow : Window
         this.SyncSceneEditorBgPartCopyMode();
         var territory = this.runtime.TerritoryType;
         var records = this.sceneEditor.NativeModificationRecords
-            .Where(item => item.TerritoryId == territory)
+            .Where(item => item.TerritoryId == territory || item.TerritoryId == 0)
             .ToList();
 
         var selected = this.sceneEditor.GetSelectedEditable();
@@ -3339,7 +3339,7 @@ public sealed class MainWindow : Window
                 this.SelectBgPartCandidate(nearest);
         }
         ImGui.SameLine();
-        var hasCurrentMapLocalBgPartRecords = this.sceneEditor.LocalBgPartRestoreRecords.Any(item => item.TerritoryId == this.runtime.TerritoryType);
+        var hasCurrentMapLocalBgPartRecords = this.sceneEditor.LocalBgPartRestoreRecords.Any(item => item.TerritoryId == this.runtime.TerritoryType || item.TerritoryId == 0);
         ImGui.BeginDisabled(this.localLayoutObjects.IsBusy || !this.realNpcSpawn.EnableUnsafeNativeWrites || (this.localLayoutObjects.Instances.Count == 0 && !hasCurrentMapLocalBgPartRecords));
         if (ImGui.Button(T("恢复全部", "Restore All")))
             this.OpenConfirmPopupAtMouse("ConfirmRestoreAllLocalLayoutObjects");

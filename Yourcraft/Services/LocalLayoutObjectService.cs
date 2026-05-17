@@ -3355,7 +3355,7 @@ public sealed unsafe class LocalLayoutObjectService
     private void ScheduleTransformMonitor(LocalLayoutObjectInstance instance, Vector3 expectedPosition, Vector3 expectedRotationEuler, Vector3 expectedScale, string action)
     {
         instance.ControlledByRuntime = false;
-        instance.TransformMonitorActive = true;
+        instance.TransformMonitorActive = false;
         instance.TransformMonitorFrame = 0;
         instance.TransformMonitorExpectedPosition = expectedPosition;
         instance.TransformMonitorExpectedRotationEuler = expectedRotationEuler;
@@ -3366,11 +3366,11 @@ public sealed unsafe class LocalLayoutObjectService
         instance.PinFailed = false;
         instance.AppliedTransformPosition = FormatVector(expectedPosition);
         instance.LastTransformWriteSkippedReason = string.Empty;
-        instance.TransformOverwriteDetails = $"已写入 {action}，等待 1/5/30 帧 readback。";
+        instance.TransformOverwriteDetails = $"已写入 {action}；已跳过延迟 native readback，避免切图或资源卸载时读取失效 GraphicsObject。";
         instance.TransformReadbackAfter1Frame = string.Empty;
         instance.TransformReadbackAfter5Frames = string.Empty;
         instance.TransformReadbackAfter30Frames = string.Empty;
-        instance.TransformReadbackImmediate = this.ReadCurrentTransformForMonitor(instance, out _) ?? instance.LastReadback;
+        instance.TransformReadbackImmediate = instance.LastReadback;
     }
 
     private void UpdateTransformMonitor(LocalLayoutObjectInstance instance)

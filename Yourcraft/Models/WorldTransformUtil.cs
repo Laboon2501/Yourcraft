@@ -30,6 +30,16 @@ public static class WorldTransformUtil
             MathF.Max(0.01f, float.IsFinite(scale.Y) ? scale.Y : 1f),
             MathF.Max(0.01f, float.IsFinite(scale.Z) ? scale.Z : 1f));
 
+    public static bool RotationsEquivalent(Vector3 leftEulerRadians, Vector3 rightEulerRadians, float toleranceRadians = 0.0005f)
+    {
+        var left = WorldEulerRadiansToQuaternion(leftEulerRadians);
+        var right = WorldEulerRadiansToQuaternion(rightEulerRadians);
+        var dot = MathF.Abs(Quaternion.Dot(left, right));
+        dot = Math.Clamp(dot, 0f, 1f);
+        var angle = 2f * MathF.Acos(dot);
+        return angle <= toleranceRadians;
+    }
+
     public static Quaternion Normalize(Quaternion rotation)
     {
         if (!float.IsFinite(rotation.X) || !float.IsFinite(rotation.Y) || !float.IsFinite(rotation.Z) || !float.IsFinite(rotation.W))

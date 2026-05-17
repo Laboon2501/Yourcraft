@@ -16,15 +16,19 @@ public sealed class TransformEditState
 
     public void Bind(SceneEditableRef editable, uint generation)
     {
-        if (string.Equals(this.BoundRuntimeId, editable.RuntimeId, StringComparison.Ordinal) &&
-            this.LastSyncedGeneration == generation)
+        var sameBinding = string.Equals(this.BoundRuntimeId, editable.RuntimeId, StringComparison.Ordinal);
+        if (sameBinding && this.LastSyncedGeneration == generation)
         {
             return;
         }
 
+        var previousEuler = this.EulerInput;
         this.BoundRuntimeId = editable.RuntimeId;
         this.PositionInput = editable.Transform.WorldPosition;
-        this.EulerInput = editable.Transform.WorldEulerRadians;
+        this.EulerInput = sameBinding &&
+                          WorldTransformUtil.RotationsEquivalent(previousEuler, editable.Transform.WorldEulerRadians)
+            ? previousEuler
+            : editable.Transform.WorldEulerRadians;
         this.ScaleInput = editable.Transform.WorldScale == Vector3.Zero ? Vector3.One : editable.Transform.WorldScale;
         this.LastSyncedGeneration = generation;
     }

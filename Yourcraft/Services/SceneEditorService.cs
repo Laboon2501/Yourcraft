@@ -1568,7 +1568,7 @@ public sealed unsafe class SceneEditorService
         var nativeLegacy = this.NativeRecords.Count(item => item.TerritoryId == 0);
         var nativeWrongTerritory = this.NativeRecords.Count(item => item.TerritoryId != 0 && item.TerritoryId != territory);
         this.restoreNativeRecords = this.NativeRecords
-            .Where(item => item.TerritoryId == territory)
+            .Where(item => this.IsRecordInCurrentOrLegacyTerritory(item.TerritoryId, territory))
             .Where(item => item.Kind != SceneEditableKind.Player)
             .Where(item => item.IsHidden || item.IsModified)
             .Where(item => !string.Equals(item.Status, "Restored", StringComparison.OrdinalIgnoreCase))
@@ -1581,7 +1581,7 @@ public sealed unsafe class SceneEditorService
         var bgWrongTerritory = this.LocalBgPartRecords.Count(item => item.TerritoryId != 0 && item.TerritoryId != territory);
         this.restoreBgPartRecords = this.LocalBgPartRecords
             .Where(item => item.Enabled)
-            .Where(item => item.TerritoryId == territory)
+            .Where(item => this.IsRecordInCurrentOrLegacyTerritory(item.TerritoryId, territory))
             .OrderBy(item => item.SortOrder)
             .ThenBy(item => item.LastSavedAt)
             .ToList();
@@ -1590,7 +1590,7 @@ public sealed unsafe class SceneEditorService
         var lightLegacy = this.localLights.Instances.Count(item => item.TerritoryId == 0);
         var lightWrongTerritory = this.localLights.Instances.Count(item => item.TerritoryId != 0 && item.TerritoryId != territory);
         this.restoreLightRecords = this.localLights.Instances
-            .Where(item => item.TerritoryId == territory)
+            .Where(item => this.IsRecordInCurrentOrLegacyTerritory(item.TerritoryId, territory))
             .Select((item, index) => new { item, index })
             .OrderBy(pair => pair.index)
             .Select(pair => pair.item)
@@ -1601,23 +1601,15 @@ public sealed unsafe class SceneEditorService
         var actorWrongTerritory = this.LocalActorRecords.Count(item => item.TerritoryId != 0 && item.TerritoryId != territory);
         this.restoreActorRecords = this.LocalActorRecords
             .Where(item => item.Enabled)
-            .Where(item => item.TerritoryId == territory)
+            .Where(item => this.IsRecordInCurrentOrLegacyTerritory(item.TerritoryId, territory))
             .OrderBy(item => item.SortOrder)
             .ThenBy(item => item.LastSavedAt)
             .ToList();
 
         var actorRestoreCount = this.restoreActorRecords.Count;
-        foreach (var record in this.NativeRecords.Where(item => item.TerritoryId == 0))
-            record.Status = "LegacyNoTerritory";
-        foreach (var record in this.LocalBgPartRecords.Where(item => item.TerritoryId == 0))
-            record.RestoreStatus = "LegacyNoTerritory: skipped automatic restore.";
-        foreach (var record in this.LocalActorRecords.Where(item => item.TerritoryId == 0))
-            record.RestoreStatus = "LegacyNoTerritory: skipped automatic restore.";
-        foreach (var light in this.localLights.Instances.Where(item => item.TerritoryId == 0))
-            light.LastOperation = "LegacyNoTerritory: skipped automatic restore.";
         this.RestoreStatus = $"[Restore] Start generation reason={this.restoreReason}; native={this.restoreNativeRecords.Count}; bgParts={this.restoreBgPartRecords.Count}; lights={this.restoreLightRecords.Count}; actors={actorRestoreCount}";
         this.log.Information(
-            "[RestorePlan] reason={Reason}; currentTerritory={Territory}; native total={NativeTotal}, matched={NativeCount}, skippedWrongTerritory={NativeWrongTerritory}, skippedLegacyNoTerritory={NativeLegacy}; localBgParts total={BgTotal}, matched={BgPartCount}, skippedWrongTerritory={BgWrongTerritory}, skippedLegacyNoTerritory={BgLegacy}; localLights total={LightTotal}, matched={LightCount}, skippedWrongTerritory={LightWrongTerritory}, skippedLegacyNoTerritory={LightLegacy}; localActors total={ActorTotal}, matched={ActorCount}, skippedWrongTerritory={ActorWrongTerritory}, skippedLegacyNoTerritory={ActorLegacy}",
+            "[RestorePlan] reason={Reason}; currentTerritory={Territory}; native total={NativeTotal}, matched={NativeCount}, skippedWrongTerritory={NativeWrongTerritory}, includedLegacyNoTerritory={NativeLegacy}; localBgParts total={BgTotal}, matched={BgPartCount}, skippedWrongTerritory={BgWrongTerritory}, includedLegacyNoTerritory={BgLegacy}; localLights total={LightTotal}, matched={LightCount}, skippedWrongTerritory={LightWrongTerritory}, includedLegacyNoTerritory={LightLegacy}; localActors total={ActorTotal}, matched={ActorCount}, skippedWrongTerritory={ActorWrongTerritory}, includedLegacyNoTerritory={ActorLegacy}",
             this.restoreReason,
             territory,
             nativeTotal,
@@ -1636,11 +1628,12 @@ public sealed unsafe class SceneEditorService
             this.restoreActorRecords.Count,
             actorWrongTerritory,
             actorLegacy);
-        foreach (var record in this.LocalActorRecords.Where(item => item.TerritoryId == 0))
-            this.log.Information("[RestorePlan] Skipped actor legacy no territory id={Id} npc={NpcId}", record.RecordId, record.NpcId);
         foreach (var record in this.LocalActorRecords.Where(item => item.TerritoryId != 0 && item.TerritoryId != territory))
             this.log.Information("[RestorePlan] Skipped actor wrong territory id={Id} actorTerritory={ActorTerritory} currentTerritory={CurrentTerritory}", record.RecordId, record.TerritoryId, territory);
     }
+
+    private bool IsRecordInCurrentOrLegacyTerritory(uint recordTerritory, uint currentTerritory)
+        => currentTerritory != 0 && (recordTerritory == currentTerritory || recordTerritory == 0);
 
     private void AdvanceRestoreQueue()
     {
@@ -1724,6 +1717,13 @@ public sealed unsafe class SceneEditorService
                 if (this.restoreIndex < this.restoreLightRecords.Count)
                 {
                     var light = this.restoreLightRecords[this.restoreIndex++];
+                    if (light.TerritoryId == 0)
+                    {
+                        light.TerritoryId = this.getTerritoryType();
+                        light.LastOperation = "LegacyNoTerritory: restoring on current map.";
+                        this.MarkPersistDirty("LocalLight legacy territory backfilled");
+                    }
+
                     if (light.Enabled)
                         this.localLights.RequestApply(light.Id);
                     this.RestoreStatus = $"[Restore] Light {this.restoreIndex}/{this.restoreLightRecords.Count}: {light.Name}";
@@ -1806,18 +1806,17 @@ public sealed unsafe class SceneEditorService
         for (var index = 0; index < this.restoreActorRecords.Count; index++)
         {
             var record = this.restoreActorRecords[index];
-            var npc = this.actors.GetNpcById(record.NpcId);
-            if (npc == null)
+            if (record.TerritoryId == 0)
             {
-                record.RestoreStatus = "Failed: missing NPC config";
-                this.log.Warning("[ActorRestore] skip local actor record missing npc record={Record} npc={NpcId}", record.RecordId, record.NpcId);
-                continue;
+                record.TerritoryId = this.getTerritoryType();
+                record.RestoreStatus = "LegacyNoTerritory: restoring on current map.";
+                this.MarkPersistDirty("LocalActor legacy territory backfilled");
             }
 
             var position = record.WorldPosition;
             var rotation = ActorTransformUtil.NormalizeRotation(record.WorldRotationEuler);
             var scale = ActorTransformUtil.NormalizeScale(record.WorldScale);
-            var key = $"{record.NpcId}|{record.SortOrder}|{MathF.Round(position.X, 2)}|{MathF.Round(position.Y, 2)}|{MathF.Round(position.Z, 2)}";
+            var key = $"{FirstNonEmpty(record.RuntimeId, record.NpcId, record.RecordId)}|{record.SortOrder}|{MathF.Round(position.X, 2)}|{MathF.Round(position.Y, 2)}|{MathF.Round(position.Z, 2)}";
             if (!queuedKeys.Add(key))
             {
                 record.RestoreStatus = "Skipped: duplicate actor restore record";
@@ -1832,6 +1831,21 @@ public sealed unsafe class SceneEditorService
             if (alreadyLive)
             {
                 record.RestoreStatus = "Skipped: matching live actor already exists";
+                continue;
+            }
+
+            if (this.actors.QueueRestoreExistingActorConfig(record.RuntimeId, position, rotation, scale, record.SortOrder, out var configRestoreReason))
+            {
+                record.RestoreStatus = configRestoreReason;
+                queued++;
+                continue;
+            }
+
+            var npc = this.actors.GetNpcById(record.NpcId);
+            if (npc == null)
+            {
+                record.RestoreStatus = $"Failed: missing NPC config and ActorConfig. {configRestoreReason}";
+                this.log.Warning("[ActorRestore] skip local actor record missing npc/config record={Record} runtime={RuntimeId} npc={NpcId} reason={Reason}", record.RecordId, record.RuntimeId, record.NpcId, configRestoreReason);
                 continue;
             }
 
@@ -1891,6 +1905,13 @@ public sealed unsafe class SceneEditorService
         }
 
         var record = item.Record;
+        if (record.TerritoryId == 0)
+        {
+            record.TerritoryId = this.getTerritoryType();
+            record.RestoreStatus = "LegacyNoTerritory: restoring on current map.";
+            this.MarkPersistDirty("LocalBgPart legacy territory backfilled");
+        }
+
         switch (item.State)
         {
             case LocalBgPartRestoreState.Pending:
@@ -3914,12 +3935,12 @@ public sealed unsafe class SceneEditorService
 
     private static bool TransformsApproximatelyEqual(WorldTransform left, WorldTransform right)
         => Vector3.Distance(left.WorldPosition, right.WorldPosition) <= 0.01f &&
-           Vector3.Distance(left.WorldEulerRadians, right.WorldEulerRadians) <= 0.001f &&
+           WorldTransformUtil.RotationsEquivalent(left.WorldEulerRadians, right.WorldEulerRadians, 0.001f) &&
            Vector3.Distance(left.WorldScale, right.WorldScale) <= 0.001f;
 
     private static bool TransformsRestoredEnough(WorldTransform left, WorldTransform right)
         => Vector3.Distance(left.WorldPosition, right.WorldPosition) <= 0.05f &&
-           Vector3.Distance(left.WorldEulerRadians, right.WorldEulerRadians) <= 0.02f &&
+           WorldTransformUtil.RotationsEquivalent(left.WorldEulerRadians, right.WorldEulerRadians, 0.02f) &&
            Vector3.Distance(left.WorldScale, right.WorldScale) <= 0.02f;
 
     private static WorldTransform GetOriginalTransform(SceneEditorNativeModificationRecord record)

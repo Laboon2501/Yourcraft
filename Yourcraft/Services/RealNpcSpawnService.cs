@@ -167,6 +167,58 @@ public sealed class RealNpcSpawnService
 
     public CustomNpc? GetNpcById(string npcId) => this.database.GetNpcById(npcId);
 
+    public bool QueueRestoreExistingActorConfig(
+        string runtimeId,
+        Vector3 position,
+        Vector3 rotationEuler,
+        Vector3 scale,
+        int sortOrder,
+        out string reason)
+    {
+        var config = this.GetConfig(runtimeId);
+        if (config == null)
+        {
+            reason = "missing persistent ActorConfig";
+            return false;
+        }
+
+        var territory = CurrentTerritory(this.clientState);
+        config.TerritoryType = territory;
+        config.TerritoryName = $"Territory {territory}";
+        config.WorldPosition = ToData(ActorTransformUtil.SanitizePosition(position, ToVector3(config.WorldPosition)));
+        config.WorldRotationEuler = ToData(NormalizeActorRotation(rotationEuler));
+        config.WorldScale = ToData(NormalizeActorScale(scale));
+        config.AutoSpawn = true;
+        config.SortOrder = sortOrder;
+        if (!this.IsValidPersistentActorConfig(config, out var invalidReason))
+        {
+            this.database.Save();
+            reason = $"invalid persistent ActorConfig: {invalidReason}";
+            return false;
+        }
+
+        this.database.Save();
+
+        var npc = this.database.GetNpcById(config.SourceNpcPresetId);
+        var actor = this.EnsureShell(config, npc);
+        this.PopulateActorFromConfig(actor, config, npc);
+        actor.IsStale = false;
+        actor.IsValid = false;
+        actor.IsReady = false;
+        actor.CharacterObject = null;
+        actor.HasBoundNativeActor = false;
+        actor.HasBoundDrawObject = false;
+        actor.HasPendingTransformApply = true;
+        actor.PendingTransformPosition = ToVector3(config.WorldPosition);
+        actor.PendingTransformRotationEuler = ToVector3(config.WorldRotationEuler);
+        actor.PendingTransformScale = ToVector3(config.WorldScale, Vector3.One);
+        actor.PendingTransformRetryTicksRemaining = PostSpawnTransformRetryTicks;
+        this.SetLifecycle(actor, ActorLifecycleState.SpawnPending, "SceneEditor local actor restore existing ActorConfig.");
+        this.ScheduleRebuild("SceneEditor local actor restore existing ActorConfig", 0);
+        reason = $"Queued existing ActorConfig restore: {ShortId(runtimeId)}";
+        return true;
+    }
+
     public int GetConfiguredRestoreActorCount()
     {
         var territory = CurrentTerritory(this.clientState);
