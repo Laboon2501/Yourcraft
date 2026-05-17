@@ -22,13 +22,20 @@ public sealed unsafe class LayoutObjectTransformService
         => this.ApplyTransform(instance);
 
     public bool ApplyTransform(LocalLayoutObjectInstance instance)
+        => this.ApplyTransform(instance, SceneEditorTransformComponents.All);
+
+    public bool ApplyTransform(LocalLayoutObjectInstance instance, SceneEditorTransformComponents components)
     {
+        components = NormalizeTransformComponents(components);
+        if (components == SceneEditorTransformComponents.None)
+            return true;
+
         if (!this.CanWriteTransform(instance, out var reason))
             return this.Fail(instance, reason);
 
         return instance.TransformMode == LocalLayoutTransformMode.VisualOnly
-            ? this.ApplyVisualOnly(instance)
-            : this.ApplyFullLayout(instance);
+            ? this.ApplyVisualOnly(instance, components)
+            : this.ApplyFullLayout(instance, components);
     }
 
     public bool RestoreTransform(LocalLayoutObjectInstance instance)
@@ -114,7 +121,7 @@ public sealed unsafe class LayoutObjectTransformService
         }
     }
 
-    private bool ApplyVisualOnly(LocalLayoutObjectInstance instance)
+    private bool ApplyVisualOnly(LocalLayoutObjectInstance instance, SceneEditorTransformComponents components)
     {
         this.EnsureGraphicsObjectAddress(instance);
         if (!TryParseAddress(instance.GraphicsObjectAddress, out var graphicsAddress) || graphicsAddress == 0)
@@ -122,21 +129,32 @@ public sealed unsafe class LayoutObjectTransformService
 
         try
         {
-            var rotation = WorldTransformUtil.WorldEulerRadiansToQuaternion(instance.CurrentRotationEuler);
-            var target = new SceneTransformSnapshot(instance.CurrentPosition, rotation, instance.CurrentScale, false);
+            var current = ReadSceneObjectTransform(graphicsAddress);
+            if (current == null)
+                return this.Fail(instance, "VisualOnly current transform readback failed.");
+
+            var rotation = HasTransformComponent(components, SceneEditorTransformComponents.Rotation)
+                ? WorldTransformUtil.WorldEulerRadiansToQuaternion(instance.CurrentRotationEuler)
+                : current.Value.Rotation;
+            var target = new SceneTransformSnapshot(
+                HasTransformComponent(components, SceneEditorTransformComponents.Position) ? instance.CurrentPosition : current.Value.Position,
+                rotation,
+                HasTransformComponent(components, SceneEditorTransformComponents.Scale) ? instance.CurrentScale : current.Value.Scale,
+                false);
             if (!IsTransformNormal(target.Position, target.Rotation, target.Scale))
                 return this.Fail(instance, "VisualOnly requested transform is not finite or has invalid scale.");
             if (!ValidateSceneBgObjectWritable(graphicsAddress, out var validationReason))
                 return this.Fail(instance, validationReason);
 
-            WriteSceneObjectTransform(graphicsAddress, target);
+            WriteSceneObjectTransform(graphicsAddress, target, components);
             var readback = ReadSceneObjectTransform(graphicsAddress);
             if (readback == null)
                 return this.Fail(instance, "VisualOnly 写入后 readback 失败。");
 
             instance.CurrentPosition = readback.Value.Position;
             instance.CurrentRotation = readback.Value.Rotation;
-            instance.CurrentRotationEuler = WorldTransformUtil.QuaternionToWorldEulerRadians(readback.Value.Rotation);
+            if (HasTransformComponent(components, SceneEditorTransformComponents.Rotation))
+                instance.CurrentRotationEuler = WorldTransformUtil.QuaternionToWorldEulerRadians(readback.Value.Rotation);
             instance.CurrentScale = readback.Value.Scale;
             instance.CurrentVisualTranslation = readback.Value.Position;
             instance.LastReadback = FormatSceneSnapshot(readback.Value);
@@ -155,19 +173,25 @@ public sealed unsafe class LayoutObjectTransformService
         }
     }
 
-    private bool ApplyFullLayout(LocalLayoutObjectInstance instance)
+    private bool ApplyFullLayout(LocalLayoutObjectInstance instance, SceneEditorTransformComponents components)
     {
         if (!TryGetPointer(instance.OccupiedSlotAddress, out var pointer))
             return this.Fail(instance, $"slot 地址解析失败：{instance.OccupiedSlotAddress}");
 
         try
         {
-            var rotation = WorldTransformUtil.WorldEulerRadiansToQuaternion(instance.CurrentRotationEuler);
+            var current = ReadLayoutTransform(pointer);
+            if (current == null)
+                return this.Fail(instance, "FullLayout current transform readback failed.");
+
+            var rotation = HasTransformComponent(components, SceneEditorTransformComponents.Rotation)
+                ? WorldTransformUtil.WorldEulerRadiansToQuaternion(instance.CurrentRotationEuler)
+                : current.Value.Rotation;
             var transform = new Transform
             {
-                Translation = instance.CurrentPosition,
+                Translation = HasTransformComponent(components, SceneEditorTransformComponents.Position) ? instance.CurrentPosition : current.Value.Position,
                 Rotation = rotation,
-                Scale = instance.CurrentScale,
+                Scale = HasTransformComponent(components, SceneEditorTransformComponents.Scale) ? instance.CurrentScale : current.Value.Scale,
             };
             if (!IsTransformNormal(transform.Translation, transform.Rotation, transform.Scale))
                 return this.Fail(instance, "FullLayout requested transform is not finite or has invalid scale.");
@@ -180,7 +204,8 @@ public sealed unsafe class LayoutObjectTransformService
 
             instance.CurrentPosition = readback.Value.Position;
             instance.CurrentRotation = readback.Value.Rotation;
-            instance.CurrentRotationEuler = WorldTransformUtil.QuaternionToWorldEulerRadians(readback.Value.Rotation);
+            if (HasTransformComponent(components, SceneEditorTransformComponents.Rotation))
+                instance.CurrentRotationEuler = WorldTransformUtil.QuaternionToWorldEulerRadians(readback.Value.Rotation);
             instance.CurrentScale = readback.Value.Scale;
             instance.LastReadback = FormatLayoutSnapshot(readback.Value);
             instance.LastError = string.Empty;
@@ -288,18 +313,31 @@ public sealed unsafe class LayoutObjectTransformService
         return new SceneTransformSnapshot(obj->Position, obj->Rotation, obj->Scale, false);
     }
 
-    private static void WriteSceneObjectTransform(nint graphicsObjectAddress, SceneTransformSnapshot snapshot)
+    private static void WriteSceneObjectTransform(
+        nint graphicsObjectAddress,
+        SceneTransformSnapshot snapshot,
+        SceneEditorTransformComponents components = SceneEditorTransformComponents.All)
     {
+        components = NormalizeTransformComponents(components);
         var obj = (SceneObject*)graphicsObjectAddress;
         var bg = (SceneBgObject*)graphicsObjectAddress;
-        obj->Position = snapshot.Position;
-        obj->Rotation = snapshot.Rotation;
-        obj->Scale = snapshot.Scale;
+        if (HasTransformComponent(components, SceneEditorTransformComponents.Position))
+            obj->Position = snapshot.Position;
+        if (HasTransformComponent(components, SceneEditorTransformComponents.Rotation))
+            obj->Rotation = snapshot.Rotation;
+        if (HasTransformComponent(components, SceneEditorTransformComponents.Scale))
+            obj->Scale = snapshot.Scale;
         bg->IsTransformChanged = true;
         bg->NotifyTransformChanged();
         bg->UpdateTransforms(true);
         bg->UpdateRender();
     }
+
+    private static SceneEditorTransformComponents NormalizeTransformComponents(SceneEditorTransformComponents components)
+        => components & SceneEditorTransformComponents.All;
+
+    private static bool HasTransformComponent(SceneEditorTransformComponents components, SceneEditorTransformComponents component)
+        => (components & component) == component;
 
     private static bool ValidateSceneBgObjectWritable(nint graphicsObjectAddress, out string reason)
     {

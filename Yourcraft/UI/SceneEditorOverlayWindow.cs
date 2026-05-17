@@ -734,9 +734,9 @@ public sealed class SceneEditorOverlayWindow : Window
 
         return this.sceneEditor.Gizmo.Mode switch
         {
-            SceneEditorGizmoMode.Move => this.BuildAxisHandles(selected.Transform.WorldPosition, originScreen, includeUniform: false),
+            SceneEditorGizmoMode.Move => this.BuildAxisHandles(selected.Transform, originScreen, includeUniform: false),
             SceneEditorGizmoMode.Rotate => BuildRotateHandles(originScreen),
-            SceneEditorGizmoMode.Scale => this.BuildAxisHandles(selected.Transform.WorldPosition, originScreen, includeUniform: true),
+            SceneEditorGizmoMode.Scale => this.BuildAxisHandles(selected.Transform, originScreen, includeUniform: true),
             _ => Array.Empty<GizmoHandle>(),
         };
     }
@@ -784,17 +784,26 @@ public sealed class SceneEditorOverlayWindow : Window
         }
     }
 
-    private GizmoHandle[] BuildAxisHandles(Vector3 originWorld, Vector2 originScreen, bool includeUniform)
+    private GizmoHandle[] BuildAxisHandles(WorldTransform transform, Vector2 originScreen, bool includeUniform)
     {
         var handles = new List<GizmoHandle>(includeUniform ? 4 : 3);
-        this.AddAxisHandle(handles, originWorld, originScreen, Vector3.UnitX, SceneEditorGizmoAxis.X);
-        this.AddAxisHandle(handles, originWorld, originScreen, Vector3.UnitY, SceneEditorGizmoAxis.Y);
-        this.AddAxisHandle(handles, originWorld, originScreen, Vector3.UnitZ, SceneEditorGizmoAxis.Z);
+        this.AddAxisHandle(handles, transform.WorldPosition, originScreen, LocalAxisToWorld(Vector3.UnitX, transform.WorldRotation), SceneEditorGizmoAxis.X);
+        this.AddAxisHandle(handles, transform.WorldPosition, originScreen, LocalAxisToWorld(Vector3.UnitY, transform.WorldRotation), SceneEditorGizmoAxis.Y);
+        this.AddAxisHandle(handles, transform.WorldPosition, originScreen, LocalAxisToWorld(Vector3.UnitZ, transform.WorldRotation), SceneEditorGizmoAxis.Z);
 
         if (includeUniform)
             handles.Add(GizmoHandle.ForPoint(SceneEditorGizmoAxis.Uniform, originScreen, Vector2.UnitX, Vector3.One, 100f, ScaleCenterHalfSize + 3f));
 
         return handles.ToArray();
+    }
+
+    private static Vector3 LocalAxisToWorld(Vector3 axis, Quaternion rotation)
+    {
+        var worldAxis = Vector3.Transform(axis, rotation);
+        if (!float.IsFinite(worldAxis.X) || !float.IsFinite(worldAxis.Y) || !float.IsFinite(worldAxis.Z) || worldAxis.LengthSquared() < 0.0001f)
+            return axis;
+
+        return Vector3.Normalize(worldAxis);
     }
 
     private void AddAxisHandle(
@@ -858,6 +867,7 @@ public sealed class SceneEditorOverlayWindow : Window
         this.RequestSceneMouseCapture();
         var updated = this.sceneEditor.Gizmo.UpdateDrag(
             this.activeDrag.Handle.Axis,
+            this.activeDrag.Handle.WorldAxis,
             mouse,
             this.activeDrag.Handle.ScreenAxisUnit,
             this.activeDrag.Handle.PixelsPerWorldUnit,

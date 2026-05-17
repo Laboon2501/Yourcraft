@@ -68,6 +68,7 @@ public sealed class SceneEditorGizmoService
 
     public WorldTransform UpdateDrag(
         SceneEditorGizmoAxis axis,
+        Vector3 worldAxis,
         Vector2 mousePosition,
         Vector2 screenAxisUnit,
         float pixelsPerWorldUnit,
@@ -88,8 +89,10 @@ public sealed class SceneEditorGizmoService
                 delta *= this.MoveSensitivity * fine;
                 if (ctrl || this.SnapEnabled)
                     delta = Snap(delta, this.MoveSnapStep);
+                if (!IsUsableAxis(worldAxis))
+                    worldAxis = AxisToVector(axis);
                 result = WorldTransform.FromEuler(
-                    start.WorldPosition + AxisToVector(axis) * delta,
+                    start.WorldPosition + Vector3.Normalize(worldAxis) * delta,
                     start.WorldEulerRadians,
                     start.WorldScale);
                 break;
@@ -155,4 +158,10 @@ public sealed class SceneEditorGizmoService
 
         return MathF.Round(value / step) * step;
     }
+
+    private static bool IsUsableAxis(Vector3 axis)
+        => float.IsFinite(axis.X) &&
+           float.IsFinite(axis.Y) &&
+           float.IsFinite(axis.Z) &&
+           axis.LengthSquared() > 0.0001f;
 }

@@ -1444,19 +1444,30 @@ public sealed unsafe class LocalLayoutObjectService
 
     public void MoveZ(string id, float delta) => this.MoveBy(id, new Vector3(0f, 0f, delta), $"Z {(delta >= 0 ? "+" : string.Empty)}{delta:F1}");
 
-    public void ApplyVisualTransform(string id, Vector3 position, Vector3 rotationEuler, Vector3 scale)
+    public bool ApplyVisualTransform(
+        string id,
+        Vector3 position,
+        Vector3 rotationEuler,
+        Vector3 scale,
+        SceneEditorTransformComponents components = SceneEditorTransformComponents.All)
     {
         if (this.IsBusy)
         {
             this.LastStatus = "当前正在恢复/清理本地场景物体，暂不能应用 transform。";
-            return;
+            return false;
         }
 
         var instance = this.GetById(id);
         if (instance == null)
-            return;
+            return false;
 
-        this.WriteInstanceTransform(instance, position, rotationEuler, scale, instance.TransformMode == LocalLayoutTransformMode.VisualOnly ? "应用 VisualOnly transform" : "应用 FullLayout transform");
+        return this.WriteInstanceTransform(
+            instance,
+            position,
+            rotationEuler,
+            scale,
+            instance.TransformMode == LocalLayoutTransformMode.VisualOnly ? "应用 VisualOnly transform" : "应用 FullLayout transform",
+            components);
     }
 
     public void RestoreTransformOnly(string id)
@@ -3290,8 +3301,18 @@ public sealed unsafe class LocalLayoutObjectService
         return new RestoreVerification(failures.Count == 0, string.IsNullOrWhiteSpace(message) ? "restore readback ok" : message);
     }
 
-    private bool WriteInstanceTransform(LocalLayoutObjectInstance instance, Vector3 position, Vector3 rotationEuler, Vector3 scale, string action)
+    private bool WriteInstanceTransform(
+        LocalLayoutObjectInstance instance,
+        Vector3 position,
+        Vector3 rotationEuler,
+        Vector3 scale,
+        string action,
+        SceneEditorTransformComponents components = SceneEditorTransformComponents.All)
     {
+        components = NormalizeTransformComponents(components);
+        if (components == SceneEditorTransformComponents.None)
+            return true;
+
         if (!instance.IsRestoring && this.IsInstanceSlotProtected(instance, out var protectedReason))
         {
             instance.InstanceState = "Failed";
@@ -3300,15 +3321,18 @@ public sealed unsafe class LocalLayoutObjectService
             return false;
         }
 
-        instance.CurrentPosition = position;
-        instance.CurrentRotationEuler = rotationEuler;
-        instance.CurrentScale = scale;
+        if (HasTransformComponent(components, SceneEditorTransformComponents.Position))
+            instance.CurrentPosition = position;
+        if (HasTransformComponent(components, SceneEditorTransformComponents.Rotation))
+            instance.CurrentRotationEuler = rotationEuler;
+        if (HasTransformComponent(components, SceneEditorTransformComponents.Scale))
+            instance.CurrentScale = scale;
         instance.LastOperation = action;
-        var applied = this.transformService.ApplyTransform(instance);
+        var applied = this.transformService.ApplyTransform(instance, components);
         if (applied)
         {
             instance.InstanceState = "Ready";
-            this.ScheduleTransformMonitor(instance, position, rotationEuler, scale, action);
+            this.ScheduleTransformMonitor(instance, instance.CurrentPosition, instance.CurrentRotationEuler, instance.CurrentScale, action);
         }
         else
         {
@@ -3321,6 +3345,12 @@ public sealed unsafe class LocalLayoutObjectService
         this.LastStatus = $"{action}：{this.transformService.LastResult}";
         return applied;
     }
+
+    private static SceneEditorTransformComponents NormalizeTransformComponents(SceneEditorTransformComponents components)
+        => components & SceneEditorTransformComponents.All;
+
+    private static bool HasTransformComponent(SceneEditorTransformComponents components, SceneEditorTransformComponents component)
+        => (components & component) == component;
 
     private void ScheduleTransformMonitor(LocalLayoutObjectInstance instance, Vector3 expectedPosition, Vector3 expectedRotationEuler, Vector3 expectedScale, string action)
     {

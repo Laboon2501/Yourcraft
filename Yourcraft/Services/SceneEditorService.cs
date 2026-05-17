@@ -629,7 +629,7 @@ public sealed unsafe class SceneEditorService
                 }
                 return actorResult;
             case SceneEditableKind.LocalBgPart:
-                if (!this.ApplyLocalBgPartTransform(runtimeId, requestedTransform.WorldPosition, requestedTransform.WorldEulerRadians, scale, "SceneEditor LocalBgPart transform"))
+                if (!this.ApplyLocalBgPartTransform(runtimeId, requestedTransform.WorldPosition, requestedTransform.WorldEulerRadians, scale, "SceneEditor LocalBgPart transform", components))
                     return false;
                 this.LastStatus = this.localLayoutObjects.LastStatus;
                 this.TransformGeneration++;
@@ -961,7 +961,13 @@ public sealed unsafe class SceneEditorService
         }
     }
 
-    private bool ApplyLocalBgPartTransform(string runtimeId, Vector3 position, Vector3 rotationEuler, Vector3 scale, string reason)
+    private bool ApplyLocalBgPartTransform(
+        string runtimeId,
+        Vector3 position,
+        Vector3 rotationEuler,
+        Vector3 scale,
+        string reason,
+        SceneEditorTransformComponents components = SceneEditorTransformComponents.All)
     {
         if (this.IsBgPartCollisionConfirmationRequired(SceneEditableKind.LocalBgPart))
             return this.BlockUnconfirmedBgPartCollisionTransform(SceneEditableKind.LocalBgPart, "Plugin", runtimeId);
@@ -1002,9 +1008,9 @@ public sealed unsafe class SceneEditorService
             }
         }
 
-        this.localLayoutObjects.ApplyVisualTransform(runtimeId, position, rotationEuler, scale);
+        var applied = this.localLayoutObjects.ApplyVisualTransform(runtimeId, position, rotationEuler, scale, components);
         this.LastBgPartCollisionOperation = $"source=Plugin; collisionMode={(mode == LocalLayoutTransformMode.FullLayoutWithCollision ? "On" : "Off")}; collision operation={(mode == LocalLayoutTransformMode.FullLayoutWithCollision ? "Moved" : "Skipped")}; handle={instance.OccupiedSlotAddress}; reason={reason}";
-        return true;
+        return applied;
     }
 
     public bool TryCopyOneBgPart(SceneEditableRef selected, Vector3 offset)
