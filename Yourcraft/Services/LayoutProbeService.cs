@@ -424,6 +424,7 @@ public sealed unsafe class LayoutProbeService
             }
         }
 
+        var modelPath = ReadBgPartModelPath(bgPart);
         var modelHandle = ReadBgPartModelHandle(bgPart);
         var stableKey = BuildStableLayoutKey("BgPart", sourceKind, source, path, sharedGroupPath, parentKey, childIndex);
 
@@ -441,6 +442,7 @@ public sealed unsafe class LayoutProbeService
             Rotation = rotation.ToString(),
             Scale = scale,
             ResourcePath = path,
+            ModelResourcePath = modelPath,
             Visible = visible,
             LayerId = "LayerManager",
             GroupId = string.IsNullOrWhiteSpace(parentAddress) ? "BgPart" : "SharedGroupChild",
@@ -451,7 +453,7 @@ public sealed unsafe class LayoutProbeService
             ParentAddress = parentAddress,
             ParentKey = parentKey,
             ChildIndex = childIndex,
-            DebugInfo = $"GraphicsObject=0x{(nint)bgPart->GraphicsObject:X}; ModelResourceHandle={modelHandle}; transformSource={transformSource}; layoutPosition={layoutPosition}; visualPosition={position}; sourceKind={sourceKind}; sharedGroupPath={sharedGroupPath}; parent={parentAddress}; parentKey={parentKey}; childIndex={childIndex}; stableKey={stableKey}",
+            DebugInfo = $"GraphicsObject=0x{(nint)bgPart->GraphicsObject:X}; ModelResourceHandle={modelHandle}; modelResourcePath={modelPath}; transformSource={transformSource}; layoutPosition={layoutPosition}; visualPosition={position}; sourceKind={sourceKind}; sharedGroupPath={sharedGroupPath}; parent={parentAddress}; parentKey={parentKey}; childIndex={childIndex}; stableKey={stableKey}",
         };
     }
 
@@ -721,6 +723,24 @@ public sealed unsafe class LayoutProbeService
         catch (Exception ex)
         {
             return $"读取 ModelResourceHandle 失败：{ex.Message}";
+        }
+    }
+
+    private static string ReadBgPartModelPath(BgPartsLayoutInstance* bgPart)
+    {
+        try
+        {
+            if (bgPart->GraphicsObject == null)
+                return string.Empty;
+
+            var graphics = (MeddleBgObject*)bgPart->GraphicsObject;
+            return graphics->ModelResourceHandle == null
+                ? string.Empty
+                : graphics->ModelResourceHandle->FileName.ToString();
+        }
+        catch
+        {
+            return string.Empty;
         }
     }
 

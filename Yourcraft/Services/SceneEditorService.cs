@@ -52,6 +52,8 @@ public sealed unsafe class SceneEditorService
     private List<LocalLightInstance> restoreLightRecords = [];
     private LocalBgPartRestoreItem? activeBgPartRestore;
     private bool restoreActorsRequested;
+    private readonly Queue<string> pendingLocalBgPartDeletes = new();
+    private int activeInteractiveTransformEdits;
 
     public SceneEditorService(
         RealNpcSpawnService actors,
@@ -271,6 +273,8 @@ public sealed unsafe class SceneEditorService
             return;
         }
 
+        this.ProcessPendingLocalBgPartDeletes();
+
         if (!this.restoreRunning && this.restorePending)
             this.StartRestoreQueue();
 
@@ -444,41 +448,186 @@ public sealed unsafe class SceneEditorService
     }
 
     public bool ApplyWorldTransform(SceneEditableKind kind, string runtimeId, WorldTransform transform)
+        => this.ApplyWorldTransform(kind, runtimeId, transform, SceneEditorTransformComponents.All);
+
+    public WorldTransform MergeWorldTransformForComponents(
+        SceneEditableKind kind,
+        string runtimeId,
+        WorldTransform requested,
+        SceneEditorTransformComponents components)
     {
+        components = NormalizeTransformComponents(components);
+        if (components == SceneEditorTransformComponents.All)
+            return requested;
+
+        var baseTransform = requested;
+        var current = this.FindEditable(kind, runtimeId);
+        if (current?.IsNativeGameObject == true)
+        {
+            var record = this.GetNativeModificationRecord(current);
+            if (record != null)
+                baseTransform = record.IsHidden ? GetHiddenOrCurrentTransform(record) : GetCurrentTransform(record);
+        }
+        else if (current != null)
+        {
+            baseTransform = current.Transform;
+        }
+
+        return MergeWorldTransformForComponents(baseTransform, requested, components);
+    }
+
+    public void BeginInteractiveTransformEdit()
+        => this.activeInteractiveTransformEdits++;
+
+    public void EndInteractiveTransformEdit()
+    {
+        if (this.activeInteractiveTransformEdits > 0)
+            this.activeInteractiveTransformEdits--;
+
+        if (this.activeInteractiveTransformEdits != 0)
+            return;
+
+        this.lastPersistDirtyUtc = DateTime.UtcNow;
+        this.lastNativeScanUtc = DateTime.MinValue;
+        this.nativeCache.Clear();
+        this.TransformGeneration++;
+    }
+
+    public bool ApplyInteractiveWorldTransform(
+        SceneEditableRef selectedAtDragStart,
+        WorldTransform transform,
+        SceneEditorTransformComponents components,
+        out WorldTransform appliedTransform)
+    {
+        components = NormalizeTransformComponents(components);
+        appliedTransform = this.MergeWorldTransformForComponents(selectedAtDragStart, transform, components);
+        if (components == SceneEditorTransformComponents.None)
+        {
+            this.LastStatus = "Transform apply skipped: no component changed.";
+            return true;
+        }
+
+        if (selectedAtDragStart.Kind is SceneEditableKind.NativeBgPart or SceneEditableKind.NativeLight &&
+            selectedAtDragStart.IsNativeGameObject)
+        {
+            if (this.IsBgPartCollisionConfirmationRequired(selectedAtDragStart.Kind))
+            {
+                var source = selectedAtDragStart.Kind == SceneEditableKind.NativeBgPart ? "Native" : "Plugin";
+                return this.BlockUnconfirmedBgPartCollisionTransform(selectedAtDragStart.Kind, source, selectedAtDragStart.RuntimeId);
+            }
+
+            if (!this.AllowNativeTransformWrites)
+            {
+                this.LastStatus = "Native transform write blocked: unsafe/native writes are disabled.";
+                return false;
+            }
+
+            if (!this.CanRunRestoreNow(out var nativeLayoutPauseReason))
+            {
+                this.LastStatus = $"Native transform write skipped: {nativeLayoutPauseReason}.";
+                return false;
+            }
+
+            var target = new FreshNativeLayoutTarget(
+                selectedAtDragStart.NativePtr,
+                this.getTerritoryType(),
+                this.sceneGeneration,
+                selectedAtDragStart.Kind,
+                this.GetStableKey(selectedAtDragStart),
+                IsFresh: true,
+                ResolveReason: "interactive drag cached target");
+            var result = this.ApplyFreshNativeLayoutTransform(
+                selectedAtDragStart.RuntimeId,
+                target,
+                appliedTransform,
+                this.NativeFullLayoutTransformConfirmed,
+                components,
+                updateGeneration: false,
+                invalidateNativeCache: false);
+            if (result)
+                this.RecordNativeTransformChange(selectedAtDragStart, appliedTransform, "SceneEditorGizmoDrag");
+            return result;
+        }
+
+        if (selectedAtDragStart.Kind is SceneEditableKind.NativeActor or SceneEditableKind.EventNpc &&
+            selectedAtDragStart.IsNativeGameObject)
+        {
+            if (!this.AllowNativeTransformWrites)
+            {
+                this.LastStatus = "Native actor transform write blocked: unsafe/native writes are disabled.";
+                return false;
+            }
+
+            if (!this.CanRunRestoreNow(out var nativeActorPauseReason))
+            {
+                this.LastStatus = $"Native actor transform write skipped: {nativeActorPauseReason}.";
+                return false;
+            }
+
+            var result = this.ApplyNativeActorTransformAddress(
+                selectedAtDragStart.RuntimeId,
+                selectedAtDragStart.NativePtr,
+                appliedTransform,
+                components,
+                updateGeneration: false,
+                invalidateNativeCache: false);
+            if (result && selectedAtDragStart is { IsPlayer: false })
+                this.RecordNativeTransformChange(selectedAtDragStart, appliedTransform, "SceneEditorGizmoDrag");
+            return result;
+        }
+
+        return this.ApplyWorldTransform(selectedAtDragStart.Kind, selectedAtDragStart.RuntimeId, transform, components);
+    }
+
+    public bool ApplyWorldTransform(
+        SceneEditableKind kind,
+        string runtimeId,
+        WorldTransform transform,
+        SceneEditorTransformComponents components)
+    {
+        components = NormalizeTransformComponents(components);
+        if (components == SceneEditorTransformComponents.None)
+        {
+            this.LastStatus = "Transform apply skipped: no component changed.";
+            return true;
+        }
+
         if (this.IsBgPartCollisionConfirmationRequired(kind))
         {
             var source = kind == SceneEditableKind.NativeBgPart ? "Native" : "Plugin";
             return this.BlockUnconfirmedBgPartCollisionTransform(kind, source, runtimeId);
         }
 
+        var requestedTransform = this.MergeWorldTransformForComponents(kind, runtimeId, transform, components);
         var scale = kind == SceneEditableKind.LocalActor
-            ? ActorTransformUtil.NormalizeScale(transform.WorldScale)
-            : WorldTransformUtil.NormalizeScale(transform.WorldScale);
+            ? ActorTransformUtil.NormalizeScale(requestedTransform.WorldScale)
+            : WorldTransformUtil.NormalizeScale(requestedTransform.WorldScale);
         var rotation = kind == SceneEditableKind.LocalActor
-            ? ActorTransformUtil.NormalizeRotation(transform.WorldEulerRadians)
-            : transform.WorldEulerRadians;
-        this.log.Debug("[SceneEditor] ApplyWorldTransform kind={Kind} id={Id} pos={Position} rot={Rotation} scale={Scale}",
+            ? ActorTransformUtil.NormalizeRotation(requestedTransform.WorldEulerRadians)
+            : requestedTransform.WorldEulerRadians;
+        this.log.Debug("[SceneEditor] ApplyWorldTransform kind={Kind} id={Id} components={Components} pos={Position} rot={Rotation} scale={Scale}",
             kind,
             runtimeId,
-            transform.WorldPosition,
+            components,
+            requestedTransform.WorldPosition,
             rotation,
             scale);
 
         switch (kind)
         {
             case SceneEditableKind.LocalActor:
-                var actorResult = this.actors.ApplyActorTransform(runtimeId, transform.WorldPosition, rotation, scale);
+                var actorResult = this.actors.ApplyActorTransform(runtimeId, requestedTransform.WorldPosition, rotation, scale);
                 this.LastStatus = this.actors.LastMessage;
                 if (actorResult)
                 {
-                    this.actors.PersistActorWorldTransformToNpc(runtimeId, transform.WorldPosition, rotation, scale);
-                    this.SyncLocalActorRecord(runtimeId, transform.WorldPosition, rotation, scale);
+                    this.actors.PersistActorWorldTransformToNpc(runtimeId, requestedTransform.WorldPosition, rotation, scale);
+                    this.SyncLocalActorRecord(runtimeId, requestedTransform.WorldPosition, rotation, scale);
                     this.TransformGeneration++;
                     this.MarkPersistDirty("LocalActor transform");
                 }
                 return actorResult;
             case SceneEditableKind.LocalBgPart:
-                if (!this.ApplyLocalBgPartTransform(runtimeId, transform.WorldPosition, transform.WorldEulerRadians, scale, "SceneEditor LocalBgPart transform"))
+                if (!this.ApplyLocalBgPartTransform(runtimeId, requestedTransform.WorldPosition, requestedTransform.WorldEulerRadians, scale, "SceneEditor LocalBgPart transform"))
                     return false;
                 this.LastStatus = this.localLayoutObjects.LastStatus;
                 this.TransformGeneration++;
@@ -493,8 +642,8 @@ public sealed unsafe class SceneEditorService
                     return false;
                 }
 
-                light.Position = transform.WorldPosition;
-                light.Rotation = transform.WorldEulerRadians;
+                light.Position = requestedTransform.WorldPosition;
+                light.Rotation = requestedTransform.WorldEulerRadians;
                 light.Scale = scale;
                 light.TerritoryId = this.getTerritoryType();
                 this.localLights.RequestApply(runtimeId);
@@ -517,9 +666,9 @@ public sealed unsafe class SceneEditorService
                 }
 
                 var beforeLayout = this.FindEditable(kind, runtimeId);
-                var layoutResult = this.ApplyNativeLayoutTransform(runtimeId, transform);
+                var layoutResult = this.ApplyNativeLayoutTransform(runtimeId, requestedTransform, components);
                 if (layoutResult && beforeLayout is { IsNativeGameObject: true, IsPlayer: false })
-                    this.RecordNativeTransformChange(beforeLayout, WorldTransform.FromEuler(transform.WorldPosition, transform.WorldEulerRadians, scale), "SceneEditorTransform");
+                    this.RecordNativeTransformChange(beforeLayout, WorldTransform.FromEuler(requestedTransform.WorldPosition, requestedTransform.WorldEulerRadians, scale), "SceneEditorTransform");
                 return layoutResult;
             case SceneEditableKind.NativeActor:
             case SceneEditableKind.EventNpc:
@@ -536,9 +685,9 @@ public sealed unsafe class SceneEditorService
                 }
 
                 var beforeActor = this.FindEditable(kind, runtimeId);
-                var nativeActorResult = this.ApplyNativeActorTransform(runtimeId, transform);
+                var nativeActorResult = this.ApplyNativeActorTransform(runtimeId, requestedTransform, components);
                 if (nativeActorResult && beforeActor is { IsNativeGameObject: true, IsPlayer: false })
-                    this.RecordNativeTransformChange(beforeActor, WorldTransform.FromEuler(transform.WorldPosition, transform.WorldEulerRadians, scale), "SceneEditorTransform");
+                    this.RecordNativeTransformChange(beforeActor, WorldTransform.FromEuler(requestedTransform.WorldPosition, requestedTransform.WorldEulerRadians, scale), "SceneEditorTransform");
                 return nativeActorResult;
             case SceneEditableKind.Player:
                 this.LastStatus = "LocalPlayer transform editing is always blocked.";
@@ -547,6 +696,43 @@ public sealed unsafe class SceneEditorService
                 this.LastStatus = $"Unsupported editable kind: {kind}";
                 return false;
         }
+    }
+
+    private static SceneEditorTransformComponents NormalizeTransformComponents(SceneEditorTransformComponents components)
+        => components & SceneEditorTransformComponents.All;
+
+    private static bool HasTransformComponent(SceneEditorTransformComponents components, SceneEditorTransformComponents component)
+        => (components & component) == component;
+
+    private WorldTransform MergeWorldTransformForComponents(
+        SceneEditableRef selected,
+        WorldTransform requested,
+        SceneEditorTransformComponents components)
+    {
+        var baseTransform = selected.Transform;
+        if (selected.IsNativeGameObject)
+        {
+            var record = this.GetNativeModificationRecord(selected);
+            if (record != null)
+                baseTransform = record.IsHidden ? GetHiddenOrCurrentTransform(record) : GetCurrentTransform(record);
+        }
+
+        return MergeWorldTransformForComponents(baseTransform, requested, components);
+    }
+
+    private static WorldTransform MergeWorldTransformForComponents(
+        WorldTransform current,
+        WorldTransform requested,
+        SceneEditorTransformComponents components)
+    {
+        components = NormalizeTransformComponents(components);
+        if (components == SceneEditorTransformComponents.All)
+            return requested;
+
+        return WorldTransform.FromEuler(
+            HasTransformComponent(components, SceneEditorTransformComponents.Position) ? requested.WorldPosition : current.WorldPosition,
+            HasTransformComponent(components, SceneEditorTransformComponents.Rotation) ? requested.WorldEulerRadians : current.WorldEulerRadians,
+            HasTransformComponent(components, SceneEditorTransformComponents.Scale) ? requested.WorldScale : current.WorldScale);
     }
 
     public void PushTransformUndo(
@@ -583,6 +769,92 @@ public sealed unsafe class SceneEditorService
         var removed = this.LocalBgPartRecords.RemoveAll(item => string.Equals(item.InstanceId, instanceId, StringComparison.OrdinalIgnoreCase));
         if (removed > 0)
             this.MarkPersistDirty("LocalBgPart record removed");
+    }
+
+    public bool RequestDeleteLocalBgPartCopy(string instanceId)
+    {
+        if (string.IsNullOrWhiteSpace(instanceId))
+            return false;
+
+        if (!this.pendingLocalBgPartDeletes.Contains(instanceId, StringComparer.OrdinalIgnoreCase))
+            this.pendingLocalBgPartDeletes.Enqueue(instanceId);
+
+        this.LastStatus = $"Queued local BgPart copy delete: {instanceId}";
+        return true;
+    }
+
+    private void ProcessPendingLocalBgPartDeletes()
+    {
+        if (this.pendingLocalBgPartDeletes.Count == 0)
+            return;
+
+        if (this.restoreRunning)
+        {
+            this.LastStatus = "Local BgPart delete waiting: restore queue is running.";
+            return;
+        }
+
+        if (!this.CanRunRestoreNow(out var reason))
+        {
+            this.LastStatus = $"Local BgPart delete waiting: {reason}.";
+            return;
+        }
+
+        var instanceId = this.pendingLocalBgPartDeletes.Dequeue();
+        this.DeleteLocalBgPartCopyNow(instanceId);
+    }
+
+    private bool DeleteLocalBgPartCopyNow(string instanceId)
+    {
+        var instance = this.localLayoutObjects.GetById(instanceId);
+        if (instance == null)
+        {
+            this.ForgetLocalBgPartRecord(instanceId);
+            this.LastStatus = $"Local BgPart copy already gone: {instanceId}";
+            return true;
+        }
+
+        if (this.TryGetHiddenNativeCarrierRecordForCopy(instance, out var nativeRecord))
+        {
+            var hiddenTransform = GetHiddenOrCurrentTransform(nativeRecord);
+            var released = this.localLayoutObjects.ReleaseHiddenNativeCarrierCopy(
+                instance.Id,
+                hiddenTransform.WorldPosition,
+                hiddenTransform.WorldEulerRadians,
+                hiddenTransform.WorldScale,
+                out var releaseResult);
+            if (!released)
+            {
+                nativeRecord.Status = $"ReleaseCopyFailed: {releaseResult}";
+                nativeRecord.LastModifiedAt = DateTime.UtcNow;
+                this.MarkPersistDirty("Hidden native carrier copy release failed");
+                this.LastStatus = releaseResult;
+                return false;
+            }
+
+            nativeRecord.UsedByLocalBgPartInstanceId = string.Empty;
+            nativeRecord.UsedByLocalBgPartSlotAddress = string.Empty;
+            nativeRecord.UsedByLocalBgPartMdlPath = string.Empty;
+            nativeRecord.Status = nativeRecord.IsHidden ? "Hidden" : nativeRecord.IsModified ? "Modified" : "Restored";
+            nativeRecord.LastModifiedAt = DateTime.UtcNow;
+            this.ForgetLocalBgPartRecord(instance.Id);
+            this.MarkPersistDirty("Hidden native carrier copy released");
+            this.SaveDirtyConfigurationNow("Hidden native carrier copy released");
+            this.TransformGeneration++;
+            this.LastStatus = releaseResult;
+            return true;
+        }
+
+        var deleted = this.localLayoutObjects.Delete(instance.Id);
+        this.LastStatus = this.localLayoutObjects.LastStatus;
+        if (!deleted)
+            return false;
+
+        this.ForgetLocalBgPartRecord(instance.Id);
+        this.MarkPersistDirty("LocalBgPart deleted");
+        this.SaveDirtyConfigurationNow("LocalBgPart deleted");
+        this.TransformGeneration++;
+        return true;
     }
 
     public void ForgetAllLocalBgPartRecords()
@@ -749,7 +1021,7 @@ public sealed unsafe class SceneEditorService
 
         var sourceTransform = WorldTransform.FromEuler(
             source.Position,
-            Vector3.Zero,
+            WorldTransformUtil.QuaternionToWorldEulerRadians(source.RotationQuaternion),
             source.Scale == Vector3.Zero ? Vector3.One : source.Scale);
         return this.CreateSingleBgPartCopy(source, sourceTransform, offset);
     }
@@ -782,12 +1054,26 @@ public sealed unsafe class SceneEditorService
         }
 
         this.selection.Select(SceneEditableKind.LocalBgPart, created.Id, SceneEditorSelectionSource.SceneEditorPanel);
+        this.MarkHiddenNativeCarrierUsedByCopy(created);
         this.LastBgPartCollisionOperation = $"source={(template.Source.Contains("Native", StringComparison.OrdinalIgnoreCase) ? "Native" : "Plugin/Probe")}; collisionMode={(mode == LocalLayoutTransformMode.FullLayoutWithCollision ? "On" : "Off")}; collision operation={(mode == LocalLayoutTransformMode.FullLayoutWithCollision ? "Cloned/Moved" : "Skipped")}; handle={created.OccupiedSlotAddress}";
         this.LastQuickActionStatus = $"Copied one BgPart: {created.Id}; mode={mode}; {this.LastBgPartCollisionOperation}";
         this.TransformGeneration++;
         this.SyncLocalBgPartSnapshots();
         this.MarkPersistDirty("LocalBgPart created");
         return true;
+    }
+
+    private void MarkHiddenNativeCarrierUsedByCopy(LocalLayoutObjectInstance created)
+    {
+        if (!this.TryGetHiddenNativeCarrierRecordForCopy(created, out var record))
+            return;
+
+        record.UsedByLocalBgPartInstanceId = created.Id;
+        record.UsedByLocalBgPartSlotAddress = created.OccupiedSlotAddress;
+        record.UsedByLocalBgPartMdlPath = FirstNonEmpty(created.CurrentResourcePath, created.CustomModelPath, created.TemplateResourcePath);
+        record.Status = $"Hidden; used by copy {created.Id}";
+        record.LastModifiedAt = DateTime.UtcNow;
+        this.MarkPersistDirty("Hidden native carrier used by copy");
     }
 
     public bool TryProtectBgPart(SceneEditableRef selected)
@@ -850,9 +1136,113 @@ public sealed unsafe class SceneEditorService
         if (!selected.IsNativeGameObject)
             return null;
 
-        var stableKey = this.GetStableKey(selected);
-        return this.NativeRecords.FirstOrDefault(item =>
-            string.Equals(item.StableKey, stableKey, StringComparison.OrdinalIgnoreCase));
+        var stableRecord = this.GetNativeModificationRecordByStableKey(this.GetStableKey(selected));
+        if (stableRecord != null)
+            return stableRecord;
+
+        var sameKindRecords = this.NativeRecords
+            .Where(record => record.Kind == selected.Kind)
+            .Where(record => this.IsCurrentTerritoryRecord(record))
+            .ToList();
+
+        var nativeStableRecord = sameKindRecords.FirstOrDefault(record => this.NativeStableKeyMatches(record, selected));
+        if (nativeStableRecord != null)
+            return nativeStableRecord;
+
+        var locatorRecords = sameKindRecords
+            .Where(record => this.LayoutLocatorMatches(record, selected))
+            .ToList();
+        if (locatorRecords.Count == 1)
+            return locatorRecords[0];
+
+        var nameMdlRecords = sameKindRecords
+            .Where(record => this.NativeNameMdlMatches(record, selected))
+            .OrderBy(record => this.DistanceFromRecordAnchors(record, selected.Transform.WorldPosition))
+            .ToList();
+        if (nameMdlRecords.Count == 1)
+            return nameMdlRecords[0];
+        if (nameMdlRecords.Count > 1)
+        {
+            var best = nameMdlRecords[0];
+            var bestDistance = this.DistanceFromRecordAnchors(best, selected.Transform.WorldPosition);
+            var secondDistance = this.DistanceFromRecordAnchors(nameMdlRecords[1], selected.Transform.WorldPosition);
+            if (secondDistance - bestDistance >= 0.10f)
+                return best;
+        }
+
+        return null;
+    }
+
+    private SceneEditorNativeModificationRecord? GetNativeModificationRecordByStableKey(string stableKey)
+        => string.IsNullOrWhiteSpace(stableKey)
+            ? null
+            : this.NativeRecords.FirstOrDefault(item =>
+                string.Equals(item.StableKey, stableKey, StringComparison.OrdinalIgnoreCase));
+
+    private bool TryGetHiddenNativeCarrierRecordForCopy(LocalLayoutObjectInstance instance, out SceneEditorNativeModificationRecord record)
+    {
+        record = this.NativeRecords.FirstOrDefault(item =>
+            item.Kind == SceneEditableKind.NativeBgPart &&
+            item.IsHidden &&
+            string.Equals(item.UsedByLocalBgPartInstanceId, instance.Id, StringComparison.OrdinalIgnoreCase))!;
+        if (record != null)
+            return true;
+
+        record = this.NativeRecords.FirstOrDefault(item =>
+            item.Kind == SceneEditableKind.NativeBgPart &&
+            item.IsHidden &&
+            this.NativeRecordMatchesLocalCarrier(item, instance))!;
+        return record != null;
+    }
+
+    private bool NativeRecordMatchesLocalCarrier(SceneEditorNativeModificationRecord record, LocalLayoutObjectInstance instance)
+    {
+        if (record.TerritoryId != 0 && record.TerritoryId != this.getTerritoryType())
+            return false;
+
+        var snapshot = instance.OriginalSlotSnapshot;
+        var instanceStableKey = FirstNonEmpty(instance.SourceStableKey, snapshot?.SourceStableKey ?? string.Empty);
+        if (!string.IsNullOrWhiteSpace(instanceStableKey) &&
+            string.Equals(instanceStableKey, record.StableKey, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(record.RuntimeIdAtRecordTime) &&
+            !string.IsNullOrWhiteSpace(instance.OccupiedSlotAddress) &&
+            record.RuntimeIdAtRecordTime.Contains(instance.OccupiedSlotAddress, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var recordPath = record.MdlPath;
+        var instanceOriginalPath = FirstNonEmpty(snapshot?.OriginalResourcePath ?? string.Empty, instance.OriginalResourcePath, instance.SourceResourcePath);
+        if (!string.IsNullOrWhiteSpace(recordPath) &&
+            !string.Equals(recordPath, instanceOriginalPath, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(record.SourceKind) &&
+            !string.IsNullOrWhiteSpace(instance.SourceKind) &&
+            !string.Equals(record.SourceKind, instance.SourceKind, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(record.SharedGroupPath) &&
+            !string.Equals(record.SharedGroupPath, instance.SourceSharedGroupPath, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (record.ChildIndex >= 0 && record.ChildIndex != instance.SourceChildIndex)
+            return false;
+
+        var originalPosition = snapshot?.OriginalGraphicsPosition ?? instance.OccupiedSlotOriginalPosition;
+        var hiddenPosition = ToVector3(record.HiddenPosition);
+        return Vector3.Distance(ToVector3(record.OriginalPosition), originalPosition) <= 2f ||
+               (hiddenPosition != Vector3.Zero && Vector3.Distance(hiddenPosition, instance.CurrentPosition) <= 3f);
     }
 
     public bool HideNativeObject(SceneEditableRef selected)
@@ -933,6 +1323,17 @@ public sealed unsafe class SceneEditorService
             return false;
         }
 
+        if (this.IsNativeRestoreBlockedByCopy(record, out var copyBlockReason))
+        {
+            record.Status = NativeResolveStatus.BlockedByCopy.ToString();
+            record.LastModifiedAt = DateTime.UtcNow;
+            this.MarkPersistDirty("Native restore blocked by copy");
+            this.SaveDirtyConfigurationNow("Native restore blocked by copy");
+            this.LastStatus = $"Native restore blocked: {copyBlockReason}";
+            this.log.Warning("[SceneEditor] Native restore blocked by copy kind={Kind} key={Key} name={Name} reason={Reason}", record.Kind, record.StableKey, record.DisplayName, copyBlockReason);
+            return false;
+        }
+
         if (!this.CanRunRestoreNow(out var pausedReason))
         {
             record.Status = $"RestorePaused: {pausedReason}";
@@ -946,7 +1347,7 @@ public sealed unsafe class SceneEditorService
         var original = GetOriginalTransform(record);
         if (!this.RestoreNativeRecordToOriginalTransform(record, original, out var restoreReason))
         {
-            record.Status = restoreReason.Contains("resolve", StringComparison.OrdinalIgnoreCase) ? "Missing" : "RestoreFailed";
+            record.Status = ToNativeRestoreFailureStatus(restoreReason);
             record.LastModifiedAt = DateTime.UtcNow;
             this.MarkPersistDirty("Native restore failed");
             this.SaveDirtyConfigurationNow("Native restore failed");
@@ -956,14 +1357,67 @@ public sealed unsafe class SceneEditorService
         }
 
         SetRecordCurrentTransform(record, original);
+        record.IsHidden = false;
+        record.IsModified = false;
+        record.UsedByLocalBgPartInstanceId = string.Empty;
+        record.UsedByLocalBgPartSlotAddress = string.Empty;
+        record.UsedByLocalBgPartMdlPath = string.Empty;
         this.RemoveAutoPreferredModifyForRestoredNativeBgPart(record);
-        this.NativeRecords.Remove(record);
+        record.Status = "Restored";
+        record.LastModifiedAt = DateTime.UtcNow;
+        if (record.Kind != SceneEditableKind.NativeBgPart)
+            this.NativeRecords.Remove(record);
         this.MarkPersistDirty("Native restore");
         this.SaveDirtyConfigurationNow("Native restore");
         this.LastStatus = $"Native object restored: {record.DisplayName}";
         this.log.Information("[SceneEditor] Native restore kind={Kind} key={Key} name={Name}", record.Kind, record.StableKey, record.DisplayName);
         return true;
     }
+
+    private bool IsNativeRestoreBlockedByCopy(SceneEditorNativeModificationRecord record, out string reason)
+    {
+        reason = string.Empty;
+        if (record.Kind != SceneEditableKind.NativeBgPart)
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(record.UsedByLocalBgPartInstanceId))
+        {
+            var owner = this.localLayoutObjects.GetById(record.UsedByLocalBgPartInstanceId);
+            if (IsActiveLocalBgPartCopy(owner))
+            {
+                reason = $"copy {record.UsedByLocalBgPartInstanceId} still occupies this hidden carrier";
+                return true;
+            }
+
+            record.UsedByLocalBgPartInstanceId = string.Empty;
+            record.UsedByLocalBgPartSlotAddress = string.Empty;
+            record.UsedByLocalBgPartMdlPath = string.Empty;
+            record.Status = record.IsHidden ? "Hidden" : record.IsModified ? "Modified" : "Restored";
+            record.LastModifiedAt = DateTime.UtcNow;
+            this.MarkPersistDirty("Cleared stale native copy occupancy");
+        }
+
+        var activeOwner = this.localLayoutObjects.Instances.FirstOrDefault(instance =>
+            IsActiveLocalBgPartCopy(instance) &&
+            this.NativeRecordMatchesLocalCarrier(record, instance));
+        if (activeOwner == null)
+            return false;
+
+        record.UsedByLocalBgPartInstanceId = activeOwner.Id;
+        record.UsedByLocalBgPartSlotAddress = activeOwner.OccupiedSlotAddress;
+        record.UsedByLocalBgPartMdlPath = FirstNonEmpty(activeOwner.CurrentResourcePath, activeOwner.CustomModelPath, activeOwner.TemplateResourcePath);
+        record.LastModifiedAt = DateTime.UtcNow;
+        this.MarkPersistDirty("Detected native copy occupancy");
+        reason = $"copy {activeOwner.Id} occupies this carrier";
+        return true;
+    }
+
+    private static bool IsActiveLocalBgPartCopy(LocalLayoutObjectInstance? instance)
+        => instance != null &&
+           !instance.IsInvalid &&
+           !instance.IsRestored &&
+           !instance.IsDuplicate &&
+           instance.IsOccupied;
 
     private void RemoveAutoPreferredModifyForRestoredNativeBgPart(SceneEditorNativeModificationRecord record)
     {
@@ -1054,8 +1508,7 @@ public sealed unsafe class SceneEditorService
     public int CleanupInactiveNativeModificationRecords()
     {
         var removed = this.NativeRecords.RemoveAll(item =>
-            string.Equals(item.Status, "Restored", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(item.Status, "Missing", StringComparison.OrdinalIgnoreCase));
+            string.Equals(item.Status, "Restored", StringComparison.OrdinalIgnoreCase));
         if (removed > 0)
             this.MarkPersistDirty("Native records cleanup");
 
@@ -1394,14 +1847,11 @@ public sealed unsafe class SceneEditorService
 
         if (!this.ApplyNativeRecordTransform(record, transform))
         {
-            if (!string.Equals(record.Status, "Ambiguous", StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(record.Status, "LegacyNoTerritory", StringComparison.OrdinalIgnoreCase))
-            {
-                record.Status = "Missing";
-            }
+            if (!IsNativeResolveStatus(record.Status))
+                record.Status = ToNativeRestoreFailureStatus(this.LastStatus);
             record.LastModifiedAt = DateTime.UtcNow;
             this.MarkPersistDirty("Persisted native restore missing");
-            this.log.Warning("[Restore] Native restore missing stableKey={StableKey} kind={Kind} name={Name}", record.StableKey, record.Kind, record.DisplayName);
+            this.log.Warning("[Restore] Native restore unresolved status={Status} stableKey={StableKey} kind={Kind} name={Name} reason={Reason}", record.Status, record.StableKey, record.Kind, record.DisplayName, this.LastStatus);
             return false;
         }
 
@@ -1714,12 +2164,18 @@ public sealed unsafe class SceneEditorService
     {
         this.persistDirty = true;
         this.lastPersistDirtyUtc = DateTime.UtcNow;
+        if (this.activeInteractiveTransformEdits > 0)
+            return;
+
         this.log.Debug("[Persist] MarkDirty reason={Reason}", reason);
     }
 
     private void SaveDirtyConfigurationIfDue()
     {
         if (!this.persistDirty)
+            return;
+
+        if (this.activeInteractiveTransformEdits > 0)
             return;
 
         if ((DateTime.UtcNow - this.lastPersistDirtyUtc).TotalMilliseconds < 800)
@@ -1911,7 +2367,7 @@ public sealed unsafe class SceneEditorService
         changed |= SetPropertyIfChanged(record.CurrentMdlPath, FirstNonEmpty(instance.CurrentResourcePath, instance.CustomModelPath, instance.TemplateResourcePath), value => record.CurrentMdlPath = value);
         changed |= SetPropertyIfChanged(record.CustomMdlPath, instance.CustomModelPath, value => record.CustomMdlPath = value);
         changed |= SetPropertyIfChanged(record.CollisionMode, instance.TransformMode, value => record.CollisionMode = value);
-        changed |= SetPropertyIfChanged(record.SourceBgPartStableKey, FirstNonEmpty(instance.SourceParentKey, instance.OccupiedSlotAddress, instance.TemplateSourceSlotAddress), value => record.SourceBgPartStableKey = value);
+        changed |= SetPropertyIfChanged(record.SourceBgPartStableKey, FirstNonEmpty(instance.SourceStableKey, instance.SourceParentKey, instance.OccupiedSlotAddress, instance.TemplateSourceSlotAddress), value => record.SourceBgPartStableKey = value);
         changed |= SetPropertyIfChanged(record.SourceKind, instance.SourceKind, value => record.SourceKind = value);
         changed |= SetPropertyIfChanged(record.SourceSharedGroupPath, instance.SourceSharedGroupPath, value => record.SourceSharedGroupPath = value);
         changed |= SetPropertyIfChanged(record.SourceChildIndex, instance.SourceChildIndex, value => record.SourceChildIndex = value);
@@ -1958,7 +2414,7 @@ public sealed unsafe class SceneEditorService
     }
 
     private bool IsCurrentTerritoryRecord(SceneEditorNativeModificationRecord record)
-        => record.TerritoryId != 0 && record.TerritoryId == this.getTerritoryType();
+        => record.TerritoryId == 0 || record.TerritoryId == this.getTerritoryType();
 
     private WorldTransform ReadNativeTransformOrFallback(SceneEditableRef selected)
     {
@@ -1980,17 +2436,33 @@ public sealed unsafe class SceneEditorService
             record.Status = record.IsModified ? "Modified" : "Restored";
         record.Reason = reason;
         record.LastModifiedAt = DateTime.UtcNow;
+        if (!record.IsHidden &&
+            !record.IsModified &&
+            string.IsNullOrWhiteSpace(record.UsedByLocalBgPartInstanceId))
+        {
+            if (record.Kind == SceneEditableKind.NativeBgPart)
+            {
+                record.Status = "Restored";
+                this.MarkPersistDirty($"Native transform {reason} restored");
+                return;
+            }
+
+            this.NativeRecords.Remove(record);
+            this.MarkPersistDirty($"Native transform {reason} restored");
+            return;
+        }
+
         this.MarkPersistDirty($"Native transform {reason}");
     }
 
     private SceneEditorNativeModificationRecord EnsureNativeRecord(SceneEditableRef selected, WorldTransform original, string reason)
     {
         var stableKey = this.GetStableKey(selected);
-        var record = this.NativeRecords.FirstOrDefault(item =>
-            string.Equals(item.StableKey, stableKey, StringComparison.OrdinalIgnoreCase));
+        var record = this.GetNativeModificationRecord(selected) ??
+                     this.NativeRecords.FirstOrDefault(item =>
+                         string.Equals(item.StableKey, stableKey, StringComparison.OrdinalIgnoreCase));
         if (record != null)
         {
-            record.NativeAddress = string.Empty;
             this.UpdateNativeRecordLocator(record, selected);
             return record;
         }
@@ -2000,13 +2472,24 @@ public sealed unsafe class SceneEditorService
             RecordId = Guid.NewGuid().ToString("N"),
             StableKey = stableKey,
             RuntimeIdAtRecordTime = selected.RuntimeId,
-            NativeAddress = string.Empty,
+            NativeAddress = selected.NativePtr == 0 ? string.Empty : $"0x{selected.NativePtr:X}",
             Kind = selected.Kind,
             DisplayName = selected.DisplayName,
             MdlPath = selected.MdlPath,
+            TerritoryKey = FormatTerritoryKey(this.getTerritoryType()),
+            NativeBgPartStableKey = selected.Kind == SceneEditableKind.NativeBgPart ? selected.StableKey : string.Empty,
+            NativeBgPartSgbPath = selected.Kind == SceneEditableKind.NativeBgPart ? selected.LayoutProbe?.ResourcePath ?? string.Empty : string.Empty,
+            NativeBgPartAssetPath = selected.Kind == SceneEditableKind.NativeBgPart ? FirstNonEmpty(selected.LayoutProbe?.ResourcePath, selected.DisplayName) : string.Empty,
+            NativeBgPartModelPath = selected.Kind == SceneEditableKind.NativeBgPart ? FirstNonEmpty(selected.LayoutProbe?.ModelResourcePath, selected.MdlPath) : string.Empty,
+            NativeBgPartInitialIndex = selected.Kind == SceneEditableKind.NativeBgPart ? selected.LayoutProbe?.Index ?? -1 : -1,
+            NativeBgPartInitialAddress = selected.Kind == SceneEditableKind.NativeBgPart ? selected.LayoutProbe?.Address ?? string.Empty : string.Empty,
+            NamePath = FirstNonEmpty(selected.LayoutProbe?.ResourcePath, selected.DisplayName),
             ObjectKind = selected.ObjectKind,
             TerritoryId = this.getTerritoryType(),
             ObjectIndexAtRecordTime = selected.ObjectIndex,
+            LayoutInstanceKey = selected.LayoutProbe?.Key ?? string.Empty,
+            LayoutInstanceAddress = selected.LayoutProbe?.Address ?? string.Empty,
+            LayoutInstanceIndexAtRecordTime = selected.LayoutProbe?.Index ?? -1,
             DataId = selected.DataId,
             IsInteractableNpc = selected.IsInteractableNpc || selected.Kind == SceneEditableKind.EventNpc,
             RuntimeOnly = string.IsNullOrWhiteSpace(selected.StableKey),
@@ -2024,11 +2507,27 @@ public sealed unsafe class SceneEditorService
     private void UpdateNativeRecordLocator(SceneEditorNativeModificationRecord record, SceneEditableRef selected)
     {
         record.RuntimeIdAtRecordTime = selected.RuntimeId;
-        record.NativeAddress = string.Empty;
+        record.TerritoryKey = FormatTerritoryKey(record.TerritoryId == 0 ? this.getTerritoryType() : record.TerritoryId);
+        if (!string.IsNullOrWhiteSpace(selected.StableKey))
+            record.StableKey = selected.StableKey;
+        if (selected.NativePtr != 0)
+            record.NativeAddress = $"0x{selected.NativePtr:X}";
+        if (selected.Kind == SceneEditableKind.NativeBgPart && !string.IsNullOrWhiteSpace(selected.StableKey))
+            record.NativeBgPartStableKey = selected.StableKey;
+        if (!string.IsNullOrWhiteSpace(selected.LayoutProbe?.StableKey) && selected.Kind == SceneEditableKind.NativeBgPart)
+            record.NativeBgPartStableKey = selected.LayoutProbe.StableKey;
+        if (!string.IsNullOrWhiteSpace(selected.LayoutProbe?.Key))
+            record.LayoutInstanceKey = selected.LayoutProbe.Key;
+        if (!string.IsNullOrWhiteSpace(selected.LayoutProbe?.Address))
+            record.LayoutInstanceAddress = selected.LayoutProbe.Address;
+        if (selected.LayoutProbe != null && (record.Kind != SceneEditableKind.NativeBgPart || record.LayoutInstanceIndexAtRecordTime < 0))
+            record.LayoutInstanceIndexAtRecordTime = selected.LayoutProbe.Index;
         if (!string.IsNullOrWhiteSpace(selected.DisplayName))
             record.DisplayName = selected.DisplayName;
         if (!string.IsNullOrWhiteSpace(selected.MdlPath))
             record.MdlPath = selected.MdlPath;
+        if (!string.IsNullOrWhiteSpace(selected.LayoutProbe?.ResourcePath) || !string.IsNullOrWhiteSpace(selected.DisplayName))
+            record.NamePath = FirstNonEmpty(selected.LayoutProbe?.ResourcePath, selected.DisplayName, record.NamePath);
         if (!string.IsNullOrWhiteSpace(selected.ObjectKind))
             record.ObjectKind = selected.ObjectKind;
         if (!string.IsNullOrWhiteSpace(selected.DataId))
@@ -2039,22 +2538,33 @@ public sealed unsafe class SceneEditorService
         record.SharedGroupPath = FirstNonEmpty(selected.LayoutProbe?.SharedGroupPath, record.SharedGroupPath);
         record.ParentStableKey = FirstNonEmpty(selected.LayoutProbe?.ParentKey, record.ParentStableKey);
         record.ChildIndex = selected.LayoutProbe?.ChildIndex ?? record.ChildIndex;
+        if (record.Kind == SceneEditableKind.NativeBgPart)
+        {
+            record.NativeBgPartSgbPath = FirstNonEmpty(record.NativeBgPartSgbPath, selected.LayoutProbe?.ResourcePath);
+            record.NativeBgPartAssetPath = FirstNonEmpty(record.NativeBgPartAssetPath, selected.LayoutProbe?.ResourcePath, selected.DisplayName);
+            record.NativeBgPartModelPath = FirstNonEmpty(record.NativeBgPartModelPath, selected.LayoutProbe?.ModelResourcePath, selected.MdlPath);
+            if (record.NativeBgPartInitialIndex < 0 && selected.LayoutProbe != null)
+                record.NativeBgPartInitialIndex = selected.LayoutProbe.Index;
+            record.NativeBgPartInitialAddress = FirstNonEmpty(record.NativeBgPartInitialAddress, selected.LayoutProbe?.Address, record.NativeAddress);
+        }
     }
 
     private bool ApplyNativeRecordTransform(SceneEditorNativeModificationRecord record, WorldTransform transform)
     {
-        if (record.TerritoryId == 0)
+        this.EnsureNativeRecordLocatorFields(record);
+
+        if (record.TerritoryId != 0 && record.TerritoryId != this.getTerritoryType())
         {
-            record.Status = "LegacyNoTerritory";
-            this.LastStatus = "Native restore skipped: legacy record has no TerritoryId.";
-            this.log.Information("[RestoreNative] skipped legacy no territory stableKey={StableKey} kind={Kind} name={Name}", record.StableKey, record.Kind, record.DisplayName);
+            record.Status = NativeResolveStatus.NotLoadedYet.ToString();
+            this.LastStatus = "Native restore skipped: record belongs to another territory.";
             return false;
         }
 
-        if (record.TerritoryId != this.getTerritoryType())
+        if (record.TerritoryId == 0)
         {
-            this.LastStatus = "Native restore skipped: record belongs to another territory.";
-            return false;
+            record.TerritoryId = this.getTerritoryType();
+            record.TerritoryKey = FormatTerritoryKey(record.TerritoryId);
+            this.MarkPersistDirty("Native record territory backfilled");
         }
 
         if (!this.CanRunRestoreNow(out var reason))
@@ -2065,12 +2575,13 @@ public sealed unsafe class SceneEditorService
 
         this.lastNativeScanUtc = DateTime.MinValue;
         this.nativeCache.Clear();
-        var current = this.ResolveNativeObjectFresh(record);
+        var current = this.ResolveNativeObjectFresh(record, out var resolveResult);
 
         if (current == null || current.NativePtr == 0 || current.IsPlayer)
         {
-            this.LastStatus = $"Native restore resolve failed: {record.StableKey}";
-            this.log.Warning("[Restore] Resolve native failed stableKey={StableKey} kind={Kind} name={Name}", record.StableKey, record.Kind, record.DisplayName);
+            record.Status = resolveResult.Status.ToString();
+            this.LastStatus = $"Native restore resolve failed: {resolveResult.Status}; {resolveResult.Reason}";
+            this.log.Warning("[Restore] Resolve native failed status={Status} stableKey={StableKey} kind={Kind} name={Name} reason={Reason}", resolveResult.Status, record.StableKey, record.Kind, record.DisplayName, resolveResult.Reason);
             return false;
         }
 
@@ -2105,16 +2616,19 @@ public sealed unsafe class SceneEditorService
     private bool RestoreNativeBgPartToOriginalTransform(SceneEditorNativeModificationRecord record, WorldTransform original, out string reason)
     {
         reason = string.Empty;
-        if (record.TerritoryId == 0)
+        this.EnsureNativeRecordLocatorFields(record);
+
+        if (record.TerritoryId != 0 && record.TerritoryId != this.getTerritoryType())
         {
-            reason = "legacy record has no TerritoryId";
+            reason = $"{NativeResolveStatus.NotLoadedYet}: record belongs to another territory";
             return false;
         }
 
-        if (record.TerritoryId != this.getTerritoryType())
+        if (record.TerritoryId == 0)
         {
-            reason = "record belongs to another territory";
-            return false;
+            record.TerritoryId = this.getTerritoryType();
+            record.TerritoryKey = FormatTerritoryKey(record.TerritoryId);
+            this.MarkPersistDirty("Native BgPart record territory backfilled");
         }
 
         if (!this.CanRunRestoreNow(out reason))
@@ -2122,11 +2636,17 @@ public sealed unsafe class SceneEditorService
 
         this.lastNativeScanUtc = DateTime.MinValue;
         this.nativeCache.Clear();
-        var current = this.ResolveNativeObjectFresh(record);
+        var current = this.ResolveNativeObjectFresh(record, out var resolveResult);
         if (current == null || current.NativePtr == 0 || current.IsPlayer)
         {
-            reason = $"resolve failed: {record.StableKey}";
+            reason = $"{resolveResult.Status}: {resolveResult.Reason}";
             return false;
+        }
+
+        if (!current.IsHidden && TransformsRestoredEnough(current.Transform, original))
+        {
+            reason = string.Empty;
+            return true;
         }
 
         var target = new FreshNativeLayoutTarget(
@@ -2253,10 +2773,10 @@ public sealed unsafe class SceneEditorService
     {
         this.lastNativeScanUtc = DateTime.MinValue;
         this.nativeCache.Clear();
-        var restored = this.ResolveNativeObjectFresh(record);
+        var restored = this.ResolveNativeObjectFresh(record, out var resolveResult);
         if (restored == null)
         {
-            reason = "verify resolve failed after write";
+            reason = $"verify resolve failed after write: {resolveResult.Status}; {resolveResult.Reason}";
             return false;
         }
 
@@ -2323,99 +2843,1018 @@ public sealed unsafe class SceneEditorService
     }
 
     private SceneEditableRef? ResolveNativeObjectFresh(SceneEditorNativeModificationRecord record)
+        => this.ResolveNativeObjectFresh(record, out _);
+
+    private SceneEditableRef? ResolveNativeObjectFresh(SceneEditorNativeModificationRecord record, out NativeResolveResult resolveResult)
     {
-        if (!this.IsCurrentTerritoryRecord(record))
+        resolveResult = this.ResolveNativeObjectFreshDetailed(record);
+        return resolveResult.Item;
+    }
+
+    private NativeResolveResult ResolveNativeObjectFreshDetailed(SceneEditorNativeModificationRecord record)
+    {
+        this.EnsureNativeRecordLocatorFields(record);
+        var currentTerritory = this.getTerritoryType();
+        if (record.TerritoryId != 0 && record.TerritoryId != currentTerritory)
         {
-            this.log.Information("[RestoreNative] skipped territory mismatch stableKey={StableKey} recordTerritory={RecordTerritory} currentTerritory={CurrentTerritory}", record.StableKey, record.TerritoryId, this.getTerritoryType());
-            return null;
+            return this.CompleteNativeResolve(
+                record,
+                NativeResolveStatus.NotLoadedYet,
+                null,
+                [],
+                [],
+                [],
+                "territory mismatch",
+                "territory");
         }
 
-        this.log.Information("[RestoreNative] resolve begin stableKey={StableKey} kind={Kind} name={Name}", record.StableKey, record.Kind, record.DisplayName);
-        var candidates = this.GetNativeEditablesForRestore()
+        if (record.Kind == SceneEditableKind.NativeBgPart)
+            return this.ResolveNativeBgPartFreshDetailed(record, currentTerritory);
+
+        this.log.Information(
+            "[RestoreNative] resolve begin map={MapKey} currentMap={CurrentMap} stableKey={StableKey} nativeBgPartStableKey={NativeBgPartStableKey} kind={Kind} name={Name} mdl={Mdl}",
+            FirstNonEmpty(record.TerritoryKey, FormatTerritoryKey(record.TerritoryId)),
+            FormatTerritoryKey(currentTerritory),
+            record.StableKey,
+            record.NativeBgPartStableKey,
+            record.Kind,
+            FirstNonEmpty(record.NamePath, record.DisplayName),
+            record.MdlPath);
+
+        var scanned = this.GetNativeEditablesForRestore()
             .Where(item => item.IsNativeGameObject)
             .Where(item => !item.IsPlayer)
+            .ToList();
+        var sameKind = scanned
             .Where(item => item.Kind == record.Kind)
             .ToList();
 
-        var exact = candidates.FirstOrDefault(item =>
-            string.Equals(this.GetStableKey(item), record.StableKey, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(item.StableKey, record.StableKey, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(item.LayoutProbe?.Key, record.StableKey, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(item.RuntimeId, record.RuntimeIdAtRecordTime, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(item.RuntimeId, record.StableKey, StringComparison.OrdinalIgnoreCase));
-        if (exact != null)
+        if (sameKind.Count == 0)
         {
-            this.log.Information("[RestoreNative] resolve exact stableKey={StableKey} ptr={Ptr}", record.StableKey, exact.NativePtr);
-            return exact;
+            return this.CompleteNativeResolve(
+                record,
+                NativeResolveStatus.NotLoadedYet,
+                null,
+                scanned,
+                sameKind,
+                [],
+                "current map scan returned no runtime objects of this kind",
+                "scan");
+        }
+
+        var stableMatches = sameKind
+            .Where(item => this.NativeStableKeyMatches(record, item))
+            .ToList();
+        if (this.TryChooseNativeCandidate(record, stableMatches, out var stableChoice, out var stableReason))
+        {
+            return this.CompleteNativeResolve(
+                record,
+                NativeResolveStatus.FoundByStableKey,
+                stableChoice,
+                scanned,
+                sameKind,
+                stableMatches,
+                stableReason,
+                "stable-key");
+        }
+
+        if (stableMatches.Count > 1)
+        {
+            return this.CompleteNativeResolve(
+                record,
+                NativeResolveStatus.MultipleCandidates,
+                null,
+                scanned,
+                sameKind,
+                stableMatches,
+                stableReason,
+                "stable-key");
+        }
+
+        var locatorMatches = sameKind
+            .Where(item => this.LayoutLocatorMatches(record, item))
+            .ToList();
+        if (this.TryChooseNativeCandidate(record, locatorMatches, out var locatorChoice, out var locatorReason))
+        {
+            return this.CompleteNativeResolve(
+                record,
+                NativeResolveStatus.FoundByStableKey,
+                locatorChoice,
+                scanned,
+                sameKind,
+                locatorMatches,
+                locatorReason,
+                "layout-locator");
+        }
+
+        if (locatorMatches.Count > 1)
+        {
+            return this.CompleteNativeResolve(
+                record,
+                NativeResolveStatus.MultipleCandidates,
+                null,
+                scanned,
+                sameKind,
+                locatorMatches,
+                locatorReason,
+                "layout-locator");
+        }
+
+        var nameMdlMatches = sameKind
+            .Where(item => this.NativeNameMdlMatches(record, item))
+            .ToList();
+        if (this.TryChooseNativeCandidate(record, nameMdlMatches, out var nameMdlChoice, out var nameMdlReason))
+        {
+            return this.CompleteNativeResolve(
+                record,
+                nameMdlMatches.Count == 1 ? NativeResolveStatus.FoundByNameMdl : NativeResolveStatus.FoundByFallback,
+                nameMdlChoice,
+                scanned,
+                sameKind,
+                nameMdlMatches,
+                nameMdlReason,
+                "name-mdl");
+        }
+
+        if (nameMdlMatches.Count > 1)
+        {
+            return this.CompleteNativeResolve(
+                record,
+                NativeResolveStatus.MultipleCandidates,
+                null,
+                scanned,
+                sameKind,
+                nameMdlMatches,
+                nameMdlReason,
+                "name-mdl");
+        }
+
+        var fallbackMatches = sameKind
+            .Where(item => this.NativeFallbackMatches(record, item))
+            .ToList();
+        if (this.TryChooseNativeCandidate(record, fallbackMatches, out var fallbackChoice, out var fallbackReason))
+        {
+            return this.CompleteNativeResolve(
+                record,
+                NativeResolveStatus.FoundByFallback,
+                fallbackChoice,
+                scanned,
+                sameKind,
+                fallbackMatches,
+                fallbackReason,
+                "fallback");
+        }
+
+        if (fallbackMatches.Count > 1)
+        {
+            return this.CompleteNativeResolve(
+                record,
+                NativeResolveStatus.MultipleCandidates,
+                null,
+                scanned,
+                sameKind,
+                fallbackMatches,
+                fallbackReason,
+                "fallback");
+        }
+
+        return this.CompleteNativeResolve(
+            record,
+            NativeResolveStatus.TrulyMissing,
+            null,
+            scanned,
+            sameKind,
+            [],
+            "no stable, name+mdl, or validated fallback candidate matched",
+            "none");
+    }
+
+    private NativeResolveResult ResolveNativeBgPartFreshDetailed(SceneEditorNativeModificationRecord record, uint currentTerritory)
+    {
+        var recordSgb = GetNativeBgPartRecordSgbPath(record);
+        var recordAsset = GetNativeBgPartRecordAssetPath(record);
+        var recordInitialIndex = GetNativeBgPartRecordInitialIndex(record);
+        this.log.Debug(
+            "[RestoreNativeBgPart] resolve begin map={MapKey} currentMap={CurrentMap} stableKey={StableKey} nativeBgPartStableKey={NativeBgPartStableKey} sgb={Sgb} asset={Asset} initialIndex={InitialIndex} address={Address} layoutAddress={LayoutAddress} initialAddress={InitialAddress} original={Original}",
+            FirstNonEmpty(record.TerritoryKey, FormatTerritoryKey(record.TerritoryId)),
+            FormatTerritoryKey(currentTerritory),
+            record.StableKey,
+            record.NativeBgPartStableKey,
+            recordSgb,
+            recordAsset,
+            recordInitialIndex,
+            record.NativeAddress,
+            record.LayoutInstanceAddress,
+            record.NativeBgPartInitialAddress,
+            GetOriginalTransform(record).WorldPosition);
+
+        if (this.TryResolveNativeBgPartByStoredPointer(record, currentTerritory, out var pointerItem, out var pointerReason))
+        {
+            return this.CompleteNativeResolve(
+                record,
+                NativeResolveStatus.FoundByPointer,
+                pointerItem,
+                [],
+                [],
+                pointerItem == null ? [] : [pointerItem],
+                pointerReason,
+                "stored-pointer");
+        }
+
+        this.log.Debug("[RestoreNativeBgPart] stored pointer unavailable stableKey={StableKey} reason={Reason}", record.StableKey, pointerReason);
+
+        var scanned = this.GetNativeEditablesForRestore()
+            .Where(item => item.IsNativeGameObject)
+            .Where(item => !item.IsPlayer)
+            .ToList();
+        var sameKind = scanned
+            .Where(item => item.Kind == SceneEditableKind.NativeBgPart)
+            .ToList();
+        this.log.Debug(
+            "[RestoreNativeBgPart] scan complete stableKey={StableKey} scanned={Scanned} bgPartCandidates={BgPartCandidates} key=sgb:{Sgb};asset:{Asset};initialIndex:{InitialIndex}",
+            record.StableKey,
+            scanned.Count,
+            sameKind.Count,
+            recordSgb,
+            recordAsset,
+            recordInitialIndex);
+
+        if (sameKind.Count == 0)
+        {
+            return this.CompleteNativeResolve(
+                record,
+                NativeResolveStatus.NotLoadedYet,
+                null,
+                scanned,
+                sameKind,
+                [],
+                "current map scan returned no native BgPart objects",
+                "scan");
+        }
+
+        var stableMatches = sameKind
+            .Where(item => this.NativeStableKeyMatches(record, item))
+            .ToList();
+        if (this.TryChooseNativeBgPartCandidate(record, stableMatches, "stable-key", out var stableChoice, out var stableReason))
+        {
+            return this.CompleteNativeResolve(
+                record,
+                NativeResolveStatus.FoundByStableKey,
+                stableChoice,
+                scanned,
+                sameKind,
+                stableMatches,
+                stableReason,
+                "stable-key");
+        }
+
+        var stableIdentityMatches = sameKind
+            .Where(item => this.NativeBgPartStableIdentityMatches(record, item))
+            .ToList();
+        if (this.TryChooseNativeBgPartCandidate(record, stableIdentityMatches, "stable-identity", out var identityChoice, out var identityReason))
+        {
+            return this.CompleteNativeResolve(
+                record,
+                NativeResolveStatus.FoundByStableIdentity,
+                identityChoice,
+                scanned,
+                sameKind,
+                stableIdentityMatches,
+                identityReason,
+                "stable-identity");
+        }
+
+        var sgbAssetMatches = sameKind
+            .Where(item => this.NativeBgPartSgbAssetMatches(record, item))
+            .ToList();
+        if (this.TryChooseNativeBgPartCandidate(record, sgbAssetMatches, "sgb-asset", out var sgbAssetChoice, out var sgbAssetReason))
+        {
+            return this.CompleteNativeResolve(
+                record,
+                NativeResolveStatus.FoundByFallback,
+                sgbAssetChoice,
+                scanned,
+                sameKind,
+                sgbAssetMatches,
+                sgbAssetReason,
+                "sgb-asset");
+        }
+
+        var assetIndexMatches = sameKind
+            .Where(item => this.NativeBgPartAssetIndexMatches(record, item))
+            .ToList();
+        if (this.TryChooseNativeBgPartCandidate(record, assetIndexMatches, "asset-index", out var assetIndexChoice, out var assetIndexReason))
+        {
+            return this.CompleteNativeResolve(
+                record,
+                NativeResolveStatus.FoundByFallback,
+                assetIndexChoice,
+                scanned,
+                sameKind,
+                assetIndexMatches,
+                assetIndexReason,
+                "asset-index");
+        }
+
+        var locatorMatches = sameKind
+            .Where(item => this.LayoutLocatorMatches(record, item))
+            .ToList();
+        if (this.TryChooseNativeBgPartCandidate(record, locatorMatches, "layout-locator", out var locatorChoice, out var locatorReason))
+        {
+            return this.CompleteNativeResolve(
+                record,
+                NativeResolveStatus.FoundByStableIdentity,
+                locatorChoice,
+                scanned,
+                sameKind,
+                locatorMatches,
+                locatorReason,
+                "layout-locator");
+        }
+
+        var nameMdlMatches = sameKind
+            .Where(item => this.NativeNameMdlMatches(record, item))
+            .ToList();
+        if (this.TryChooseNativeBgPartCandidate(record, nameMdlMatches, "name-mdl", out var nameMdlChoice, out var nameMdlReason))
+        {
+            return this.CompleteNativeResolve(
+                record,
+                NativeResolveStatus.FoundByNameMdl,
+                nameMdlChoice,
+                scanned,
+                sameKind,
+                nameMdlMatches,
+                nameMdlReason,
+                "name-mdl");
+        }
+
+        var fallbackMatches = sameKind
+            .Where(item => this.NativeFallbackMatches(record, item))
+            .ToList();
+        if (this.TryChooseNativeBgPartCandidate(record, fallbackMatches, "legacy-fallback", out var fallbackChoice, out var fallbackReason))
+        {
+            return this.CompleteNativeResolve(
+                record,
+                NativeResolveStatus.FoundByFallback,
+                fallbackChoice,
+                scanned,
+                sameKind,
+                fallbackMatches,
+                fallbackReason,
+                "legacy-fallback");
+        }
+
+        this.LogNativeBgPartCandidateSet(record, "missing-scan-sample", sameKind);
+        return this.CompleteNativeResolve(
+            record,
+            NativeResolveStatus.TrulyMissing,
+            null,
+            scanned,
+            sameKind,
+            [],
+            $"no native BgPart matched stable identity after full scan; key=sgb:{recordSgb}; asset:{recordAsset}; initialIndex:{recordInitialIndex}",
+            "none");
+    }
+
+    private bool TryResolveNativeBgPartByStoredPointer(
+        SceneEditorNativeModificationRecord record,
+        uint currentTerritory,
+        out SceneEditableRef? item,
+        out string reason)
+    {
+        item = null;
+        var checkedPointers = new List<string>();
+        foreach (var (address, label) in NativeBgPartStoredPointers(record))
+        {
+            checkedPointers.Add($"{label}=0x{address:X}");
+            if (!this.TryCreateNativeBgPartEditableFromPointer(record, address, currentTerritory, out var candidate, out var pointerReason))
+            {
+                this.log.Debug("[RestoreNativeBgPart] pointer invalid label={Label} address=0x{Address:X} reason={Reason}", label, address, pointerReason);
+                continue;
+            }
+
+            if (!this.NativeBgPartPointerIdentityMatches(record, candidate, out var identityReason))
+            {
+                this.log.Debug(
+                    "[RestoreNativeBgPart] pointer rejected label={Label} address=0x{Address:X} reason={Reason} sgb={Sgb} mdl={Mdl} originalDistance={Distance:F3}",
+                    label,
+                    address,
+                    identityReason,
+                    GetNativeBgPartItemSgbPath(candidate),
+                    GetNativeBgPartItemAssetPath(candidate),
+                    Vector3.Distance(candidate.Transform.WorldPosition, GetOriginalTransform(record).WorldPosition));
+                continue;
+            }
+
+            item = candidate;
+            reason = $"stored pointer valid label={label}; {identityReason}";
+            this.log.Debug(
+                "[RestoreNativeBgPart] pointer selected label={Label} address=0x{Address:X} sgb={Sgb} mdl={Mdl} originalDistance={Distance:F3}",
+                label,
+                address,
+                GetNativeBgPartItemSgbPath(candidate),
+                GetNativeBgPartItemAssetPath(candidate),
+                Vector3.Distance(candidate.Transform.WorldPosition, GetOriginalTransform(record).WorldPosition));
+            return true;
+        }
+
+        reason = checkedPointers.Count == 0
+            ? "no stored pointer fields were available"
+            : $"stored pointers invalid or identity-mismatched: {string.Join(", ", checkedPointers)}";
+        return false;
+    }
+
+    private static IEnumerable<(nint Address, string Label)> NativeBgPartStoredPointers(SceneEditorNativeModificationRecord record)
+    {
+        var seen = new HashSet<nint>();
+        foreach (var (value, label) in new[]
+                 {
+                     (record.NativeAddress, "NativeAddress"),
+                     (record.LayoutInstanceAddress, "LayoutInstanceAddress"),
+                     (record.NativeBgPartInitialAddress, "NativeBgPartInitialAddress"),
+                 })
+        {
+            var address = ParsePointer(value);
+            if (address != 0 && seen.Add(address))
+                yield return (address, label);
+        }
+    }
+
+    private bool TryCreateNativeBgPartEditableFromPointer(
+        SceneEditorNativeModificationRecord record,
+        nint address,
+        uint currentTerritory,
+        out SceneEditableRef item,
+        out string reason)
+    {
+        item = null!;
+        reason = string.Empty;
+        try
+        {
+            var pointer = (ILayoutInstance*)address;
+            if (pointer == null)
+            {
+                reason = "pointer is null";
+                return false;
+            }
+
+            if (pointer->Id.Type != InstanceType.BgPart)
+            {
+                reason = $"pointer type is {pointer->Id.Type}";
+                return false;
+            }
+
+            if (!TryReadNativeBgPartWorldTransform(pointer, out var transform, out reason))
+                return false;
+
+            var bgPart = (BgPartsLayoutInstance*)pointer;
+            var primaryPath = ReadNativeLayoutPrimaryPath(pointer);
+            var modelPath = ReadNativeBgPartModelPath(bgPart);
+            var sgbPath = FirstNonEmpty(primaryPath, record.NativeBgPartSgbPath, record.NativeBgPartAssetPath, record.NamePath);
+            var mdlPath = FirstNonEmpty(modelPath, record.NativeBgPartModelPath, record.MdlPath);
+            var stableKey = FirstNonEmpty(record.NativeBgPartStableKey, record.StableKey);
+            var layoutProbe = new LayoutProbeInstance
+            {
+                Index = GetNativeBgPartRecordInitialIndex(record),
+                Key = $"BgPart:{address:X}",
+                StableKey = stableKey,
+                Type = "BgPart",
+                InstanceType = pointer->Id.Type.ToString(),
+                Address = $"0x{address:X}",
+                LayerAddress = $"0x{(nint)pointer->Layer:X}",
+                Position = transform.WorldPosition,
+                RotationQuaternion = transform.WorldRotation,
+                Rotation = transform.WorldRotation.ToString(),
+                Scale = transform.WorldScale,
+                ResourcePath = sgbPath,
+                ModelResourcePath = mdlPath,
+                Visible = bgPart->GraphicsObject != null && bgPart->GraphicsObject->IsVisible,
+                LayerId = "StoredPointer",
+                GroupId = string.IsNullOrWhiteSpace(GetNativeBgPartRecordSgbPath(record)) ? "BgPart" : "SharedGroupChild",
+                Source = FirstNonEmpty(record.LayoutSource, "StoredPointer"),
+                SourceKind = FirstNonEmpty(record.SourceKind, "LoadedLayout"),
+                SharedGroupPath = record.SharedGroupPath,
+                ParentKey = record.ParentStableKey,
+                ChildIndex = record.ChildIndex,
+                DebugInfo = $"storedPointer=0x{address:X}; primaryPath={primaryPath}; modelPath={modelPath}",
+            };
+
+            item = new SceneEditableRef(
+                $"native-layout:BgPart:{address:X}:stored",
+                SceneEditableKind.NativeBgPart,
+                address,
+                -1,
+                FirstNonEmpty(sgbPath, mdlPath, record.DisplayName, "BgPart"),
+                FirstNonEmpty(mdlPath, sgbPath),
+                false,
+                transform,
+                true,
+                !layoutProbe.Visible)
+            {
+                IsNativeGameObject = true,
+                StableKey = stableKey,
+                TransformEditable = this.AllowNativeTransformWrites,
+                ObjectKind = "BgPart",
+                NativeInfo = layoutProbe.DebugInfo,
+                LayoutProbe = layoutProbe,
+            };
+            return true;
+        }
+        catch (Exception ex)
+        {
+            reason = $"pointer validation failed: {ex.Message}";
+            return false;
+        }
+    }
+
+    private bool NativeBgPartPointerIdentityMatches(SceneEditorNativeModificationRecord record, SceneEditableRef item, out string reason)
+    {
+        if (item.Kind != SceneEditableKind.NativeBgPart)
+        {
+            reason = $"candidate kind is {item.Kind}";
+            return false;
+        }
+
+        var recordPaths = NativeBgPartRecordIdentityPaths(record).ToList();
+        var itemPaths = NativeBgPartItemIdentityPaths(item).ToList();
+        if (recordPaths.Count > 0 && itemPaths.Count > 0)
+        {
+            if (recordPaths.Any(recordPath => itemPaths.Any(itemPath => NativeTextEquals(recordPath, itemPath))))
+            {
+                reason = $"stored pointer accepted; identity path matched record={string.Join(",", recordPaths)}";
+                return true;
+            }
+
+            reason = $"stored pointer accepted; identity path mismatch record={string.Join(",", recordPaths)}; candidate={string.Join(",", itemPaths)}";
+            return true;
+        }
+
+        reason = "stored pointer accepted; identity path unavailable";
+        return true;
+    }
+
+    private bool TryChooseNativeBgPartCandidate(
+        SceneEditorNativeModificationRecord record,
+        IReadOnlyList<SceneEditableRef> candidates,
+        string stage,
+        out SceneEditableRef? selected,
+        out string reason)
+    {
+        selected = null;
+        reason = "no candidates";
+        this.LogNativeBgPartCandidateSet(record, stage, candidates);
+        if (candidates.Count == 0)
+            return false;
+
+        var original = GetOriginalTransform(record).WorldPosition;
+        var initialIndex = GetNativeBgPartRecordInitialIndex(record);
+        var ranked = candidates
+            .Select(item =>
+            {
+                var candidateIndex = item.LayoutProbe?.Index ?? -1;
+                var indexDistance = initialIndex >= 0 && candidateIndex >= 0
+                    ? Math.Abs(candidateIndex - initialIndex)
+                    : int.MaxValue;
+                return new
+                {
+                    Item = item,
+                    OriginalDistance = Vector3.Distance(item.Transform.WorldPosition, original),
+                    CandidateIndex = candidateIndex,
+                    IndexDistance = indexDistance,
+                };
+            })
+            .OrderBy(item => item.IndexDistance == 0 ? 0 : 1)
+            .ThenBy(item => item.OriginalDistance)
+            .ThenBy(item => item.IndexDistance)
+            .ThenBy(item => item.CandidateIndex < 0 ? int.MaxValue : item.CandidateIndex)
+            .ToList();
+        if (ranked.Count == 0)
+            return false;
+
+        var best = ranked[0];
+        selected = best.Item;
+        var exactIndex = initialIndex >= 0 && best.CandidateIndex == initialIndex;
+        reason = candidates.Count == 1
+            ? $"single native BgPart candidate by {stage}; originalDistance={best.OriginalDistance:F3}; index={best.CandidateIndex}"
+            : $"selected native BgPart by {stage}; exactInitialIndex={exactIndex}; initialIndex={initialIndex}; selectedIndex={best.CandidateIndex}; originalDistance={best.OriginalDistance:F3}; candidateCount={candidates.Count}";
+        this.log.Debug("[RestoreNativeBgPart] selected stage={Stage} reason={Reason} selected={Selected}", stage, reason, DescribeNativeCandidate(selected));
+        return true;
+    }
+
+    private void LogNativeBgPartCandidateSet(
+        SceneEditorNativeModificationRecord record,
+        string stage,
+        IReadOnlyList<SceneEditableRef> candidates)
+    {
+        if (candidates.Count == 0)
+        {
+            this.log.Debug("[RestoreNativeBgPart] candidates stage={Stage} count=0", stage);
+            return;
         }
 
         var original = GetOriginalTransform(record).WorldPosition;
+        this.log.Debug("[RestoreNativeBgPart] candidates stage={Stage} count={Count}", stage, candidates.Count);
+        foreach (var candidate in candidates)
+        {
+            this.log.Debug(
+                "[RestoreNativeBgPart] candidate stage={Stage} ptr=0x{Ptr:X} stable={Stable} key={Key} sgb={Sgb} mdl={Mdl} index={Index} childIndex={ChildIndex} originalDistance={Distance:F3} pos={Position}",
+                stage,
+                candidate.NativePtr,
+                FirstNonEmpty(candidate.StableKey, candidate.LayoutProbe?.StableKey),
+                candidate.LayoutProbe?.Key ?? string.Empty,
+                GetNativeBgPartItemSgbPath(candidate),
+                GetNativeBgPartItemAssetPath(candidate),
+                candidate.LayoutProbe?.Index ?? -1,
+                candidate.LayoutProbe?.ChildIndex ?? -1,
+                Vector3.Distance(candidate.Transform.WorldPosition, original),
+                candidate.Transform.WorldPosition);
+        }
+    }
+
+    private bool NativeBgPartStableIdentityMatches(SceneEditorNativeModificationRecord record, SceneEditableRef item)
+    {
+        if (!this.NativeBgPartAssetMatches(record, item))
+            return false;
+
+        var recordSgb = GetNativeBgPartRecordSgbPath(record);
+        if (HasNativeIdentityText(recordSgb) &&
+            !NativeBgPartItemIdentityPaths(item).Any(itemPath => NativeTextEquals(recordSgb, itemPath)))
+            return false;
+
+        var initialIndex = GetNativeBgPartRecordInitialIndex(record);
+        if (initialIndex >= 0)
+            return item.LayoutProbe?.Index == initialIndex;
+
+        if (record.ChildIndex >= 0)
+            return item.LayoutProbe?.ChildIndex == record.ChildIndex;
+
+        return HasNativeIdentityText(recordSgb);
+    }
+
+    private bool NativeBgPartSgbAssetMatches(SceneEditorNativeModificationRecord record, SceneEditableRef item)
+    {
+        if (!this.NativeBgPartAssetMatches(record, item))
+            return false;
+
+        var recordSgb = GetNativeBgPartRecordSgbPath(record);
+        return !HasNativeIdentityText(recordSgb) ||
+               NativeBgPartItemIdentityPaths(item).Any(itemPath => NativeTextEquals(recordSgb, itemPath));
+    }
+
+    private bool NativeBgPartAssetIndexMatches(SceneEditorNativeModificationRecord record, SceneEditableRef item)
+    {
+        if (!this.NativeBgPartAssetMatches(record, item))
+            return false;
+
+        var initialIndex = GetNativeBgPartRecordInitialIndex(record);
+        return initialIndex >= 0 && item.LayoutProbe?.Index == initialIndex;
+    }
+
+    private bool NativeBgPartAssetMatches(SceneEditorNativeModificationRecord record, SceneEditableRef item)
+    {
+        var recordPaths = NativeBgPartRecordIdentityPaths(record).ToList();
+        var itemPaths = NativeBgPartItemIdentityPaths(item).ToList();
+        return recordPaths.Count > 0 &&
+               itemPaths.Count > 0 &&
+               recordPaths.Any(recordPath => itemPaths.Any(itemPath => NativeTextEquals(recordPath, itemPath)));
+    }
+
+    private static IEnumerable<string> NativeBgPartRecordIdentityPaths(SceneEditorNativeModificationRecord record)
+        => DistinctNativeIdentityPaths(
+            record.NativeBgPartSgbPath,
+            record.NativeBgPartAssetPath,
+            record.NativeBgPartModelPath,
+            record.MdlPath,
+            record.NamePath,
+            record.DisplayName);
+
+    private static IEnumerable<string> NativeBgPartItemIdentityPaths(SceneEditableRef item)
+        => DistinctNativeIdentityPaths(
+            item.LayoutProbe?.ResourcePath,
+            item.LayoutProbe?.ModelResourcePath,
+            item.MdlPath,
+            item.DisplayName);
+
+    private static IEnumerable<string> DistinctNativeIdentityPaths(params string?[] values)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var value in values)
+        {
+            var normalized = NormalizeNativeIdentityText(value ?? string.Empty);
+            if (HasNativeIdentityText(normalized) && seen.Add(normalized))
+                yield return normalized;
+        }
+    }
+
+    private static string GetNativeBgPartRecordSgbPath(SceneEditorNativeModificationRecord record)
+        => FirstNonEmpty(record.NativeBgPartSgbPath, record.NamePath, record.NativeBgPartAssetPath);
+
+    private static string GetNativeBgPartRecordAssetPath(SceneEditorNativeModificationRecord record)
+        => FirstNonEmpty(record.NativeBgPartModelPath, record.MdlPath, record.NativeBgPartAssetPath, record.NamePath, record.DisplayName);
+
+    private static int GetNativeBgPartRecordInitialIndex(SceneEditorNativeModificationRecord record)
+        => record.NativeBgPartInitialIndex >= 0
+            ? record.NativeBgPartInitialIndex
+            : record.LayoutInstanceIndexAtRecordTime;
+
+    private static string GetNativeBgPartItemSgbPath(SceneEditableRef item)
+        => item.LayoutProbe?.ResourcePath ?? string.Empty;
+
+    private static string GetNativeBgPartItemAssetPath(SceneEditableRef item)
+        => FirstNonEmpty(item.LayoutProbe?.ModelResourcePath, item.MdlPath, item.LayoutProbe?.ResourcePath, item.DisplayName);
+
+    private static bool TryReadNativeBgPartWorldTransform(ILayoutInstance* pointer, out WorldTransform transform, out string reason)
+    {
+        transform = WorldTransform.FromEuler(Vector3.Zero, Vector3.Zero, Vector3.One);
+        reason = string.Empty;
+        try
+        {
+            if (pointer == null || pointer->Id.Type != InstanceType.BgPart)
+            {
+                reason = pointer == null ? "layout pointer is null" : $"layout pointer type is {pointer->Id.Type}";
+                return false;
+            }
+
+            var bgPart = (BgPartsLayoutInstance*)pointer;
+            if (bgPart->GraphicsObject != null && TryReadSceneObjectTransform((nint)bgPart->GraphicsObject, out transform))
+                return true;
+
+            var layoutTransform = pointer->GetTransformImpl();
+            if (layoutTransform == null)
+            {
+                reason = "layout transform unavailable";
+                return false;
+            }
+
+            transform = WorldTransform.FromEuler(
+                layoutTransform->Translation,
+                WorldTransformUtil.QuaternionToWorldEulerRadians(layoutTransform->Rotation),
+                layoutTransform->Scale);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            reason = $"read transform failed: {ex.Message}";
+            return false;
+        }
+    }
+
+    private static string ReadNativeLayoutPrimaryPath(ILayoutInstance* pointer)
+    {
+        try
+        {
+            var path = pointer->GetPrimaryPath();
+            return path.HasValue ? path.ToString() : string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private static string ReadNativeBgPartModelPath(BgPartsLayoutInstance* bgPart)
+    {
+        try
+        {
+            if (bgPart == null || bgPart->GraphicsObject == null)
+                return string.Empty;
+
+            var bg = (SceneBgObject*)bgPart->GraphicsObject;
+            return bg->ModelResourceHandle == null
+                ? string.Empty
+                : bg->ModelResourceHandle->FileName.ToString();
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private NativeResolveResult CompleteNativeResolve(
+        SceneEditorNativeModificationRecord record,
+        NativeResolveStatus status,
+        SceneEditableRef? item,
+        IReadOnlyList<SceneEditableRef> scanned,
+        IReadOnlyList<SceneEditableRef> sameKind,
+        IReadOnlyList<SceneEditableRef> candidates,
+        string reason,
+        string stage)
+    {
+        var result = new NativeResolveResult(
+            status,
+            item,
+            reason,
+            scanned.Count,
+            scanned.Count(candidate => candidate.Kind == SceneEditableKind.NativeBgPart),
+            sameKind.Count,
+            candidates.Count);
+        this.LogNativeResolveResult(record, result, sameKind, candidates, stage);
+        return result;
+    }
+
+    private void LogNativeResolveResult(
+        SceneEditorNativeModificationRecord record,
+        NativeResolveResult result,
+        IReadOnlyList<SceneEditableRef> sameKind,
+        IReadOnlyList<SceneEditableRef> candidates,
+        string stage)
+    {
+        this.log.Information(
+            "[RestoreNative] resolve result={Status} stage={Stage} recordMap={RecordMap} currentMap={CurrentMap} kind={Kind} name={Name} mdl={Mdl} stableKey={StableKey} nativeBgPartStableKey={NativeBgPartStableKey} scanned={Scanned} scannedBgParts={ScannedBgParts} sameKind={SameKind} candidates={CandidateCount} reason={Reason} selected={Selected}",
+            result.Status,
+            stage,
+            FirstNonEmpty(record.TerritoryKey, FormatTerritoryKey(record.TerritoryId)),
+            FormatTerritoryKey(this.getTerritoryType()),
+            record.Kind,
+            FirstNonEmpty(record.NamePath, record.DisplayName),
+            record.MdlPath,
+            record.StableKey,
+            record.NativeBgPartStableKey,
+            result.ScannedCount,
+            result.ScannedBgPartCount,
+            result.SameKindCount,
+            result.CandidateCount,
+            result.Reason,
+            result.Item == null ? "none" : DescribeNativeCandidate(result.Item));
+
+        if (result.Status is NativeResolveStatus.TrulyMissing or NativeResolveStatus.MultipleCandidates or NativeResolveStatus.NotLoadedYet)
+        {
+            var exclusions = sameKind
+                .Take(24)
+                .Select(item => $"{DescribeNativeCandidate(item)} exclude={DescribeNativeCandidateExclusion(record, item)}");
+            this.log.Debug(
+                "[RestoreNative] resolve diagnostics stableKey={StableKey} stage={Stage} candidates={CandidateList} sameKindSample={SameKindSample}",
+                record.StableKey,
+                stage,
+                string.Join(" || ", candidates.Take(24).Select(DescribeNativeCandidate)),
+                string.Join(" || ", exclusions));
+        }
+    }
+
+    private bool TryChooseNativeCandidate(
+        SceneEditorNativeModificationRecord record,
+        IReadOnlyList<SceneEditableRef> candidates,
+        out SceneEditableRef? selected,
+        out string reason)
+    {
+        selected = null;
+        reason = "no candidates";
+        if (candidates.Count == 0)
+            return false;
+
+        if (candidates.Count == 1)
+        {
+            selected = candidates[0];
+            reason = "single candidate";
+            return true;
+        }
+
+        var ranked = this.RankNativeCandidatesByTransform(record, candidates)
+            .OrderBy(item => item.Metric)
+            .ThenBy(item => item.Item.LayoutProbe?.Index ?? int.MaxValue)
+            .ThenBy(item => item.Item.ObjectIndex < 0 ? int.MaxValue : item.Item.ObjectIndex)
+            .ToList();
+        if (ranked.Count == 0)
+        {
+            reason = "multiple candidates but no transform ranking was available";
+            return false;
+        }
+
+        var best = ranked[0];
+        if (ranked.Count == 1)
+        {
+            selected = best.Item;
+            reason = $"only ranked candidate metric={best.Metric:F3}";
+            return true;
+        }
+
+        var second = ranked[1];
+        var hasExactTransformAnchor = best.Metric <= 0.05f && second.Metric > 0.15f;
+        var hasClearDistanceMargin = second.Metric - best.Metric >= 0.10f;
+        if (hasExactTransformAnchor || hasClearDistanceMargin)
+        {
+            selected = best.Item;
+            reason = $"tie-break by original/current transform metric={best.Metric:F3}; next={second.Metric:F3}; originalDist={best.OriginalDistance:F3}; currentDist={best.CurrentDistance:F3}; hiddenDist={best.HiddenDistance:F3}";
+            return true;
+        }
+
+        reason = $"multiple candidates tied after transform tie-break metric={best.Metric:F3}; next={second.Metric:F3}; count={candidates.Count}";
+        return false;
+    }
+
+    private IEnumerable<NativeCandidateRank> RankNativeCandidatesByTransform(
+        SceneEditorNativeModificationRecord record,
+        IEnumerable<SceneEditableRef> candidates)
+    {
+        var original = GetOriginalTransform(record).WorldPosition;
         var current = GetCurrentTransform(record).WorldPosition;
         var hidden = ToVector3(record.HiddenPosition);
-        var scored = candidates
-            .Select(item => new { Item = item, Score = this.ScoreNativeCandidate(record, item, original, current, hidden) })
-            .OrderByDescending(item => item.Score)
-            .ThenBy(item => item.Item.ObjectIndex)
-            .ToList();
-        var best = scored.FirstOrDefault();
-
-        if (best == null || best.Score < 60 || !this.IsSafeNativeFuzzyMatch(record, best.Item, original, current, hidden))
+        foreach (var item in candidates)
         {
-            this.log.Warning("[RestoreNative] resolve failed stableKey={StableKey} candidateCount={Count} bestScore={Score}", record.StableKey, candidates.Count, best?.Score ?? 0);
-            return null;
+            var position = item.Transform.WorldPosition;
+            var originalDistance = Vector3.Distance(position, original);
+            var currentDistance = Vector3.Distance(position, current);
+            var hiddenDistance = hidden == Vector3.Zero ? float.PositiveInfinity : Vector3.Distance(position, hidden);
+            var metric = MathF.Min(MathF.Min(originalDistance, currentDistance), hiddenDistance);
+            yield return new NativeCandidateRank(item, metric, originalDistance, currentDistance, hiddenDistance);
         }
-
-        var ambiguousCount = scored.Count(item => item.Score == best.Score);
-        if (ambiguousCount > 1)
-        {
-            record.Status = "Ambiguous";
-            this.log.Warning("[RestoreNative] resolve ambiguous stableKey={StableKey} candidateCount={Count} bestScore={Score} tied={Tied}", record.StableKey, candidates.Count, best.Score, ambiguousCount);
-            return null;
-        }
-
-        this.log.Information("[RestoreNative] resolve fuzzy stableKey={StableKey} ptr={Ptr} score={Score} candidate={Candidate}", record.StableKey, best.Item.NativePtr, best.Score, best.Item.DisplayName);
-        return best.Item;
     }
 
-    private int ScoreNativeCandidate(SceneEditorNativeModificationRecord record, SceneEditableRef item, Vector3 original, Vector3 current, Vector3 hidden)
+    private float DistanceFromRecordAnchors(SceneEditorNativeModificationRecord record, Vector3 position)
     {
-        var score = 0;
-        if (!string.IsNullOrWhiteSpace(record.MdlPath) && string.Equals(record.MdlPath, item.MdlPath, StringComparison.OrdinalIgnoreCase))
-            score += 50;
-        if (!string.IsNullOrWhiteSpace(record.DataId) && string.Equals(record.DataId, item.DataId, StringComparison.OrdinalIgnoreCase))
-            score += 35;
-        if (!string.IsNullOrWhiteSpace(record.DisplayName) && string.Equals(record.DisplayName, item.DisplayName, StringComparison.OrdinalIgnoreCase))
-            score += 20;
-        if (!string.IsNullOrWhiteSpace(record.MdlPath) && item.DisplayName.Contains(record.MdlPath, StringComparison.OrdinalIgnoreCase))
-            score += 10;
-        if (Vector3.Distance(item.Transform.WorldPosition, original) <= 2f)
-            score += 25;
-        if (Vector3.Distance(item.Transform.WorldPosition, current) <= 2f)
-            score += 20;
-        if (hidden != Vector3.Zero && Vector3.Distance(item.Transform.WorldPosition, hidden) <= 2f)
-            score += 20;
-        if (record.ObjectIndexAtRecordTime >= 0 && record.ObjectIndexAtRecordTime == item.ObjectIndex)
-            score += 5;
-        return score;
+        var originalDistance = Vector3.Distance(position, GetOriginalTransform(record).WorldPosition);
+        var currentDistance = Vector3.Distance(position, GetCurrentTransform(record).WorldPosition);
+        var hidden = ToVector3(record.HiddenPosition);
+        var hiddenDistance = hidden == Vector3.Zero ? float.PositiveInfinity : Vector3.Distance(position, hidden);
+        return MathF.Min(MathF.Min(originalDistance, currentDistance), hiddenDistance);
     }
 
-    private bool IsSafeNativeFuzzyMatch(SceneEditorNativeModificationRecord record, SceneEditableRef item, Vector3 original, Vector3 current, Vector3 hidden)
+    private bool NativeStableKeyMatches(SceneEditorNativeModificationRecord record, SceneEditableRef item)
     {
+        var recordKeys = NativeRecordStableKeys(record).ToList();
+        if (recordKeys.Count == 0)
+            return false;
+
+        var itemKeys = NativeItemStableKeys(item).ToList();
+        return recordKeys.Any(recordKey =>
+            itemKeys.Any(itemKey => string.Equals(recordKey, itemKey, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    private static IEnumerable<string> NativeRecordStableKeys(SceneEditorNativeModificationRecord record)
+    {
+        if (!string.IsNullOrWhiteSpace(record.NativeBgPartStableKey))
+            yield return record.NativeBgPartStableKey;
+        if (!string.IsNullOrWhiteSpace(record.StableKey))
+            yield return record.StableKey;
+    }
+
+    private static IEnumerable<string> NativeItemStableKeys(SceneEditableRef item)
+    {
+        if (!string.IsNullOrWhiteSpace(item.StableKey))
+            yield return item.StableKey;
+        if (!string.IsNullOrWhiteSpace(item.LayoutProbe?.StableKey))
+            yield return item.LayoutProbe.StableKey;
+    }
+
+    private bool NativeNameMdlMatches(SceneEditorNativeModificationRecord record, SceneEditableRef item)
+    {
+        var recordName = FirstNonEmpty(record.NamePath, record.DisplayName);
+        var recordMdl = record.MdlPath;
+        var itemName = FirstNonEmpty(item.LayoutProbe?.ResourcePath, item.DisplayName);
+        var itemMdl = item.MdlPath;
+
+        if (!HasNativeIdentityText(recordName) || !HasNativeIdentityText(recordMdl))
+            return false;
+
+        var nameMatches = NativeTextEquals(recordName, itemName) ||
+                          NativeTextEquals(recordName, itemMdl);
+        var mdlMatches = NativeTextEquals(recordMdl, itemMdl) ||
+                         NativeTextEquals(recordMdl, itemName);
+        return nameMatches && mdlMatches;
+    }
+
+    private bool NativeFallbackMatches(SceneEditorNativeModificationRecord record, SceneEditableRef item)
+    {
+        if (this.NativeAddressFallbackMatches(record, item))
+            return true;
+
         if (this.LayoutLocatorMatches(record, item))
             return true;
 
-        if (Vector3.Distance(item.Transform.WorldPosition, original) <= 2f)
+        if (HasNativeIdentityText(record.MdlPath) &&
+            (NativeTextEquals(record.MdlPath, item.MdlPath) ||
+             NativeTextEquals(record.MdlPath, item.DisplayName) ||
+             NativeTextEquals(record.MdlPath, item.LayoutProbe?.ResourcePath ?? string.Empty)))
+        {
             return true;
-        if (Vector3.Distance(item.Transform.WorldPosition, current) <= 2f)
+        }
+
+        var recordName = FirstNonEmpty(record.NamePath, record.DisplayName);
+        if (HasNativeIdentityText(recordName) &&
+            (NativeTextEquals(recordName, item.DisplayName) ||
+             NativeTextEquals(recordName, item.LayoutProbe?.ResourcePath ?? string.Empty) ||
+             NativeTextEquals(recordName, item.MdlPath)))
+        {
             return true;
-        if (hidden != Vector3.Zero && Vector3.Distance(item.Transform.WorldPosition, hidden) <= 2f)
-            return true;
+        }
 
         return record.Kind is SceneEditableKind.NativeActor or SceneEditableKind.EventNpc &&
                !string.IsNullOrWhiteSpace(record.DataId) &&
                string.Equals(record.DataId, item.DataId, StringComparison.OrdinalIgnoreCase) &&
-               !string.IsNullOrWhiteSpace(record.DisplayName) &&
-               string.Equals(record.DisplayName, item.DisplayName, StringComparison.OrdinalIgnoreCase);
+               HasNativeIdentityText(recordName) &&
+               NativeTextEquals(recordName, item.DisplayName);
+    }
+
+    private bool NativeAddressFallbackMatches(SceneEditorNativeModificationRecord record, SceneEditableRef item)
+    {
+        var nativeAddress = ParsePointer(record.NativeAddress);
+        if (nativeAddress == 0 || nativeAddress != item.NativePtr)
+            return false;
+
+        return this.NativeNameMdlMatches(record, item) ||
+               this.LayoutLocatorMatches(record, item) ||
+               (!string.IsNullOrWhiteSpace(record.RuntimeIdAtRecordTime) &&
+                string.Equals(item.RuntimeId, record.RuntimeIdAtRecordTime, StringComparison.OrdinalIgnoreCase));
     }
 
     private bool LayoutLocatorMatches(SceneEditorNativeModificationRecord record, SceneEditableRef item)
@@ -2434,7 +3873,14 @@ public sealed unsafe class SceneEditorService
 
         if (!string.IsNullOrWhiteSpace(record.SharedGroupPath))
         {
-            if (!string.Equals(record.SharedGroupPath, probe.SharedGroupPath, StringComparison.OrdinalIgnoreCase))
+            if (!NativeTextEquals(record.SharedGroupPath, probe.SharedGroupPath))
+                return false;
+            matched = true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(record.ParentStableKey))
+        {
+            if (!NativeTextEquals(NormalizeNativeLocatorText(record.ParentStableKey), NormalizeNativeLocatorText(probe.ParentKey)))
                 return false;
             matched = true;
         }
@@ -2446,11 +3892,10 @@ public sealed unsafe class SceneEditorService
             matched = true;
         }
 
-        if (!string.IsNullOrWhiteSpace(record.MdlPath))
+        if (matched && record.LayoutInstanceIndexAtRecordTime >= 0)
         {
-            if (!string.Equals(record.MdlPath, item.MdlPath, StringComparison.OrdinalIgnoreCase))
+            if (record.LayoutInstanceIndexAtRecordTime != probe.Index)
                 return false;
-            matched = true;
         }
 
         if (!string.IsNullOrWhiteSpace(record.LayoutSource))
@@ -2466,7 +3911,167 @@ public sealed unsafe class SceneEditorService
             matched = true;
         }
 
+        if (matched && HasNativeIdentityText(record.MdlPath) && HasNativeIdentityText(item.MdlPath) &&
+            !NativeTextEquals(record.MdlPath, item.MdlPath) &&
+            !NativeTextEquals(record.MdlPath, item.LayoutProbe?.ResourcePath ?? string.Empty))
+        {
+            return false;
+        }
+
         return matched;
+    }
+
+    private void EnsureNativeRecordLocatorFields(SceneEditorNativeModificationRecord record)
+    {
+        var changed = false;
+        if (string.IsNullOrWhiteSpace(record.TerritoryKey) && record.TerritoryId != 0)
+        {
+            record.TerritoryKey = FormatTerritoryKey(record.TerritoryId);
+            changed = true;
+        }
+
+        if (string.IsNullOrWhiteSpace(record.NamePath) && !string.IsNullOrWhiteSpace(record.DisplayName))
+        {
+            record.NamePath = record.DisplayName;
+            changed = true;
+        }
+
+        if (record.Kind == SceneEditableKind.NativeBgPart &&
+            string.IsNullOrWhiteSpace(record.NativeBgPartStableKey) &&
+            !string.IsNullOrWhiteSpace(record.StableKey))
+        {
+            record.NativeBgPartStableKey = record.StableKey;
+            changed = true;
+        }
+
+        if (record.Kind == SceneEditableKind.NativeBgPart)
+        {
+            if (string.IsNullOrWhiteSpace(record.NativeBgPartSgbPath))
+            {
+                var sgbPath = FirstNonEmpty(record.NamePath, record.NativeBgPartAssetPath, record.MdlPath);
+                if (!string.IsNullOrWhiteSpace(sgbPath))
+                {
+                    record.NativeBgPartSgbPath = sgbPath;
+                    changed = true;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(record.NativeBgPartAssetPath))
+            {
+                var assetPath = FirstNonEmpty(record.NamePath, record.MdlPath, record.DisplayName);
+                if (!string.IsNullOrWhiteSpace(assetPath))
+                {
+                    record.NativeBgPartAssetPath = assetPath;
+                    changed = true;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(record.NativeBgPartModelPath) &&
+                !string.IsNullOrWhiteSpace(record.MdlPath) &&
+                !NativeTextEquals(record.MdlPath, record.NativeBgPartSgbPath) &&
+                !NativeTextEquals(record.MdlPath, record.NativeBgPartAssetPath))
+            {
+                record.NativeBgPartModelPath = record.MdlPath;
+                changed = true;
+            }
+
+            if (record.NativeBgPartInitialIndex < 0 && record.LayoutInstanceIndexAtRecordTime >= 0)
+            {
+                record.NativeBgPartInitialIndex = record.LayoutInstanceIndexAtRecordTime;
+                changed = true;
+            }
+
+            if (string.IsNullOrWhiteSpace(record.NativeBgPartInitialAddress))
+            {
+                var address = FirstNonEmpty(record.LayoutInstanceAddress, record.NativeAddress);
+                if (!string.IsNullOrWhiteSpace(address))
+                {
+                    record.NativeBgPartInitialAddress = address;
+                    changed = true;
+                }
+            }
+        }
+
+        if (changed)
+        {
+            record.LastModifiedAt = DateTime.UtcNow;
+            this.MarkPersistDirty("Native record locator backfilled");
+        }
+    }
+
+    private static bool IsNativeResolveStatus(string value)
+        => Enum.GetNames(typeof(NativeResolveStatus))
+            .Any(name => string.Equals(name, value, StringComparison.OrdinalIgnoreCase));
+
+    private static string ToNativeRestoreFailureStatus(string reason)
+    {
+        foreach (var name in Enum.GetNames(typeof(NativeResolveStatus)))
+        {
+            if (reason.StartsWith(name, StringComparison.OrdinalIgnoreCase))
+                return name;
+        }
+
+        if (reason.Contains("copy", StringComparison.OrdinalIgnoreCase))
+            return NativeResolveStatus.BlockedByCopy.ToString();
+        if (reason.Contains("territory", StringComparison.OrdinalIgnoreCase) ||
+            reason.Contains("not loaded", StringComparison.OrdinalIgnoreCase))
+            return NativeResolveStatus.NotLoadedYet.ToString();
+        if (reason.Contains("multiple", StringComparison.OrdinalIgnoreCase) ||
+            reason.Contains("ambiguous", StringComparison.OrdinalIgnoreCase))
+            return NativeResolveStatus.MultipleCandidates.ToString();
+
+        return "RestoreFailed";
+    }
+
+    private static string DescribeNativeCandidate(SceneEditableRef item)
+        => $"ptr=0x{item.NativePtr:X}; runtime={item.RuntimeId}; stable={FirstNonEmpty(item.StableKey, item.LayoutProbe?.StableKey)}; key={item.LayoutProbe?.Key ?? string.Empty}; name={item.DisplayName}; mdl={item.MdlPath}; sgb={item.LayoutProbe?.SharedGroupPath ?? string.Empty}; index={item.LayoutProbe?.Index ?? -1}; pos={item.Transform.WorldPosition}; source={item.LayoutProbe?.Source ?? string.Empty}";
+
+    private string DescribeNativeCandidateExclusion(SceneEditorNativeModificationRecord record, SceneEditableRef item)
+    {
+        if (this.NativeStableKeyMatches(record, item))
+            return "matched stable key";
+        if (this.LayoutLocatorMatches(record, item))
+            return "matched layout locator";
+        if (this.NativeNameMdlMatches(record, item))
+            return "matched name+mdl";
+        if (this.NativeFallbackMatches(record, item))
+            return "matched fallback";
+
+        var reasons = new List<string>();
+        var recordName = FirstNonEmpty(record.NamePath, record.DisplayName);
+        var itemName = FirstNonEmpty(item.LayoutProbe?.ResourcePath, item.DisplayName);
+        if (HasNativeIdentityText(recordName) && !NativeTextEquals(recordName, itemName) && !NativeTextEquals(recordName, item.MdlPath))
+            reasons.Add("name differs");
+        if (HasNativeIdentityText(record.MdlPath) && !NativeTextEquals(record.MdlPath, item.MdlPath) && !NativeTextEquals(record.MdlPath, itemName))
+            reasons.Add("mdl differs");
+        if (!NativeRecordStableKeys(record).Any(recordKey => NativeItemStableKeys(item).Any(itemKey => string.Equals(recordKey, itemKey, StringComparison.OrdinalIgnoreCase))))
+            reasons.Add("stable key differs");
+        if (!string.IsNullOrWhiteSpace(record.SourceKind) && !string.Equals(record.SourceKind, item.LayoutProbe?.SourceKind, StringComparison.OrdinalIgnoreCase))
+            reasons.Add("source kind differs");
+        if (!string.IsNullOrWhiteSpace(record.SharedGroupPath) && !NativeTextEquals(record.SharedGroupPath, item.LayoutProbe?.SharedGroupPath ?? string.Empty))
+            reasons.Add("shared group differs");
+        if (record.ChildIndex >= 0 && record.ChildIndex != item.LayoutProbe?.ChildIndex)
+            reasons.Add("child index differs");
+
+        return reasons.Count == 0 ? "insufficient identity fields" : string.Join(", ", reasons);
+    }
+
+    private static bool NativeTextEquals(string left, string right)
+        => string.Equals(NormalizeNativeIdentityText(left), NormalizeNativeIdentityText(right), StringComparison.OrdinalIgnoreCase);
+
+    private static string NormalizeNativeIdentityText(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        return value.Trim().Replace('\\', '/');
+    }
+
+    private static bool HasNativeIdentityText(string value)
+    {
+        var normalized = NormalizeNativeIdentityText(value);
+        return !string.IsNullOrWhiteSpace(normalized) &&
+               !string.Equals(normalized, "unknown", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string NormalizeNativeLocatorText(string value)
@@ -2620,6 +4225,9 @@ public sealed unsafe class SceneEditorService
 
     private static string FirstNonEmpty(params string?[] values)
         => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
+
+    private static string FormatTerritoryKey(uint territoryId)
+        => territoryId == 0 ? string.Empty : $"territory:{territoryId}";
 
     private IReadOnlyList<SceneEditableRef> GetNativeEditables()
     {
@@ -2800,6 +4408,13 @@ public sealed unsafe class SceneEditorService
 
                 var stableKey = FirstNonEmpty(instance.StableKey, instance.Key);
                 var rotationEuler = WorldTransformUtil.QuaternionToWorldEulerRadians(instance.RotationQuaternion);
+                var transform = WorldTransform.FromEuler(instance.Position, rotationEuler, instance.Scale == Vector3.Zero ? Vector3.One : instance.Scale);
+                var record = restoreScan ? null : this.GetNativeModificationRecordByStableKey(stableKey);
+                if (record is { IsHidden: true })
+                    transform = GetHiddenOrCurrentTransform(record);
+                else if (record is { IsModified: true })
+                    transform = GetCurrentTransform(record);
+
                 var appliedHidden = !instance.Visible ||
                                     this.IsHiddenRecordApplied(stableKey, instance.Position) ||
                                     this.IsHiddenRecordApplied(instance.Key, instance.Position);
@@ -2809,9 +4424,11 @@ public sealed unsafe class SceneEditorService
                     address,
                     -1,
                     string.IsNullOrWhiteSpace(instance.ResourcePath) ? instance.Type : instance.ResourcePath,
-                    instance.ResourcePath,
+                    kind == SceneEditableKind.NativeBgPart
+                        ? FirstNonEmpty(instance.ModelResourcePath, instance.ResourcePath)
+                        : instance.ResourcePath,
                     false,
-                    WorldTransform.FromEuler(instance.Position, rotationEuler, instance.Scale == Vector3.Zero ? Vector3.One : instance.Scale),
+                    transform,
                     true,
                     appliedHidden)
                 {
@@ -2896,6 +4513,35 @@ public sealed unsafe class SceneEditorService
         string StableKey,
         bool IsFresh,
         string ResolveReason);
+
+    private enum NativeResolveStatus
+    {
+        FoundByPointer,
+        FoundByStableKey,
+        FoundByStableIdentity,
+        FoundByNameMdl,
+        FoundByFallback,
+        BlockedByCopy,
+        NotLoadedYet,
+        MultipleCandidates,
+        TrulyMissing,
+    }
+
+    private sealed record NativeResolveResult(
+        NativeResolveStatus Status,
+        SceneEditableRef? Item,
+        string Reason,
+        int ScannedCount,
+        int ScannedBgPartCount,
+        int SameKindCount,
+        int CandidateCount);
+
+    private sealed record NativeCandidateRank(
+        SceneEditableRef Item,
+        float Metric,
+        float OriginalDistance,
+        float CurrentDistance,
+        float HiddenDistance);
 
     private static bool TryGetAddress(object source, out nint address)
     {
@@ -3008,7 +4654,10 @@ public sealed unsafe class SceneEditorService
         return false;
     }
 
-    private bool ApplyNativeLayoutTransform(string runtimeId, WorldTransform transform)
+    private bool ApplyNativeLayoutTransform(
+        string runtimeId,
+        WorldTransform transform,
+        SceneEditorTransformComponents components = SceneEditorTransformComponents.All)
     {
         if (this.IsBgPartCollisionConfirmationRequired(SceneEditableKind.NativeBgPart))
             return this.BlockUnconfirmedBgPartCollisionTransform(SceneEditableKind.NativeBgPart, "Native", runtimeId);
@@ -3033,11 +4682,12 @@ public sealed unsafe class SceneEditorService
             this.GetStableKey(current),
             IsFresh: true,
             ResolveReason: "interactive current frame");
-        return this.ApplyFreshNativeLayoutTransform(runtimeId, target, transform, this.NativeFullLayoutTransformConfirmed);
+        return this.ApplyFreshNativeLayoutTransform(runtimeId, target, transform, this.NativeFullLayoutTransformConfirmed, components);
     }
 
     private bool ApplyFreshNativeLayoutTransform(SceneEditorNativeModificationRecord record, SceneEditableRef current, WorldTransform transform)
     {
+        this.UpdateNativeRecordLocator(record, current);
         var target = new FreshNativeLayoutTarget(
             current.NativePtr,
             this.getTerritoryType(),
@@ -3049,7 +4699,14 @@ public sealed unsafe class SceneEditorService
         return this.ApplyFreshNativeLayoutTransform(record.RuntimeIdAtRecordTime, target, transform, record.UseFullLayoutTransform);
     }
 
-    private bool ApplyFreshNativeLayoutTransform(string runtimeId, FreshNativeLayoutTarget target, WorldTransform transform, bool fullLayoutConfirmed)
+    private bool ApplyFreshNativeLayoutTransform(
+        string runtimeId,
+        FreshNativeLayoutTarget target,
+        WorldTransform transform,
+        bool fullLayoutConfirmed,
+        SceneEditorTransformComponents components = SceneEditorTransformComponents.All,
+        bool updateGeneration = true,
+        bool invalidateNativeCache = true)
     {
         if (!this.ValidateFreshNativeLayoutTarget(target, out var validationReason))
         {
@@ -3071,15 +4728,17 @@ public sealed unsafe class SceneEditorService
                 }
 
                 var graphicsTarget = target with { Address = graphicsObjectAddress, ResolveReason = $"{target.ResolveReason}; GraphicsObject" };
-                if (!this.TryWriteSceneObjectTransform(graphicsTarget, transform, out var writeReason))
+                if (!this.TryWriteSceneObjectTransform(graphicsTarget, transform, out var writeReason, components))
                 {
                     this.LastStatus = $"Native BgPart visual transform failed: {writeReason}";
                     this.LastBgPartCollisionOperation = $"source=Native; collisionMode=Off; collision operation=Failed; handle=0x{target.Address:X}; {writeReason}";
                     return false;
                 }
 
-                this.TransformGeneration++;
-                this.lastNativeScanUtc = DateTime.MinValue;
+                if (updateGeneration)
+                    this.TransformGeneration++;
+                if (invalidateNativeCache)
+                    this.lastNativeScanUtc = DateTime.MinValue;
                 this.LastBgPartCollisionOperation = $"source=Native; collisionMode=Off; collision operation=Skipped; handle=0x{target.Address:X}; graphics=0x{graphicsObjectAddress:X}";
                 this.LastStatus = $"Native BgPart visual-only transform applied: {runtimeId}";
                 return true;
@@ -3100,9 +4759,33 @@ public sealed unsafe class SceneEditorService
                 Rotation = transform.WorldRotation,
                 Scale = normalizedScale,
             };
+            if (components != SceneEditorTransformComponents.All)
+            {
+                var currentTransform = pointer->GetTransformImpl();
+                if (currentTransform == null)
+                {
+                    this.LastStatus = "Native layout transform skipped: current transform unavailable.";
+                    if (pointer->Id.Type == InstanceType.BgPart)
+                        this.LastBgPartCollisionOperation = $"source=Native; collisionMode=On; collision operation=Failed; handle=0x{target.Address:X}; current transform unavailable";
+                    return false;
+                }
+
+                nativeTransform.Translation = HasTransformComponent(components, SceneEditorTransformComponents.Position)
+                    ? transform.WorldPosition
+                    : currentTransform->Translation;
+                nativeTransform.Rotation = HasTransformComponent(components, SceneEditorTransformComponents.Rotation)
+                    ? transform.WorldRotation
+                    : currentTransform->Rotation;
+                nativeTransform.Scale = HasTransformComponent(components, SceneEditorTransformComponents.Scale)
+                    ? normalizedScale
+                    : WorldTransformUtil.NormalizeScale(currentTransform->Scale);
+            }
+
             pointer->SetTransform(&nativeTransform);
-            this.TransformGeneration++;
-            this.lastNativeScanUtc = DateTime.MinValue;
+            if (updateGeneration)
+                this.TransformGeneration++;
+            if (invalidateNativeCache)
+                this.lastNativeScanUtc = DateTime.MinValue;
             if (pointer->Id.Type == InstanceType.BgPart)
                 this.LastBgPartCollisionOperation = $"source=Native; collisionMode=On; collision operation=Moved; handle=0x{target.Address:X}";
             this.LastStatus = $"Native layout transform applied: {runtimeId}";
@@ -3174,7 +4857,11 @@ public sealed unsafe class SceneEditorService
         }
     }
 
-    private bool TryWriteSceneObjectTransform(FreshNativeLayoutTarget target, WorldTransform transform, out string reason)
+    private bool TryWriteSceneObjectTransform(
+        FreshNativeLayoutTarget target,
+        WorldTransform transform,
+        out string reason,
+        SceneEditorTransformComponents components = SceneEditorTransformComponents.All)
     {
         if (!this.ValidateFreshNativeLayoutTarget(target, out reason))
             return false;
@@ -3191,9 +4878,12 @@ public sealed unsafe class SceneEditorService
 
         var obj = (SceneObject*)target.Address;
         var bg = (SceneBgObject*)target.Address;
-        obj->Position = transform.WorldPosition;
-        obj->Rotation = transform.WorldRotation;
-        obj->Scale = normalizedScale;
+        if (HasTransformComponent(components, SceneEditorTransformComponents.Position))
+            obj->Position = transform.WorldPosition;
+        if (HasTransformComponent(components, SceneEditorTransformComponents.Rotation))
+            obj->Rotation = transform.WorldRotation;
+        if (HasTransformComponent(components, SceneEditorTransformComponents.Scale))
+            obj->Scale = normalizedScale;
         bg->IsTransformChanged = true;
         bg->NotifyTransformChanged();
         bg->UpdateTransforms(true);
@@ -3293,7 +4983,10 @@ public sealed unsafe class SceneEditorService
             && float.IsFinite(value.W)
             && value.LengthSquared() is > 0.0001f and < 10f;
 
-    private bool ApplyNativeActorTransform(string runtimeId, WorldTransform transform)
+    private bool ApplyNativeActorTransform(
+        string runtimeId,
+        WorldTransform transform,
+        SceneEditorTransformComponents components = SceneEditorTransformComponents.All)
     {
         var current = this.GetEditables().FirstOrDefault(item =>
             string.Equals(item.RuntimeId, runtimeId, StringComparison.OrdinalIgnoreCase));
@@ -3303,10 +4996,16 @@ public sealed unsafe class SceneEditorService
             return false;
         }
 
-        return this.ApplyNativeActorTransformAddress(runtimeId, current.NativePtr, transform);
+        return this.ApplyNativeActorTransformAddress(runtimeId, current.NativePtr, transform, components);
     }
 
-    private bool ApplyNativeActorTransformAddress(string runtimeId, nint address, WorldTransform transform)
+    private bool ApplyNativeActorTransformAddress(
+        string runtimeId,
+        nint address,
+        WorldTransform transform,
+        SceneEditorTransformComponents components = SceneEditorTransformComponents.All,
+        bool updateGeneration = true,
+        bool invalidateNativeCache = true)
     {
         if (address == 0)
         {
@@ -3325,17 +5024,23 @@ public sealed unsafe class SceneEditorService
             }
 
             var gameObject = (GameObject*)address;
-            gameObject->Position = transform.WorldPosition;
+            if (HasTransformComponent(components, SceneEditorTransformComponents.Position))
+                gameObject->Position = transform.WorldPosition;
             if (gameObject->DrawObject != null)
             {
                 var drawObject = (DrawObject*)gameObject->DrawObject;
-                drawObject->Position = transform.WorldPosition;
-                drawObject->Rotation = transform.WorldRotation;
-                drawObject->Scale = WorldTransformUtil.NormalizeScale(transform.WorldScale);
+                if (HasTransformComponent(components, SceneEditorTransformComponents.Position))
+                    drawObject->Position = transform.WorldPosition;
+                if (HasTransformComponent(components, SceneEditorTransformComponents.Rotation))
+                    drawObject->Rotation = transform.WorldRotation;
+                if (HasTransformComponent(components, SceneEditorTransformComponents.Scale))
+                    drawObject->Scale = WorldTransformUtil.NormalizeScale(transform.WorldScale);
             }
 
-            this.TransformGeneration++;
-            this.lastNativeScanUtc = DateTime.MinValue;
+            if (updateGeneration)
+                this.TransformGeneration++;
+            if (invalidateNativeCache)
+                this.lastNativeScanUtc = DateTime.MinValue;
             this.LastStatus = $"Native actor transform applied: {runtimeId}";
             return true;
         }

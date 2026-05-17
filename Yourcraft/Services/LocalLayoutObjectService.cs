@@ -409,6 +409,7 @@ public sealed unsafe class LocalLayoutObjectService
             SourceSharedGroupPath = candidate.SharedGroupPath,
             SourceParentAddress = candidate.ParentAddress,
             SourceParentKey = candidate.ParentKey,
+            SourceStableKey = candidate.StableKey,
             SourceChildIndex = candidate.ChildIndex,
             OriginalResourcePath = originalPrimaryPath,
             CurrentResourcePath = originalPrimaryPath,
@@ -1483,7 +1484,7 @@ public sealed unsafe class LocalLayoutObjectService
             this.WriteInstanceTransform(
                 instance,
                 snapshot.OriginalGraphicsPosition,
-                Vector3.Zero,
+                WorldTransformUtil.QuaternionToWorldEulerRadians(snapshot.OriginalGraphicsRotation),
                 snapshot.OriginalGraphicsScale,
                 "仅恢复 VisualOnly transform");
             return;
@@ -1492,7 +1493,7 @@ public sealed unsafe class LocalLayoutObjectService
         this.WriteInstanceTransform(
             instance,
             snapshot.OriginalLayoutPosition,
-            Vector3.Zero,
+            WorldTransformUtil.QuaternionToWorldEulerRadians(snapshot.OriginalLayoutRotation),
             snapshot.OriginalLayoutScale,
             "仅恢复 FullLayout transform");
     }
@@ -1565,6 +1566,7 @@ public sealed unsafe class LocalLayoutObjectService
 
             instance.CurrentPosition = current.Value.Position;
             instance.CurrentRotation = current.Value.Rotation;
+            instance.CurrentRotationEuler = WorldTransformUtil.QuaternionToWorldEulerRadians(current.Value.Rotation);
             instance.CurrentScale = current.Value.Scale;
             instance.CurrentVisualTranslation = current.Value.Position;
             instance.CurrentVisualMatrix = ReadVisualMatrix((nint)graphicsAddress, instance.VisualTransformOffset);
@@ -2194,25 +2196,137 @@ public sealed unsafe class LocalLayoutObjectService
         this.RestoreOriginal(instance, removeAfterRestore: false);
     }
 
-    public void Delete(string id)
+    public bool Delete(string id)
     {
         if (this.IsBusy)
         {
             this.LastStatus = "当前正在恢复/清理本地场景物体，暂不能删除实例。";
-            return;
+            return false;
         }
 
         var instance = this.GetById(id);
         if (instance == null)
-            return;
+            return true;
 
         if (!string.IsNullOrWhiteSpace(instance.AnimationGroupId))
         {
             this.RestoreAnimatedGroup(instance.AnimationGroupId, removeAfterRestore: true);
-            return;
+            return this.GetById(id) == null || instance.IsRestored;
         }
 
-        this.RestoreOriginal(instance, removeAfterRestore: true);
+        if (this.DeleteWouldRequireModelRecreate(instance, out var recreateReason))
+        {
+            instance.RestoreStatus = "DeleteBlockedUnsafeRecreate";
+            instance.RestoreError = recreateReason;
+            instance.LastError = recreateReason;
+            instance.InstanceState = "DeleteBlocked";
+            this.LastStatus = recreateReason;
+            return false;
+        }
+
+        return this.RestoreOriginal(instance, removeAfterRestore: true);
+    }
+
+    private bool DeleteWouldRequireModelRecreate(LocalLayoutObjectInstance instance, out string reason)
+    {
+        reason = string.Empty;
+        if (!this.TryGetOriginalSlotSnapshot(instance, out var snapshot, out var snapshotError))
+        {
+            reason = $"Delete blocked: original slot snapshot is invalid ({snapshotError}).";
+            return true;
+        }
+
+        if (!TryGetPointer(instance.OccupiedSlotAddress, out var pointer) || pointer == null)
+        {
+            reason = $"Delete blocked: occupied slot pointer is invalid ({instance.OccupiedSlotAddress}).";
+            return true;
+        }
+
+        var originalPath = snapshot.OriginalResourcePath.Trim();
+        var currentPath = ReadPrimaryPath(pointer);
+        if (!string.IsNullOrWhiteSpace(originalPath) &&
+            !string.IsNullOrWhiteSpace(currentPath) &&
+            !string.Equals(currentPath, originalPath, StringComparison.OrdinalIgnoreCase))
+        {
+            reason = $"Delete blocked: restoring model path would require native DestroyPrimary/CreatePrimary (current={currentPath}; original={originalPath}). Restore the model first, then delete.";
+            return true;
+        }
+
+        return false;
+    }
+
+    public bool ReleaseHiddenNativeCarrierCopy(
+        string id,
+        Vector3 hiddenPosition,
+        Vector3 hiddenRotationEuler,
+        Vector3 hiddenScale,
+        out string result)
+    {
+        result = string.Empty;
+        if (this.IsBusy)
+        {
+            result = "Local layout service is busy; hidden native carrier release was postponed.";
+            this.LastStatus = result;
+            return false;
+        }
+
+        var instance = this.GetById(id);
+        if (instance == null)
+        {
+            result = $"Copy instance not found: {id}";
+            this.LastStatus = result;
+            return true;
+        }
+
+        this.DisablePlayback(instance, "Release hidden native BgPart carrier copy.");
+        instance.IsRestoring = true;
+        instance.InstanceState = "ReleasingHiddenNativeCarrier";
+        instance.LastOperation = "ReleaseHiddenNativeCarrierCopy";
+        instance.RestoreStatus = "ReleasingHiddenNativeCarrier";
+        instance.RestoreError = string.Empty;
+        instance.PendingVisualTransform = false;
+        instance.PendingVisualTransformFrameWait = 0;
+        instance.PendingRecreateStabilizeAttempts = 0;
+        instance.PendingVisualTransformResult = "Hidden native carrier release cancels pending visual writes.";
+        instance.PinTransformEnabled = false;
+        instance.TransformMonitorActive = false;
+
+        try
+        {
+            var normalizedScale = WorldTransformUtil.NormalizeScale(hiddenScale);
+            var applied = this.WriteInstanceTransform(
+                instance,
+                hiddenPosition,
+                hiddenRotationEuler,
+                normalizedScale,
+                "Release hidden native carrier copy");
+            if (!applied)
+            {
+                result = this.LastStatus;
+                instance.RestoreStatus = "ReleaseFailed";
+                instance.RestoreError = result;
+                instance.InstanceState = "Failed";
+                return false;
+            }
+
+            instance.Visible = false;
+            instance.IsOccupied = false;
+            instance.IsRestored = true;
+            instance.InstanceState = "Restored";
+            instance.RestoreStatus = "ReleasedHiddenNativeCarrier";
+            instance.RestoreError = string.Empty;
+            if (TryNormalizeSlotAddress(instance.OccupiedSlotAddress, out var occupiedSlotAddress))
+                this.occupiedSlots.Remove(occupiedSlotAddress);
+            this.instances.Remove(instance);
+            this.RebuildOccupiedSlotRegistry();
+            result = $"Released hidden native carrier copy {id}; carrier moved back to hidden transform.";
+            this.LastStatus = result;
+            return true;
+        }
+        finally
+        {
+            instance.IsRestoring = false;
+        }
     }
 
     private void RestoreAnimatedGroup(string groupId, bool removeAfterRestore)
@@ -2539,9 +2653,9 @@ public sealed unsafe class LocalLayoutObjectService
         }
     }
 
-    private void RestoreOriginal(LocalLayoutObjectInstance instance, bool removeAfterRestore)
+    private bool RestoreOriginal(LocalLayoutObjectInstance instance, bool removeAfterRestore)
     {
-        this.RestoreOriginalSlotSnapshot(instance, unsafeEnabled: true, fullLayoutConfirmed: true, removeAfterRestore);
+        return this.RestoreOriginalSlotSnapshot(instance, unsafeEnabled: true, fullLayoutConfirmed: true, removeAfterRestore);
     }
 
     private OriginalSlotSnapshot BuildOriginalSlotSnapshot(
@@ -2581,6 +2695,7 @@ public sealed unsafe class LocalLayoutObjectService
             OriginalSecondaryPath = instance.CollisionSnapshotSecondaryPath,
             OriginalSourceType = candidate.SourceKind,
             SourceLabel = $"{candidate.ResourcePath} | {candidate.Address}",
+            SourceStableKey = candidate.StableKey,
         };
     }
 
@@ -2934,7 +3049,7 @@ public sealed unsafe class LocalLayoutObjectService
             var readback = ReadSceneObjectTransform(graphicsAddress) ?? original;
             instance.CurrentPosition = readback.Position;
             instance.CurrentRotation = readback.Rotation;
-            instance.CurrentRotationEuler = Vector3.Zero;
+            instance.CurrentRotationEuler = WorldTransformUtil.QuaternionToWorldEulerRadians(readback.Rotation);
             instance.CurrentScale = readback.Scale;
             instance.CurrentVisualTranslation = readback.Position;
             instance.LastReadback = FormatSceneSnapshot(readback);

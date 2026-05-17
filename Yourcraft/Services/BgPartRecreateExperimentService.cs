@@ -35,6 +35,14 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
         if (!TryGetPointer(instance.OccupiedSlotAddress, out var pointer))
             return this.Fail(instance, $"slot 地址解析失败：{instance.OccupiedSlotAddress}");
 
+        if (pointer == null || pointer->Id.Type != InstanceType.BgPart)
+            return this.Fail(instance, pointer == null ? "layout pointer is null; recreate is unsafe." : $"layout instance type is {pointer->Id.Type}; recreate expects BgPart.");
+        var currentTransform = pointer->GetTransformImpl();
+        if (currentTransform == null)
+            return this.Fail(instance, "GetTransformImpl returned null; recreate is unsafe.");
+        if (!IsTransformNormal(currentTransform->Translation, currentTransform->Rotation, currentTransform->Scale))
+            return this.Fail(instance, "Current layout transform is abnormal; recreate is unsafe.");
+
         try
         {
             var bgPart = (BgPartsLayoutInstance*)pointer;
@@ -101,6 +109,14 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
 
         try
         {
+            if (pointer == null || pointer->Id.Type != InstanceType.BgPart)
+                return this.Fail(instance, pointer == null ? "layout pointer is null; recreate is unsafe." : $"layout instance type is {pointer->Id.Type}; recreate expects BgPart.");
+            var currentTransform = pointer->GetTransformImpl();
+            if (currentTransform == null)
+                return this.Fail(instance, "GetTransformImpl returned null; recreate is unsafe.");
+            if (!IsTransformNormal(currentTransform->Translation, currentTransform->Rotation, currentTransform->Scale))
+                return this.Fail(instance, "Current layout transform is abnormal; recreate is unsafe.");
+
             var normalizedTargetPath = targetPath.Trim();
             if (!this.pinnedPathBuffers.ContainsKey(instance.Id) ||
                 !string.Equals(instance.RecreateSnapshotTargetPath, normalizedTargetPath, StringComparison.OrdinalIgnoreCase))

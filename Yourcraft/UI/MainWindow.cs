@@ -55,6 +55,7 @@ public sealed class MainWindow : Window
     private Vector2 deleteAllActorsConfirmPopupPosition;
     private Vector2 confirmationPopupPosition;
     private string pendingNativeRestoreRecordId = string.Empty;
+    private string selectedNativeRecordHighlightId = string.Empty;
     private ProtectedBgPartResourcePath? pendingProtectedResourcePathRemove;
     private ProtectedBgPartSlot? pendingProtectedSlotRemove;
     private PreferredModifyBgPartResourcePath? pendingPreferredResourcePathRemove;
@@ -1068,6 +1069,8 @@ public sealed class MainWindow : Window
 
         var selected = this.sceneEditor.GetSelectedEditable();
         var selectedRecord = selected == null ? null : this.sceneEditor.GetNativeModificationRecord(selected);
+        var selectedRecordId = selectedRecord?.RecordId ?? string.Empty;
+        this.selectedNativeRecordHighlightId = selectedRecordId;
         ImGui.BeginDisabled(selectedRecord == null);
         if (ImGui.Button(T("恢复选中", "Restore Selected")))
         {
@@ -1097,7 +1100,7 @@ public sealed class MainWindow : Window
         ImGui.Separator();
         ImGui.TextWrapped(T("原生场景修改", "Native Scene Edits"));
         this.DrawSceneEditorRecordSection(T("原生 NPC / EventNPC 修改", "Native NPC / EventNPC Edits"), records.Where(item => item.IsModified && item.Kind is SceneEditableKind.NativeActor or SceneEditableKind.EventNpc));
-        this.DrawSceneEditorRecordSection(T("原生 BgPart 修改", "Native BgPart Edits"), records.Where(item => item.IsModified && item.Kind == SceneEditableKind.NativeBgPart));
+        this.DrawSceneEditorRecordSection(T("原生 BgPart 修改", "Native BgPart Edits"), records.Where(item => item.Kind == SceneEditableKind.NativeBgPart && (item.IsModified || IsRestoredNativeBgPartRecord(item))));
         this.DrawSceneEditorRecordSection(T("原生 Light 修改", "Native Light Edits"), records.Where(item => item.IsModified && item.Kind == SceneEditableKind.NativeLight));
 
         if (this.DrawConfirmPopup("ConfirmRestoreNativeRecord", T("确认恢复这条原生修改？", "Restore this native edit?")))
@@ -1153,10 +1156,16 @@ public sealed class MainWindow : Window
         {
             ImGui.TableNextRow();
             ImGui.PushID(record.RecordId);
+            var highlightSelected = !string.IsNullOrWhiteSpace(this.selectedNativeRecordHighlightId) &&
+                                    string.Equals(this.selectedNativeRecordHighlightId, record.RecordId, StringComparison.OrdinalIgnoreCase);
+            if (highlightSelected)
+                ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1f, 0.86f, 0.18f, 1f));
             ImGui.TableSetColumnIndex(0);
             ImGui.TextUnformatted(DisplaySceneEditableKind(record.Kind));
             ImGui.TableSetColumnIndex(1);
             ImGui.TextWrapped(record.DisplayName);
+            if (highlightSelected)
+                ImGui.PopStyleColor();
             ImGui.TableSetColumnIndex(2);
             ImGui.TextWrapped(string.IsNullOrWhiteSpace(record.MdlPath) ? "unknown" : record.MdlPath);
             ImGui.TableSetColumnIndex(3);
@@ -1278,33 +1287,34 @@ public sealed class MainWindow : Window
         }
 
         ImGui.BeginDisabled(disabled);
-        var changed = false;
+        var components = SceneEditorTransformComponents.None;
         var position = this.sceneEditorTransformEdit.PositionInput;
         if (DrawVector3StepperRow(T("位移", "Position"), "SceneEditorPosition", ref position, 0.2f))
         {
             this.sceneEditorTransformEdit.PositionInput = position;
-            changed = true;
+            components |= SceneEditorTransformComponents.Position;
         }
 
         var eulerDegrees = RadiansVectorToDegrees(this.sceneEditorTransformEdit.EulerInput);
         if (DrawVector3StepperRow(T("旋转", "Rotation"), "SceneEditorRotation", ref eulerDegrees, 0.2f))
         {
             this.sceneEditorTransformEdit.EulerInput = DegreesVectorToRadians(eulerDegrees);
-            changed = true;
+            components |= SceneEditorTransformComponents.Rotation;
         }
 
         var scale = this.sceneEditorTransformEdit.ScaleInput;
         if (DrawVector3StepperRow(T("缩放", "Scale"), "SceneEditorScale", ref scale, 0.2f, 0.01f))
         {
             this.sceneEditorTransformEdit.ScaleInput = Vector3.Max(scale, new Vector3(0.01f));
-            changed = true;
+            components |= SceneEditorTransformComponents.Scale;
         }
 
-        if (changed)
+        if (components != SceneEditorTransformComponents.None)
         {
             var before = selected.Transform;
-            var after = this.sceneEditorTransformEdit.ToWorldTransform();
-            if (this.sceneEditor.ApplyWorldTransform(selected.Kind, selected.RuntimeId, after))
+            var requested = this.sceneEditorTransformEdit.ToWorldTransform();
+            var after = this.sceneEditor.MergeWorldTransformForComponents(selected.Kind, selected.RuntimeId, requested, components);
+            if (this.sceneEditor.ApplyWorldTransform(selected.Kind, selected.RuntimeId, requested, components))
                 this.sceneEditor.PushTransformUndo(selected.Kind, selected.RuntimeId, selected.DisplayName, before, after, "TransformInput");
         }
         ImGui.EndDisabled();
@@ -3905,8 +3915,7 @@ public sealed class MainWindow : Window
 
         if (this.DrawConfirmPopup("ConfirmDeleteLocalLayoutInstance", T("确认删除此复制体？", "Delete this copy instance?")))
         {
-            this.localLayoutObjects.Delete(selected.Id);
-            this.sceneEditor.ForgetLocalBgPartRecord(selected.Id);
+            this.sceneEditor.RequestDeleteLocalBgPartCopy(selected.Id);
             this.selectedLocalLayoutObjectId = string.Empty;
             this.sceneEditorSelection.Clear(SceneEditorSelectionSource.MainUi);
         }
@@ -3941,10 +3950,15 @@ public sealed class MainWindow : Window
 
         if (this.DrawConfirmPopup("ConfirmDeleteCurrentMapLights", T("确认删除当前地图的全部灯光？", "Delete all lights on the current map?")))
         {
-            foreach (var light in this.CurrentTerritoryLights().ToList())
-                this.localLights.RequestDelete(light.Id);
-            this.selectedLocalLightId = string.Empty;
-            this.sceneEditorSelection.Clear(SceneEditorSelectionSource.MainUi);
+            var ids = this.CurrentTerritoryLights().Select(light => light.Id).ToList();
+            this.localLights.RequestDeleteMany(ids, $"delete-current-map:{this.runtime.TerritoryType}");
+            if (string.IsNullOrWhiteSpace(this.selectedLocalLightId) ||
+                ids.Any(id => string.Equals(id, this.selectedLocalLightId, StringComparison.OrdinalIgnoreCase)) &&
+                this.localLights.GetById(this.selectedLocalLightId) == null)
+            {
+                this.selectedLocalLightId = string.Empty;
+                this.sceneEditorSelection.Clear(SceneEditorSelectionSource.MainUi);
+            }
         }
 
         ImGui.Separator();
@@ -4307,6 +4321,14 @@ public sealed class MainWindow : Window
             SceneEditableKind.Player => T("玩家", "Player"),
             _ => kind.ToString(),
         };
+
+    private static bool IsRestoredNativeBgPartRecord(SceneEditorNativeModificationRecord record)
+        => record.Kind == SceneEditableKind.NativeBgPart &&
+           !record.IsHidden &&
+           !record.IsModified &&
+           (string.Equals(record.Status, "Restored", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(record.Status, "Original", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(record.Status, "Unmodified", StringComparison.OrdinalIgnoreCase));
 
     private void DrawBgPartPool()
     {

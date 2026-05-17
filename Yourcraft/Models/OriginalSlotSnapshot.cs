@@ -47,4 +47,6 @@ public sealed class OriginalSlotSnapshot
     public string OriginalSourceType { get; set; } = string.Empty;
 
     public string SourceLabel { get; set; } = string.Empty;
+
+    public string SourceStableKey { get; set; } = string.Empty;
 }

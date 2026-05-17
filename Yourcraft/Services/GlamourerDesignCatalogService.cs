@@ -8,6 +8,19 @@ namespace Yourcraft.Services;
 
 public sealed class GlamourerDesignCatalogService
 {
+    private static readonly string[] DesignPayloadNames =
+    [
+        "Design",
+        "DesignData",
+        "Data",
+        "State",
+        "Base",
+        "Appearance",
+        "Character",
+        "CharacterData",
+        "ActorAppearance",
+    ];
+
     private readonly IDalamudPluginInterface pluginInterface;
     private readonly IPluginLog log;
     private readonly List<GlamourerDesignEntry> designs = [];
@@ -131,7 +144,7 @@ public sealed class GlamourerDesignCatalogService
             this.VisitElement(document.RootElement, filePath, "$", 0);
 
             if (this.designs.Count == before)
-                this.designs.Add(CreateFallbackEntry(filePath, json));
+                this.log.Debug("Skipped Glamourer JSON without character design payload: {Path}", filePath);
         }
         catch (Exception ex)
         {
@@ -171,6 +184,12 @@ public sealed class GlamourerDesignCatalogService
 
     private void TryAddDesignFromObject(JsonElement element, string filePath, string path, string fallbackIdentifier = "")
     {
+        if (IsKnownNonCharacterDesignEntry(element, filePath, path))
+            return;
+
+        if (!TryGetCharacterDesignPayload(element, out var designPayload))
+            return;
+
         var name = ReadFirstString(element, "Name", "name", "DesignName", "Label", "DisplayName");
         var identifier = ReadFirstString(element, "Identifier", "identifier", "Guid", "GUID", "Id", "ID", "DesignId");
 
@@ -188,7 +207,7 @@ public sealed class GlamourerDesignCatalogService
             Name = name,
             Identifier = identifier,
             FilePath = filePath,
-            RawJsonPreview = CreatePreview(element),
+            RawJsonPreview = CreatePreview(designPayload),
             SourceDescription = $"从 JSON 节点 {path} 读取",
         });
     }
@@ -202,6 +221,86 @@ public sealed class GlamourerDesignCatalogService
             RawJsonPreview = json.Length > 600 ? json[..600] : json,
             SourceDescription = "无法识别固定结构，使用文件名作为候选项",
         };
+
+    private static bool TryGetCharacterDesignPayload(JsonElement element, out JsonElement payload)
+    {
+        if (HasDirectCharacterDesignShape(element))
+        {
+            payload = element;
+            return true;
+        }
+
+        foreach (var name in DesignPayloadNames)
+        {
+            if (!TryGetPropertyIgnoreCase(element, name, out var value))
+                continue;
+
+            if (TryFindCharacterDesignPayload(value, out payload, depth: 0))
+                return true;
+        }
+
+        payload = default;
+        return false;
+    }
+
+    private static bool TryFindCharacterDesignPayload(JsonElement element, out JsonElement payload, int depth)
+    {
+        if (depth > 4)
+        {
+            payload = default;
+            return false;
+        }
+
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            if (HasDirectCharacterDesignShape(element))
+            {
+                payload = element;
+                return true;
+            }
+
+            foreach (var property in element.EnumerateObject())
+            {
+                if (TryFindCharacterDesignPayload(property.Value, out payload, depth + 1))
+                    return true;
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                if (TryFindCharacterDesignPayload(item, out payload, depth + 1))
+                    return true;
+            }
+        }
+
+        payload = default;
+        return false;
+    }
+
+    private static bool HasDirectCharacterDesignShape(JsonElement element)
+        => element.ValueKind == JsonValueKind.Object &&
+           HasAnyProperty(element, "Equipment", "Customize", "Customization", "CustomizeData", "CustomizationData");
+
+    private static bool IsKnownNonCharacterDesignEntry(JsonElement element, string filePath, string path)
+    {
+        var typeText = string.Join(
+            '|',
+            ReadFirstString(element, "Type", "type", "Kind", "kind", "ObjectType", "EntryType", "$type", "Category"),
+            filePath,
+            path);
+        return ContainsNonDesignMarker(typeText);
+    }
+
+    private static bool ContainsNonDesignMarker(string text)
+        => text.Contains("ModAssociation", StringComparison.OrdinalIgnoreCase) ||
+           text.Contains("Mod Association", StringComparison.OrdinalIgnoreCase) ||
+           text.Contains("Association", StringComparison.OrdinalIgnoreCase) ||
+           text.Contains("Automation", StringComparison.OrdinalIgnoreCase) ||
+           text.Contains("AutoApply", StringComparison.OrdinalIgnoreCase) ||
+           text.Contains("Auto-Apply", StringComparison.OrdinalIgnoreCase) ||
+           text.Contains("Collection", StringComparison.OrdinalIgnoreCase) ||
+           text.Contains("模组关联", StringComparison.OrdinalIgnoreCase);
 
     private void DeduplicateDesigns()
     {
@@ -249,6 +348,9 @@ public sealed class GlamourerDesignCatalogService
         value = default;
         return false;
     }
+
+    private static bool HasAnyProperty(JsonElement element, params string[] names)
+        => names.Any(name => TryGetPropertyIgnoreCase(element, name, out _));
 
     private static string CreatePreview(JsonElement element)
     {

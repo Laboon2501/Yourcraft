@@ -142,15 +142,66 @@ public sealed unsafe class LocalLightNativeService
     }
 
     public void RequestDelete(string id)
+        => this.RequestDeleteMany([id], "delete");
+
+    public int RequestDeleteMany(IEnumerable<string> ids, string reason)
     {
-        var light = this.GetById(id);
-        if (light == null)
+        var idSet = ids
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (idSet.Count == 0)
         {
-            this.LastStatus = $"Light not found: {id}";
-            return;
+            this.LastStatus = "No lights selected for delete.";
+            return 0;
         }
 
-        this.ReleaseLightToReusable(light, removeConfig: true, reason: "delete");
+        var targets = this.configuration.LocalLights
+            .Where(light => idSet.Contains(light.Id))
+            .ToList();
+        if (targets.Count == 0)
+        {
+            this.LastStatus = $"No matching lights found for delete. requested={idSet.Count}";
+            return 0;
+        }
+
+        this.EndSceneTeardownForUserAction();
+        this.nativeGeneration++;
+
+        var removed = 0;
+        var queued = 0;
+        var failed = 0;
+        foreach (var light in targets)
+        {
+            var pointer = light.NativeSceneLight;
+            this.log.Debug("LocalLights BatchDelete requested id={LightId} ptr=0x{Pointer:X} reason={Reason}", light.Id, pointer, reason);
+            this.PurgePendingOperations(op => op.Light == light || (pointer != 0 && op.Pointer == pointer));
+
+            if (pointer != 0 && !this.activeLights.Contains(pointer) && !this.reusableLights.Contains(pointer))
+            {
+                failed++;
+                light.LastError = $"NativeSceneLight 0x{pointer:X} is not tracked; delete skipped to avoid list/runtime mismatch.";
+                light.LastOperation = "delete skipped";
+                light.NativeOperationPending = false;
+                continue;
+            }
+
+            this.ClearRuntimePointers(light, needsRecreate: false, operation: $"SoftDeleteQueued ({reason})");
+            light.Enabled = false;
+            light.NativeOperationPending = false;
+            this.configuration.LocalLights.Remove(light);
+            removed++;
+
+            if (pointer != 0)
+            {
+                this.QueueReleaseToReusable(pointer, reason);
+                queued++;
+            }
+        }
+
+        this.save();
+        this.LastStatus = $"LocalLights batch delete removed={removed}, queuedNativeDeletes={queued}, failed={failed}; reason={reason}";
+        return removed;
     }
 
     public void RequestDeleteAll()

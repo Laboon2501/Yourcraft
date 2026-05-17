@@ -463,33 +463,34 @@ public sealed class SceneEditorOverlayWindow : Window
     {
         this.panelTransformState.Bind(editable, this.sceneEditor.TransformGeneration);
         var before = editable.Transform;
-        var changed = false;
+        var components = SceneEditorTransformComponents.None;
 
         var position = this.panelTransformState.PositionInput;
         if (DrawCompactVector3Rows($"{T("位移", "Position")}##MiniPanelPosition", ref position, 0.2f))
         {
             this.panelTransformState.PositionInput = position;
-            changed = true;
+            components |= SceneEditorTransformComponents.Position;
         }
 
         var eulerDegrees = RadiansToDegrees(this.panelTransformState.EulerInput);
         if (DrawCompactVector3Rows($"{T("旋转", "Rotation")}##MiniPanelRotation", ref eulerDegrees, 0.2f))
         {
             this.panelTransformState.EulerInput = DegreesToRadians(eulerDegrees);
-            changed = true;
+            components |= SceneEditorTransformComponents.Rotation;
         }
 
         var scale = this.panelTransformState.ScaleInput;
         if (DrawCompactVector3Rows($"{T("缩放", "Scale")}##MiniPanelScale", ref scale, 0.2f, 0.01f, float.MaxValue))
         {
             this.panelTransformState.ScaleInput = WorldTransformUtil.NormalizeScale(scale);
-            changed = true;
+            components |= SceneEditorTransformComponents.Scale;
         }
 
-        if (changed)
+        if (components != SceneEditorTransformComponents.None)
         {
-            var after = this.panelTransformState.ToWorldTransform();
-            if (this.sceneEditor.ApplyWorldTransform(editable.Kind, editable.RuntimeId, after))
+            var requested = this.panelTransformState.ToWorldTransform();
+            var after = this.sceneEditor.MergeWorldTransformForComponents(editable.Kind, editable.RuntimeId, requested, components);
+            if (this.sceneEditor.ApplyWorldTransform(editable.Kind, editable.RuntimeId, requested, components))
                 this.sceneEditor.PushTransformUndo(editable.Kind, editable.RuntimeId, editable.DisplayName, before, after, "PanelInput");
         }
     }
@@ -832,7 +833,8 @@ public sealed class SceneEditorOverlayWindow : Window
 
     private void BeginDrag(SceneEditableRef selected, GizmoHandle handle, Vector2 mouse)
     {
-        this.activeDrag = new ActiveDrag(selected.Kind, selected.RuntimeId, handle, selected.Transform);
+        this.activeDrag = new ActiveDrag(selected.Kind, selected.RuntimeId, selected.DisplayName, selected, handle, selected.Transform, selected.Transform);
+        this.sceneEditor.BeginInteractiveTransformEdit();
         this.RequestSceneMouseCapture();
         this.sceneEditor.Gizmo.BeginDrag(selected, handle.Axis, mouse);
     }
@@ -848,35 +850,71 @@ public sealed class SceneEditorOverlayWindow : Window
             shift,
             ctrl);
 
-        this.sceneEditor.ApplyWorldTransform(this.activeDrag.Kind, this.activeDrag.RuntimeId, updated);
+        var components = TransformComponentsForGizmoMode(this.sceneEditor.Gizmo.InputState.ActiveGizmoMode);
+        if (components == SceneEditorTransformComponents.None ||
+            !HasComponentChanged(this.activeDrag.StartTransform, updated, components))
+        {
+            return;
+        }
+
+        if (this.sceneEditor.ApplyInteractiveWorldTransform(this.activeDrag.SelectedAtDragStart, updated, components, out var stableAfter))
+            this.activeDrag = this.activeDrag with { LastAppliedTransform = stableAfter };
     }
 
     private void EndActiveDrag()
     {
-        var after = this.sceneEditor.GetEditables().FirstOrDefault(item =>
-            item.Kind == this.activeDrag.Kind &&
-            string.Equals(item.RuntimeId, this.activeDrag.RuntimeId, StringComparison.OrdinalIgnoreCase))?.Transform;
-        if (after.HasValue)
-        {
-            this.sceneEditor.PushTransformUndo(
-                this.activeDrag.Kind,
-                this.activeDrag.RuntimeId,
-                this.sceneEditor.GetEditables().FirstOrDefault(item =>
-                    item.Kind == this.activeDrag.Kind &&
-                    string.Equals(item.RuntimeId, this.activeDrag.RuntimeId, StringComparison.OrdinalIgnoreCase))?.DisplayName ?? this.activeDrag.RuntimeId,
-                this.activeDrag.StartTransform,
-                after.Value,
-                this.sceneEditor.Gizmo.Mode switch
-                {
-                    SceneEditorGizmoMode.Move => "GizmoMove",
-                    SceneEditorGizmoMode.Rotate => "GizmoRotate",
-                    SceneEditorGizmoMode.Scale => "GizmoScale",
-                    _ => "Gizmo",
-                });
-        }
+        this.sceneEditor.PushTransformUndo(
+            this.activeDrag.Kind,
+            this.activeDrag.RuntimeId,
+            this.activeDrag.DisplayName,
+            this.activeDrag.StartTransform,
+            this.activeDrag.LastAppliedTransform,
+            this.sceneEditor.Gizmo.Mode switch
+            {
+                SceneEditorGizmoMode.Move => "GizmoMove",
+                SceneEditorGizmoMode.Rotate => "GizmoRotate",
+                SceneEditorGizmoMode.Scale => "GizmoScale",
+                _ => "Gizmo",
+            });
 
+        this.sceneEditor.EndInteractiveTransformEdit();
         this.sceneEditor.Gizmo.EndDrag(this.activeDrag.Kind, this.activeDrag.RuntimeId);
         this.activeDrag = default;
+    }
+
+    private static SceneEditorTransformComponents TransformComponentsForGizmoMode(SceneEditorGizmoMode mode)
+        => mode switch
+        {
+            SceneEditorGizmoMode.Move => SceneEditorTransformComponents.Position,
+            SceneEditorGizmoMode.Rotate => SceneEditorTransformComponents.Rotation,
+            SceneEditorGizmoMode.Scale => SceneEditorTransformComponents.Scale,
+            _ => SceneEditorTransformComponents.None,
+        };
+
+    private static bool HasComponentChanged(
+        WorldTransform before,
+        WorldTransform after,
+        SceneEditorTransformComponents components)
+    {
+        if ((components & SceneEditorTransformComponents.Position) != 0 &&
+            Vector3.Distance(before.WorldPosition, after.WorldPosition) > 0.0005f)
+        {
+            return true;
+        }
+
+        if ((components & SceneEditorTransformComponents.Rotation) != 0 &&
+            Vector3.Distance(before.WorldEulerRadians, after.WorldEulerRadians) > 0.00001f)
+        {
+            return true;
+        }
+
+        if ((components & SceneEditorTransformComponents.Scale) != 0 &&
+            Vector3.Distance(before.WorldScale, after.WorldScale) > 0.0005f)
+        {
+            return true;
+        }
+
+        return false;
     }
 
     private void DrawDragHud(ImDrawListPtr drawList, Vector2 mouse, SceneEditableKind kind, string runtimeId)
@@ -1059,8 +1097,11 @@ public sealed class SceneEditorOverlayWindow : Window
     private readonly record struct ActiveDrag(
         SceneEditableKind Kind,
         string RuntimeId,
+        string DisplayName,
+        SceneEditableRef SelectedAtDragStart,
         GizmoHandle Handle,
-        WorldTransform StartTransform)
+        WorldTransform StartTransform,
+        WorldTransform LastAppliedTransform)
     {
         public bool Active => !string.IsNullOrWhiteSpace(this.RuntimeId);
     }

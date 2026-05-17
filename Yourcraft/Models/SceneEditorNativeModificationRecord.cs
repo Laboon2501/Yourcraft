@@ -6,6 +6,28 @@ public sealed class SceneEditorNativeModificationRecord
 
     public string StableKey { get; set; } = string.Empty;
 
+    public string TerritoryKey { get; set; } = string.Empty;
+
+    public string NativeBgPartStableKey { get; set; } = string.Empty;
+
+    public string NativeBgPartSgbPath { get; set; } = string.Empty;
+
+    public string NativeBgPartAssetPath { get; set; } = string.Empty;
+
+    public string NativeBgPartModelPath { get; set; } = string.Empty;
+
+    public int NativeBgPartInitialIndex { get; set; } = -1;
+
+    public string NativeBgPartInitialAddress { get; set; } = string.Empty;
+
+    public string NamePath { get; set; } = string.Empty;
+
+    public string LayoutInstanceKey { get; set; } = string.Empty;
+
+    public string LayoutInstanceAddress { get; set; } = string.Empty;
+
+    public int LayoutInstanceIndexAtRecordTime { get; set; } = -1;
+
     public string RuntimeIdAtRecordTime { get; set; } = string.Empty;
 
     public string NativeAddress { get; set; } = string.Empty;
@@ -45,6 +67,12 @@ public sealed class SceneEditorNativeModificationRecord
     public bool PreferredModifyAdded { get; set; }
 
     public string PreferredModifyStatus { get; set; } = string.Empty;
+
+    public string UsedByLocalBgPartInstanceId { get; set; } = string.Empty;
+
+    public string UsedByLocalBgPartSlotAddress { get; set; } = string.Empty;
+
+    public string UsedByLocalBgPartMdlPath { get; set; } = string.Empty;
 
     public bool UseFullLayoutTransform { get; set; }
 

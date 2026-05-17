@@ -35,6 +35,8 @@ public sealed class LocalLayoutObjectInstance
 
     public string SourceParentKey { get; set; } = string.Empty;
 
+    public string SourceStableKey { get; set; } = string.Empty;
+
     public int SourceChildIndex { get; set; } = -1;
 
     public string OriginalResourcePath { get; set; } = string.Empty;

@@ -28,6 +28,8 @@ public sealed class LayoutProbeInstance
 
     public string ResourcePath { get; set; } = "未读取";
 
+    public string ModelResourcePath { get; set; } = string.Empty;
+
     public bool Visible { get; set; } = true;
 
     public string LayerId { get; set; } = "未读取";

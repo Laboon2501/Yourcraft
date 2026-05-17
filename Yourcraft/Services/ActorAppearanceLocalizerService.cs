@@ -469,30 +469,16 @@ public sealed class ActorAppearanceLocalizerService
 
         if (element.ValueKind == JsonValueKind.Object)
         {
-            var hasDesignShape = HasAnyProperty(element, "Equipment", "Customize", "Customization");
-            if (hasDesignShape)
-            {
-                if (string.IsNullOrWhiteSpace(identifier))
-                {
-                    found = element;
-                    return true;
-                }
-
-                if (TryGetString(element, out var id, "Identifier", "Guid", "GUID", "Id", "ID") &&
-                    string.Equals(id, identifier, StringComparison.OrdinalIgnoreCase))
-                {
-                    found = element;
-                    return true;
-                }
-            }
+            if (TryGetDesignPayloadForIdentifier(element, identifier, out found))
+                return true;
 
             foreach (var property in element.EnumerateObject())
             {
                 if (string.Equals(property.Name, identifier, StringComparison.OrdinalIgnoreCase) &&
                     property.Value.ValueKind == JsonValueKind.Object)
                 {
-                    found = property.Value;
-                    return true;
+                    if (TryGetCharacterDesignPayload(property.Value, out found))
+                        return true;
                 }
 
                 if (TryFindDesignObject(property.Value, identifier, out found, depth + 1))
@@ -511,6 +497,101 @@ public sealed class ActorAppearanceLocalizerService
         found = default;
         return false;
     }
+
+    private static bool TryGetDesignPayloadForIdentifier(JsonElement element, string identifier, out JsonElement found)
+    {
+        if (HasDirectCharacterDesignShape(element) &&
+            (string.IsNullOrWhiteSpace(identifier) || ObjectIdentifierMatches(element, identifier)))
+        {
+            found = element;
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(identifier) &&
+            ObjectIdentifierMatches(element, identifier) &&
+            TryGetCharacterDesignPayload(element, out found))
+        {
+            return true;
+        }
+
+        found = default;
+        return false;
+    }
+
+    private static bool ObjectIdentifierMatches(JsonElement element, string identifier)
+        => TryGetString(element, out var id, "Identifier", "Guid", "GUID", "Id", "ID", "DesignId") &&
+           string.Equals(id, identifier, StringComparison.OrdinalIgnoreCase);
+
+    private static bool TryGetCharacterDesignPayload(JsonElement element, out JsonElement payload)
+    {
+        if (HasDirectCharacterDesignShape(element))
+        {
+            payload = element;
+            return true;
+        }
+
+        foreach (var name in new[]
+                 {
+                     "Design",
+                     "DesignData",
+                     "Data",
+                     "State",
+                     "Base",
+                     "Appearance",
+                     "Character",
+                     "CharacterData",
+                     "ActorAppearance",
+                 })
+        {
+            if (!TryGetPropertyIgnoreCase(element, name, out var value))
+                continue;
+
+            if (TryFindCharacterDesignPayload(value, out payload, depth: 0))
+                return true;
+        }
+
+        payload = default;
+        return false;
+    }
+
+    private static bool TryFindCharacterDesignPayload(JsonElement element, out JsonElement payload, int depth)
+    {
+        if (depth > 4)
+        {
+            payload = default;
+            return false;
+        }
+
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            if (HasDirectCharacterDesignShape(element))
+            {
+                payload = element;
+                return true;
+            }
+
+            foreach (var property in element.EnumerateObject())
+            {
+                if (TryFindCharacterDesignPayload(property.Value, out payload, depth + 1))
+                    return true;
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                if (TryFindCharacterDesignPayload(item, out payload, depth + 1))
+                    return true;
+            }
+        }
+
+        payload = default;
+        return false;
+    }
+
+    private static bool HasDirectCharacterDesignShape(JsonElement element)
+        => element.ValueKind == JsonValueKind.Object &&
+           HasAnyProperty(element, "Equipment", "Customize", "Customization", "CustomizeData", "CustomizationData");
 
     private static bool TryGetAnyProperty(JsonElement element, out JsonElement value, params string[] names)
     {
