@@ -55,6 +55,9 @@ public sealed class SpawnIntentRegistry
             this.intents.Remove(npcId);
     }
 
+    public void Clear()
+        => this.intents.Clear();
+
     private SpawnIntent GetOrCreate(string npcId)
     {
         if (this.intents.TryGetValue(npcId, out var intent))

@@ -44,6 +44,8 @@ public sealed class RealNpcSpawnService
     private int scheduledRebuildDelayTicks = -1;
     private string scheduledRebuildReason = string.Empty;
     private DateTime lastRebuildAttemptAt = DateTime.MinValue;
+    private int actorWorldSessionGeneration;
+    private bool lastActorMaintenanceAvailable;
 
     public RealNpcSpawnService(
         IClientState clientState,
@@ -405,11 +407,18 @@ public sealed class RealNpcSpawnService
 
     public void DespawnAll(bool deleteConfigs)
     {
+        if (!deleteConfigs && !this.IsActorMaintenanceAvailable(out var maintenanceReason))
+        {
+            this.HandleActorMaintenanceUnavailable(maintenanceReason);
+            return;
+        }
+
         var runtimeCount = this.registry.GetAll().Count;
         foreach (var actor in this.registry.GetAll().ToList())
             this.DespawnRuntimeOnly(actor, deleteConfigs ? "delete all actors" : "runtime cleanup");
 
         this.registry.Clear();
+        this.appearanceApplyQueue.Clear(deleteConfigs ? "delete all actors" : "runtime cleanup");
         if (deleteConfigs)
         {
             this.database.ActorConfigs.Clear();
@@ -702,9 +711,21 @@ public sealed class RealNpcSpawnService
 
     private bool CanReadNativeActorTransform(RuntimeActorInstance actor, out string reason)
     {
+        if (!this.IsActorMaintenanceAvailable(out reason))
+        {
+            reason = $"native readback unavailable: {reason}";
+            return false;
+        }
+
         if (this.scheduledRebuildDelayTicks >= 0)
         {
             reason = $"native readback unavailable: actor rebuild is scheduled/in progress ({this.scheduledRebuildReason}).";
+            return false;
+        }
+
+        if (actor.SceneGeneration != this.actorWorldSessionGeneration)
+        {
+            reason = $"native readback unavailable: actor belongs to stale session generation {actor.SceneGeneration}; current={this.actorWorldSessionGeneration}.";
             return false;
         }
 
@@ -732,8 +753,120 @@ public sealed class RealNpcSpawnService
             return false;
         }
 
+        if (!actor.HasBoundNativeActor || actor.LastKnownObjectIndex < 0 || !TryParseAddress(actor.Address, out var address) || address == 0)
+        {
+            reason = $"native readback unavailable: actor has no current-session native binding. bound={actor.HasBoundNativeActor}; index={actor.LastKnownObjectIndex}; address={actor.Address}.";
+            return false;
+        }
+
         reason = string.Empty;
         return true;
+    }
+
+    private bool CanFlushPendingTransforms(out string reason)
+    {
+        if (!this.clientState.IsLoggedIn)
+        {
+            reason = "pending transform flush skipped: character is not logged in.";
+            return false;
+        }
+
+        if (CurrentTerritory(this.clientState) == 0)
+        {
+            reason = "pending transform flush skipped: territory is unavailable.";
+            return false;
+        }
+
+        if (!this.TryReadLocalPlayerPosition(out _, out var localPlayerReason))
+        {
+            reason = $"pending transform flush skipped: LocalPlayer unavailable. {localPlayerReason}";
+            return false;
+        }
+
+        reason = string.Empty;
+        return true;
+    }
+
+    private bool IsActorMaintenanceAvailable(out string reason)
+    {
+        if (!this.clientState.IsLoggedIn)
+        {
+            reason = "actor runtime unavailable: character is not logged in.";
+            return false;
+        }
+
+        var territory = CurrentTerritory(this.clientState);
+        if (territory == 0)
+        {
+            reason = "actor runtime unavailable: territory is 0.";
+            return false;
+        }
+
+        if (!this.clientState.IsGPosing && !this.TryReadLocalPlayerPosition(out _, out var localPlayerReason))
+        {
+            reason = $"actor runtime unavailable: LocalPlayer unavailable. {localPlayerReason}";
+            return false;
+        }
+
+        reason = this.clientState.IsGPosing ? $"actor runtime available in GPose. territory={territory}." : $"actor runtime available. territory={territory}.";
+        return true;
+    }
+
+    private void HandleActorMaintenanceUnavailable(string reason)
+    {
+        if (this.lastActorMaintenanceAvailable ||
+            this.registry.Count > 0 ||
+            this.scheduledRebuildDelayTicks >= 0 ||
+            this.appearanceApplyQueue.Count > 0)
+        {
+            this.EndActorWorldSession(reason);
+        }
+
+        this.lastActorMaintenanceAvailable = false;
+        this.lastSceneReady = false;
+        this.lastObservedGpose = false;
+        this.lastTerritoryType = CurrentTerritory(this.clientState);
+        this.LastMessage = reason;
+    }
+
+    private void BeginActorWorldSession(string reason)
+    {
+        this.actorWorldSessionGeneration++;
+        foreach (var actor in this.registry.GetAll().ToList())
+            this.ForgetRuntimeActorBinding(actor, reason);
+        this.registry.Clear();
+        this.appearanceApplyQueue.Clear(reason);
+        this.actionSequenceService.StopAll();
+        this.brioAssemblyBridge.ForgetRuntimeActorReferences(reason);
+        this.scheduledRebuildDelayTicks = -1;
+        this.scheduledRebuildReason = string.Empty;
+        this.lastRebuildAttemptAt = DateTime.MinValue;
+        this.initialActorRefreshQueued = false;
+        this.lastSceneReady = false;
+        this.lastObservedGpose = this.clientState.IsGPosing;
+        this.lastTerritoryType = CurrentTerritory(this.clientState);
+        this.LastMessage = $"Actor runtime session started. generation={this.actorWorldSessionGeneration}; {reason}";
+    }
+
+    private void EndActorWorldSession(string reason)
+    {
+        this.actorWorldSessionGeneration++;
+        foreach (var actor in this.registry.GetAll().ToList())
+        {
+            this.LogActorTransformDebug(actor, "EndActorWorldSession", reason);
+            this.ForgetRuntimeActorBinding(actor, reason);
+        }
+
+        this.registry.Clear();
+        this.spawnIntentRegistry.Clear();
+        this.appearanceApplyQueue.Clear(reason);
+        this.actionSequenceService.StopAll();
+        this.brioAssemblyBridge.ForgetRuntimeActorReferences(reason);
+        this.scheduledRebuildDelayTicks = -1;
+        this.scheduledRebuildReason = string.Empty;
+        this.lastRebuildAttemptAt = DateTime.MinValue;
+        this.initialActorRefreshQueued = false;
+        this.LastMessage = $"Actor runtime session ended. generation={this.actorWorldSessionGeneration}; {reason}";
     }
 
     private static bool TransformReadbackMatches(RuntimeActorInstance actor, Vector3 position, Vector3 rotationEuler, Vector3 scale, out string reason)
@@ -1374,6 +1507,16 @@ public sealed class RealNpcSpawnService
 
     public void Update()
     {
+        if (!this.IsActorMaintenanceAvailable(out var maintenanceReason))
+        {
+            this.HandleActorMaintenanceUnavailable(maintenanceReason);
+            return;
+        }
+
+        if (!this.lastActorMaintenanceAvailable)
+            this.BeginActorWorldSession(maintenanceReason);
+
+        this.lastActorMaintenanceAvailable = true;
         var runtimeActors = this.registry.GetAll();
         this.validityMonitorService.Update(runtimeActors);
         var territory = this.clientState.TerritoryType;
@@ -1442,6 +1585,16 @@ public sealed class RealNpcSpawnService
 
     private void FlushPendingTransforms(IEnumerable<RuntimeActorInstance> readyActors)
     {
+        if (!this.CanFlushPendingTransforms(out var flushReason))
+        {
+            foreach (var actor in readyActors)
+            {
+                actor.LastTransformError = flushReason;
+                actor.LastTransformReadback = flushReason;
+            }
+            return;
+        }
+
         var now = DateTime.UtcNow;
         foreach (var actor in readyActors.ToList())
         {
@@ -1542,12 +1695,16 @@ public sealed class RealNpcSpawnService
 
     private void ClearRuntimeForRebuild(string reason)
     {
+        this.actorWorldSessionGeneration++;
         foreach (var actor in this.registry.GetAll().ToList())
         {
             this.LogActorTransformDebug(actor, "ClearRuntimeForRebuild", reason);
-            this.DespawnRuntimeOnly(actor, reason);
+            this.ForgetRuntimeActorBinding(actor, reason);
         }
         this.registry.Clear();
+        this.appearanceApplyQueue.Clear(reason);
+        this.actionSequenceService.StopAll();
+        this.brioAssemblyBridge.ForgetRuntimeActorReferences(reason);
         this.MaterializeCurrentTerritoryShells(reason);
     }
 
@@ -1568,6 +1725,7 @@ public sealed class RealNpcSpawnService
             actor.PendingTransformScale = scale;
             actor.PendingTransformRetryTicksRemaining = PostSpawnTransformRetryTicks;
             actor.HasPendingTransformApply = true;
+            actor.SceneGeneration = this.actorWorldSessionGeneration;
             actor.LastRebuildReason = reason;
             actor.LastSceneReadyState = reason;
             actor.LastGposeState = this.validityMonitorService.CurrentIsGposing ? "GPose" : "Normal";
@@ -1691,6 +1849,7 @@ public sealed class RealNpcSpawnService
         {
             config.RuntimeId = Guid.NewGuid().ToString("N");
         }
+        shell.SceneGeneration = this.actorWorldSessionGeneration;
         if (shell.CharacterObject != null)
             this.DespawnRuntimeOnly(shell, "respawn existing runtime handle");
 
@@ -1723,6 +1882,7 @@ public sealed class RealNpcSpawnService
             spawned.LastRebuildReason = this.scheduledRebuildReason;
             spawned.LastSceneReadyState = sceneReason;
             spawned.LastGposeState = this.validityMonitorService.CurrentIsGposing ? "GPose" : "Normal";
+            spawned.SceneGeneration = this.actorWorldSessionGeneration;
             spawned.SpawnRequestId = shell.SpawnRequestId;
             spawned.SpawnAttemptCount = shell.SpawnAttemptCount;
             spawned.LastSpawnAttemptAt = shell.LastSpawnAttemptAt;
@@ -1900,6 +2060,7 @@ public sealed class RealNpcSpawnService
         var (position, rotation, scale) = GetConfigTransform(config);
         actor.RuntimeId = config.RuntimeId;
         actor.ConfigId = config.ConfigId;
+        actor.SceneGeneration = this.actorWorldSessionGeneration;
         actor.NpcId = config.SourceNpcPresetId;
         actor.TemplateNpcId = config.SourceNpcPresetId;
         actor.NpcName = string.IsNullOrWhiteSpace(config.NpcNameSnapshot) ? config.DisplayName : config.NpcNameSnapshot;
@@ -2090,15 +2251,34 @@ public sealed class RealNpcSpawnService
             this.log.Warning(ex, "Runtime actor despawn failed. RuntimeId={RuntimeId}", actor.RuntimeId);
         }
 
+        this.ForgetRuntimeActorBinding(actor, reason);
+    }
+
+    private void ForgetRuntimeActorBinding(RuntimeActorInstance actor, string reason)
+    {
         actor.CharacterObject = null;
+        actor.ObjectIndex = "unavailable";
+        actor.Address = "unavailable";
+        actor.LastKnownObjectIndex = -1;
         actor.IsValid = false;
         actor.IsReady = false;
         actor.IsStale = true;
+        actor.BindingStartedAt = null;
+        actor.LastRuntimeBindAt = null;
+        actor.SpawnRequestId = string.Empty;
         actor.HasBoundNativeActor = false;
         actor.HasBoundDrawObject = false;
         actor.HasPendingTransformApply = false;
+        actor.PendingTransformRetryTicksRemaining = 0;
+        actor.LastPendingTransformAttemptAt = DateTime.MinValue;
         actor.TransformTargetIdentity = string.Empty;
         actor.TransformTargetStableTicks = 0;
+        actor.LastTransformTargetDebug = string.Empty;
+        actor.RuntimeTransformApplied = false;
+        actor.RuntimeAppearanceApplied = false;
+        actor.WeAppliedPenumbraCollection = false;
+        actor.LastAppliedPenumbraGameObjectIndex = -1;
+        actor.LastAppliedPenumbraCollectionId = null;
         actor.ExpressionBlendLoopEnabled = false;
         actor.LipTalkLoopEnabled = false;
         this.SetLifecycle(actor, ActorLifecycleState.Despawned, reason);
@@ -2106,6 +2286,12 @@ public sealed class RealNpcSpawnService
 
     private bool IsRuntimeReady(RuntimeActorInstance actor)
     {
+        if (actor.SceneGeneration != this.actorWorldSessionGeneration)
+        {
+            actor.IsValid = false;
+            return false;
+        }
+
         if (actor.CharacterObject != null && !actor.IsStale)
             actor.IsValid = true;
         return actor.CharacterObject != null && actor.IsValid && !actor.IsStale;
