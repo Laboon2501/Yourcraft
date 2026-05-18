@@ -93,6 +93,15 @@ public sealed class AppearanceApplyQueue
         return removed;
     }
 
+    public void Clear(string reason)
+    {
+        var count = this.jobs.Count;
+        this.jobs.Clear();
+        this.CurrentActorRuntimeId = string.Empty;
+        this.LastError = string.Empty;
+        this.LastStatus = $"Cleared pending appearance jobs: {count}. reason={reason}";
+    }
+
     public void Update()
     {
         if (this.jobs.Count == 0)

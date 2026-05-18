@@ -96,6 +96,18 @@ public sealed class BrioAssemblyBridgeService
         return true;
     }
 
+    public void ForgetRuntimeActorReferences(string reason)
+    {
+        var characterCount = this.spawnedCharacters.Count;
+        var npcCount = this.spawnedNpcs.Count;
+        this.spawnedCharacters.Clear();
+        this.spawnedNpcs.Clear();
+        this.LastSpawnedObjectIndex = "unavailable";
+        this.LastSpawnedAddress = "unavailable";
+        this.LastDespawnError = string.Empty;
+        this.LastMessage = $"Forgot runtime actor references. characters={characterCount}; npcs={npcCount}; reason={reason}";
+    }
+
     public bool HasActorSpawnService
     {
         get

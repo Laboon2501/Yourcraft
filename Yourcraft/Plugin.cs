@@ -76,6 +76,7 @@ public sealed class Plugin : IDalamudPlugin
     private bool lastPluginUiGposeState;
     private bool lastLocalLightGposeState;
     private bool lastLocalLightPlayerAvailable;
+    private bool lastWorldSessionAvailable;
 
     public Plugin(
         IDalamudPluginInterface pluginInterface,
@@ -161,6 +162,7 @@ public sealed class Plugin : IDalamudPlugin
         this.lastPluginUiGposeState = clientState.IsGPosing;
         this.lastLocalLightGposeState = clientState.IsGPosing;
         this.lastLocalLightPlayerAvailable = this.runtime.PlayerPosition.HasValue;
+        this.lastWorldSessionAvailable = this.IsWorldSessionAvailable(out _);
         this.ApplyGposeUiVisibilityPolicy();
 
         this.actionTimelinePickerWindow = new ActionTimelinePickerWindow(this.actorAnimationPicker);
@@ -260,6 +262,18 @@ public sealed class Plugin : IDalamudPlugin
         this.ApplyGposeUiVisibilityPolicy();
         this.runtime.Update();
         this.penumbraIpc.Update();
+
+        var worldSessionAvailable = this.IsWorldSessionAvailable(out var worldSessionReason);
+        if (!worldSessionAvailable)
+        {
+            this.HandleWorldSessionUnavailable(worldSessionReason);
+            return;
+        }
+
+        if (!this.lastWorldSessionAvailable)
+            this.HandleWorldSessionRestored(worldSessionReason);
+        this.lastWorldSessionAvailable = true;
+
         if (this.penumbraIpc.ConsumeReapplyRequested())
             this.realNpcSpawn.ApplyAllNpcAppearances();
         this.realNpcSpawn.Update();
@@ -304,6 +318,73 @@ public sealed class Plugin : IDalamudPlugin
         this.localLayoutObjects.UpdateRestoreAllAndClearQueue(playerAvailable && this.runtime.TerritoryType != 0 && !this.clientState.IsGPosing, this.runtime.TerritoryType);
         this.sceneEditor.UpdateRestoreQueue(playerAvailable && this.runtime.TerritoryType != 0 && !this.clientState.IsGPosing);
     }
+
+    private bool IsWorldSessionAvailable(out string reason)
+    {
+        if (!this.clientState.IsLoggedIn)
+        {
+            reason = "character is not logged in";
+            return false;
+        }
+
+        if (this.runtime.TerritoryType == 0)
+        {
+            reason = "territory is 0";
+            return false;
+        }
+
+        var playerPosition = this.runtime.PlayerPosition;
+        if (!playerPosition.HasValue)
+        {
+            reason = "LocalPlayer is unavailable";
+            return false;
+        }
+
+        if (!IsFiniteVector(playerPosition.Value))
+        {
+            reason = $"LocalPlayer position is invalid: {playerPosition.Value}";
+            return false;
+        }
+
+        reason = $"world session available. territory={this.runtime.TerritoryType}";
+        return true;
+    }
+
+    private void HandleWorldSessionUnavailable(string reason)
+    {
+        this.realNpcSpawn.NotifyWorldSessionUnavailable(reason);
+        if (this.lastWorldSessionAvailable)
+        {
+            var invalidateReason = $"WorldSessionUnavailable:{reason}";
+            this.sceneEditor.NotifySceneChanging(invalidateReason);
+            this.localLayoutObjects.NotifySceneChanging(invalidateReason);
+            this.layoutProbe.ClearRuntimeCache(invalidateReason);
+            this.localLights.DestroyAllNative("World session unavailable; native light pointers invalidated", keepInstances: true);
+            this.standaloneBgObjectProbe.MarkAllInvalid("World session unavailable; standalone object pointers invalidated.");
+            this.lastLayoutObjectTerritoryType = this.runtime.TerritoryType;
+            this.lastLocalLightPlayerAvailable = false;
+        }
+
+        this.lastWorldSessionAvailable = false;
+    }
+
+    private void HandleWorldSessionRestored(string reason)
+    {
+        var restoreReason = $"WorldSessionRestored:{reason}";
+        this.sceneEditor.NotifySceneChanging(restoreReason);
+        this.localLayoutObjects.NotifySceneChanging(restoreReason);
+        this.layoutProbe.ClearRuntimeCache(restoreReason);
+        this.localLayoutObjects.RequestRestoreAllAndClear("WorldSessionRestored");
+        this.sceneEditor.RequestRestore("WorldSessionRestored");
+        this.lastLayoutObjectTerritoryType = this.runtime.TerritoryType;
+        this.lastLocalLightGposeState = this.clientState.IsGPosing;
+        this.lastPluginUiGposeState = this.clientState.IsGPosing;
+        this.lastLocalLightPlayerAvailable = true;
+        this.log.Information("[Runtime] World session restored: {Reason}", reason);
+    }
+
+    private static bool IsFiniteVector(System.Numerics.Vector3 value)
+        => float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z);
 
     private void DrawUi()
     {
