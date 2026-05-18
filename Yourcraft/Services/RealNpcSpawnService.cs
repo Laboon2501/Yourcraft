@@ -545,11 +545,16 @@ public sealed class RealNpcSpawnService
             return false;
         }
 
-        this.TryRefreshActualActorTransform(actor, updateEditingTransform: false, out _);
+        if (!this.TryRefreshActualActorTransform(actor, updateEditingTransform: false, out var preReadReason))
+            return this.FailTransformApplyBeforeNativeAccess(actor, safePosition, normalizedRotation, normalizedScale, fromPendingFlush, preReadReason);
+
         actor.LastMoveBeforePosition = actor.LastKnownPosition;
         var brioSuccess = this.brioCapabilityBridge.TryApplyModelTransform(actor, safePosition, normalizedRotation, normalizedScale, out var brioReason);
         var nativeSuccess = this.brioAssemblyBridge.TryApplyActorNativeRootTransform(actor, safePosition, normalizedRotation.Y, normalizedScale, out var nativeReason);
         var readbackSuccess = this.TryRefreshActualActorTransform(actor, updateEditingTransform: false, out var readbackReason);
+        if (!readbackSuccess)
+            CacheDesiredTransform(actor, safePosition, normalizedRotation, normalizedScale);
+
         var mismatchReason = string.Empty;
         var success = nativeSuccess &&
             readbackSuccess &&
@@ -592,6 +597,46 @@ public sealed class RealNpcSpawnService
         return success;
     }
 
+    private bool FailTransformApplyBeforeNativeAccess(RuntimeActorInstance actor, Vector3 position, Vector3 rotationEuler, Vector3 scale, bool fromPendingFlush, string reason)
+    {
+        var previousPosition = actor.LastKnownPosition;
+        CacheDesiredTransform(actor, position, rotationEuler, scale);
+
+        if (fromPendingFlush)
+        {
+            actor.PendingTransformRetryTicksRemaining = Math.Max(0, actor.PendingTransformRetryTicksRemaining - 1);
+            actor.HasPendingTransformApply = actor.PendingTransformRetryTicksRemaining > 0;
+        }
+        else
+        {
+            actor.PendingTransformPosition = position;
+            actor.PendingTransformRotationEuler = rotationEuler;
+            actor.PendingTransformScale = scale;
+            actor.PendingTransformRetryTicksRemaining = PostSpawnTransformRetryTicks;
+            actor.HasPendingTransformApply = true;
+        }
+
+        actor.LastMoveBeforePosition = previousPosition;
+        actor.LastMoveTargetPosition = position;
+        actor.LastMoveAfterPosition = position;
+        actor.LastMoveActorValidAfter = actor.IsValid;
+        actor.LastMoveDistanceReasonable = true;
+        actor.RuntimeTransformApplied = false;
+        actor.LastTransformError = $"native transform read skipped: {reason}";
+        actor.LastTransformReadback = $"native readback unavailable; using cached desired transform position={position}; yaw={rotationEuler.Y:F4}; uniformScale={scale.X:F4}; {reason}";
+        this.LastMessage = $"Transform apply deferred: {actor.LastTransformError}";
+        this.LogActorTransformDebug(actor, "ApplyDeferredBeforeNativeAccess", actor.LastTransformError);
+        return false;
+    }
+
+    private static void CacheDesiredTransform(RuntimeActorInstance actor, Vector3 position, Vector3 rotationEuler, Vector3 scale)
+    {
+        actor.LastKnownPosition = position;
+        actor.LastKnownRotationEuler = rotationEuler;
+        actor.LastKnownRotation = Quaternion.CreateFromYawPitchRoll(rotationEuler.Y, rotationEuler.X, rotationEuler.Z);
+        actor.LastKnownScale = scale;
+    }
+
     private void QueuePendingTransform(RuntimeActorInstance actor, Vector3 position, Vector3 rotationEuler, Vector3 scale, string reason)
     {
         var safePosition = ActorTransformUtil.SanitizePosition(position, actor.TransformEditPosition);
@@ -613,6 +658,13 @@ public sealed class RealNpcSpawnService
         if (!this.IsRuntimeReady(actor))
         {
             reason = "native readback unavailable: Runtime actor is not Ready.";
+            actor.LastTransformError = reason;
+            actor.LastTransformReadback = reason;
+            return false;
+        }
+
+        if (!this.CanReadNativeActorTransform(actor, out reason))
+        {
             actor.LastTransformError = reason;
             actor.LastTransformReadback = reason;
             return false;
@@ -646,6 +698,42 @@ public sealed class RealNpcSpawnService
         actor.LastTransformError = reason;
         actor.LastTransformReadback = reason;
         return false;
+    }
+
+    private bool CanReadNativeActorTransform(RuntimeActorInstance actor, out string reason)
+    {
+        if (this.scheduledRebuildDelayTicks >= 0)
+        {
+            reason = $"native readback unavailable: actor rebuild is scheduled/in progress ({this.scheduledRebuildReason}).";
+            return false;
+        }
+
+        if (this.validityMonitorService.CurrentIsGposing != this.lastObservedGpose)
+        {
+            reason = "native readback unavailable: GPose state is changing; actor handles are being rebound.";
+            return false;
+        }
+
+        if (!this.lastSceneReady && actor.LifecycleState == ActorLifecycleState.Ready)
+        {
+            reason = "native readback unavailable: actor scene is not ready.";
+            return false;
+        }
+
+        if (actor.LifecycleState is ActorLifecycleState.ConfigOnly or ActorLifecycleState.SpawnPending or ActorLifecycleState.Despawned or ActorLifecycleState.Failed or ActorLifecycleState.SpawnFailed)
+        {
+            reason = $"native readback unavailable: actor lifecycle is {actor.LifecycleState}.";
+            return false;
+        }
+
+        if (actor.IsStale || actor.CharacterObject == null)
+        {
+            reason = "native readback unavailable: actor is stale, missing, or unbound.";
+            return false;
+        }
+
+        reason = string.Empty;
+        return true;
     }
 
     private static bool TransformReadbackMatches(RuntimeActorInstance actor, Vector3 position, Vector3 rotationEuler, Vector3 scale, out string reason)
@@ -1335,6 +1423,8 @@ public sealed class RealNpcSpawnService
         }
 
         this.UpdateScheduledRebuild();
+        if (this.scheduledRebuildDelayTicks >= 0)
+            return;
 
         foreach (var actor in this.registry.GetAll().ToList())
         {
@@ -1353,8 +1443,18 @@ public sealed class RealNpcSpawnService
     private void FlushPendingTransforms(IEnumerable<RuntimeActorInstance> readyActors)
     {
         var now = DateTime.UtcNow;
-        foreach (var actor in readyActors.Where(actor => actor.HasPendingTransformApply).ToList())
+        foreach (var actor in readyActors.ToList())
         {
+            if (!actor.HasPendingTransformApply)
+                continue;
+
+            if (!this.CanReadNativeActorTransform(actor, out var guardReason))
+            {
+                actor.LastTransformError = guardReason;
+                actor.LastTransformReadback = guardReason;
+                continue;
+            }
+
             if ((now - actor.LastPendingTransformAttemptAt).TotalMilliseconds < PendingTransformRetryIntervalMilliseconds)
                 continue;
 

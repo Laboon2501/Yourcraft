@@ -549,20 +549,8 @@ public sealed class BrioAssemblyBridgeService
             return false;
         }
 
-        if (!this.TryValidateSpawnedActorTarget(instance, out reason))
+        if (!this.TryResolveSafeRuntimeActorAddress(instance, out var address, out _, out _, out reason))
             return false;
-
-        if (instance.IsStale || instance.CharacterObject == null)
-        {
-            reason = "actor stale or CharacterObject unavailable.";
-            return false;
-        }
-
-        if (!TryReadAddress(instance.CharacterObject, out var address) || address == 0)
-        {
-            reason = $"unable to read valid Address. Address={ReadProperty(instance.CharacterObject, "Address")}";
-            return false;
-        }
 
         if (!IsFiniteVector(position) || !float.IsFinite(yawRadians))
         {
@@ -639,20 +627,8 @@ public sealed class BrioAssemblyBridgeService
         rotationEuler = Vector3.Zero;
         scale = Vector3.One;
 
-        if (!this.TryValidateSpawnedActorTarget(instance, out reason))
+        if (!this.TryResolveSafeRuntimeActorAddress(instance, out var address, out _, out _, out reason))
             return false;
-
-        if (instance.IsStale || instance.CharacterObject == null)
-        {
-            reason = "actor stale or CharacterObject unavailable.";
-            return false;
-        }
-
-        if (!TryReadAddress(instance.CharacterObject, out var address) || address == 0)
-        {
-            reason = $"unable to read valid Address. Address={ReadProperty(instance.CharacterObject, "Address")}";
-            return false;
-        }
 
         try
         {
@@ -693,20 +669,8 @@ public sealed class BrioAssemblyBridgeService
     public unsafe bool TryReadActorTransformTargetIdentity(RuntimeActorInstance instance, out string identity, out string reason)
     {
         identity = string.Empty;
-        if (!this.TryValidateSpawnedActorTarget(instance, out reason))
+        if (!this.TryResolveSafeRuntimeActorAddress(instance, out var address, out _, out _, out reason))
             return false;
-
-        if (instance.IsStale || instance.CharacterObject == null)
-        {
-            reason = "actor stale or CharacterObject unavailable.";
-            return false;
-        }
-
-        if (!TryReadAddress(instance.CharacterObject, out var address) || address == 0)
-        {
-            reason = $"unable to read valid Address. Address={ReadProperty(instance.CharacterObject, "Address")}";
-            return false;
-        }
 
         try
         {
@@ -754,31 +718,9 @@ public sealed class BrioAssemblyBridgeService
         address = 0;
         objectIndex = -1;
 
-        if (instance.IsStale)
-        {
-            reason = "spawned Actor is stale; native target must be rebound before facial/lip writes.";
-            return false;
-        }
-
-        if (instance.CharacterObject == null)
-        {
-            reason = "spawned Actor CharacterObject unavailable; native target is not bound.";
-            return false;
-        }
-
-        this.FillInstanceFromCharacter(instance, instance.CharacterObject);
-
-        if (!this.TryValidateSpawnedActorTarget(instance, out reason))
+        if (!this.TryResolveSafeRuntimeActorAddress(instance, out address, out objectIndex, out _, out reason))
             return false;
 
-        var actorAddressText = ReadProperty(instance.CharacterObject, "Address");
-        if (!TryReadAddress(instance.CharacterObject, out address) || address == 0)
-        {
-            reason = $"spawned Actor native address unavailable. objectIndex={instance.ObjectIndex}; address={actorAddressText}";
-            return false;
-        }
-
-        objectIndex = int.TryParse(instance.ObjectIndex, out var parsedIndex) ? parsedIndex : instance.LastKnownObjectIndex;
         var localPlayer = this.objectTable.LocalPlayer;
         var localIndex = localPlayer == null ? "unavailable" : ReadProperty(localPlayer, "ObjectIndex");
         var localAddress = localPlayer == null ? "unavailable" : ReadProperty(localPlayer, "Address");
@@ -1412,6 +1354,157 @@ public sealed class BrioAssemblyBridgeService
 
     private static Vector3 NormalizeActorScale(Vector3 scale)
         => ActorTransformUtil.NormalizeScale(scale);
+
+    private unsafe bool TryResolveSafeRuntimeActorAddress(RuntimeActorInstance instance, out nint address, out int objectIndex, out object? objectTableObject, out string reason)
+    {
+        address = 0;
+        objectIndex = -1;
+        objectTableObject = null;
+
+        if (instance.LifecycleState is ActorLifecycleState.ConfigOnly or ActorLifecycleState.SpawnPending or ActorLifecycleState.Despawned or ActorLifecycleState.Failed or ActorLifecycleState.SpawnFailed)
+        {
+            reason = $"native target unavailable while actor lifecycle is {instance.LifecycleState}.";
+            return false;
+        }
+
+        if (instance.IsStale)
+        {
+            reason = "native target unavailable because actor is stale/despawned.";
+            return false;
+        }
+
+        if (instance.CharacterObject == null)
+        {
+            reason = "native target unavailable because CharacterObject is null.";
+            return false;
+        }
+
+        if (!IsCharacterValid(instance.CharacterObject))
+        {
+            reason = "native target unavailable because CharacterObject is not valid.";
+            return false;
+        }
+
+        if (!TryReadAddress(instance.CharacterObject, out address) || address == 0)
+        {
+            reason = $"native target address unavailable. cachedAddress={instance.Address}; characterAddress={ReadProperty(instance.CharacterObject, "Address")}";
+            return false;
+        }
+
+        var localPlayer = this.objectTable.LocalPlayer;
+        if (localPlayer != null)
+        {
+            if (ReferenceEquals(instance.CharacterObject, localPlayer))
+            {
+                reason = "native target rejected because it equals LocalPlayer reference.";
+                return false;
+            }
+
+            if (TryParseAddress(ReadProperty(localPlayer, "Address"), out var localAddress) && localAddress != 0 && localAddress == address)
+            {
+                reason = $"native target rejected because it equals LocalPlayer address=0x{localAddress:X}.";
+                return false;
+            }
+        }
+
+        var expectedObjectIndex = TryReadObjectIndex(instance.CharacterObject, out var characterObjectIndex)
+            ? characterObjectIndex
+            : int.TryParse(instance.ObjectIndex, out var cachedObjectIndex)
+                ? cachedObjectIndex
+                : instance.LastKnownObjectIndex;
+
+        if (!this.TryFindObjectTableTargetByAddress(address, expectedObjectIndex, out objectTableObject, out objectIndex, out reason))
+            return false;
+
+        if (objectTableObject == null || !IsCharacterValid(objectTableObject))
+        {
+            reason = "native target rejected because the object table match is invalid/disposed.";
+            return false;
+        }
+
+        if (objectIndex < 0 || objectIndex > ushort.MaxValue)
+        {
+            reason = $"native target rejected because objectIndex is invalid: {objectIndex}.";
+            return false;
+        }
+
+        var objectManager = ClientObjectManager.Instance();
+        if (objectManager == null)
+        {
+            reason = "native target rejected because ClientObjectManager is unavailable.";
+            return false;
+        }
+
+        var nativeObject = objectManager->GetObjectByIndex((ushort)objectIndex);
+        if (nativeObject == null)
+        {
+            reason = $"native target rejected because ClientObjectManager has no object at index={objectIndex}.";
+            return false;
+        }
+
+        var nativeObjectAddress = (nint)nativeObject;
+        if (nativeObjectAddress != address)
+        {
+            reason = $"native target rejected because object table address no longer matches ClientObjectManager. objectIndex={objectIndex}; objectTable=0x{address:X}; native=0x{nativeObjectAddress:X}.";
+            return false;
+        }
+
+        instance.CharacterObject = objectTableObject;
+        instance.ObjectIndex = objectIndex.ToString();
+        instance.Address = $"0x{address:X}";
+        instance.LastKnownObjectIndex = objectIndex;
+        instance.IsValid = true;
+        reason = $"native target validated. objectIndex={objectIndex}; address=0x{address:X}.";
+        return true;
+    }
+
+    private bool TryFindObjectTableTargetByAddress(nint address, int expectedObjectIndex, out object? target, out int objectIndex, out string reason)
+    {
+        target = null;
+        objectIndex = -1;
+        var expectedIndexSeen = false;
+        var expectedIndexAddress = string.Empty;
+
+        foreach (var obj in this.objectTable)
+        {
+            if (obj == null)
+                continue;
+
+            var rawAddress = ReadProperty(obj, "Address");
+            if (!TryParseAddress(rawAddress, out var objectAddress) || objectAddress == 0)
+                continue;
+
+            var rawIndex = ReadProperty(obj, "ObjectIndex");
+            var hasIndex = int.TryParse(rawIndex, out var currentIndex);
+            if (hasIndex && currentIndex == expectedObjectIndex)
+            {
+                expectedIndexSeen = true;
+                expectedIndexAddress = rawAddress;
+            }
+
+            if (objectAddress == address)
+            {
+                if (!hasIndex)
+                {
+                    reason = $"object table found address=0x{address:X}, but ObjectIndex is unavailable.";
+                    return false;
+                }
+
+                target = obj;
+                objectIndex = currentIndex;
+                reason = $"object table matched address=0x{address:X}; objectIndex={objectIndex}.";
+                return true;
+            }
+        }
+
+        reason = expectedIndexSeen
+            ? $"object table does not contain address=0x{address:X}; expected index={expectedObjectIndex} currently points to address={expectedIndexAddress}."
+            : $"object table does not contain address=0x{address:X}.";
+        return false;
+    }
+
+    private static bool TryReadObjectIndex(object source, out int objectIndex)
+        => int.TryParse(ReadProperty(source, "ObjectIndex"), out objectIndex);
 
     private bool TryValidateSpawnedActorTarget(RuntimeActorInstance instance, out string reason)
     {
