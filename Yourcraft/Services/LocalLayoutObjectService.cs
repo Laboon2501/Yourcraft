@@ -2597,6 +2597,29 @@ public sealed unsafe class LocalLayoutObjectService
         return true;
     }
 
+    public int ForceClearAllRecords(string reason)
+    {
+        if (this.IsBusy)
+        {
+            this.LastStatus = "当前正在恢复/清理本地场景物体，暂不能清除全部复制体记录。";
+            return 0;
+        }
+
+        this.animatedPlaybackSystem.StopAllAndDetach(this.instances, reason);
+        this.activeCreateManyJob = null;
+        this.restoreAllAndClearPending = false;
+        this.restoreAllAndClearReason = string.Empty;
+        this.reservedSlots.Clear();
+        this.occupiedSlots.Clear();
+
+        var removed = this.instances.Count;
+        this.instances.Clear();
+        this.LastStatus = removed == 0
+            ? "没有复制体记录需要清除。"
+            : $"已清除复制体运行时/插件记录 {removed} 条。未移动、恢复或删除游戏里的实际物体。";
+        return removed;
+    }
+
     public int ForceClearBadInstances()
     {
         var removed = this.instances.RemoveAll(item => item.IsRestored || item.IsInvalid || item.IsDuplicate || !item.IsOccupied || IsFailedState(item));
@@ -3331,6 +3354,12 @@ public sealed unsafe class LocalLayoutObjectService
         var applied = this.transformService.ApplyTransform(instance, components);
         if (applied)
         {
+            if (HasTransformComponent(components, SceneEditorTransformComponents.Rotation))
+            {
+                instance.CurrentRotationEuler = rotationEuler;
+                instance.CurrentRotation = WorldTransformUtil.WorldEulerRadiansToQuaternion(rotationEuler);
+            }
+
             instance.InstanceState = "Ready";
             this.ScheduleTransformMonitor(instance, instance.CurrentPosition, instance.CurrentRotationEuler, instance.CurrentScale, action);
         }

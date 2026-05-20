@@ -48,10 +48,18 @@ public sealed class MainWindow : Window
     private readonly Action reloadAction;
     private readonly Action saveConfiguration;
     private readonly Func<bool> isGposing;
+    private readonly string pluginConfigDirectory;
     private readonly TransformEditState sceneEditorTransformEdit = new();
 
     private string sceneEditorGlamourerDesignName = string.Empty;
     private string sceneEditorGlamourerDesignStatus = "No native actor design save attempted.";
+    private string pluginConfigDirectoryOpenStatus = string.Empty;
+    private string recordCleanupStatus = string.Empty;
+    private string pendingLocalLayoutRecordDeleteId = string.Empty;
+    private bool deleteLocalLayoutRecordConfirmChecked;
+    private bool clearAllMapActorSpawnsConfirmChecked;
+    private bool clearAllMapBgpartsEditsConfirmChecked;
+    private bool clearAllMapLightSpawnsConfirmChecked;
     private Vector2 deleteAllActorsConfirmPopupPosition;
     private Vector2 confirmationPopupPosition;
     private string pendingNativeRestoreRecordId = string.Empty;
@@ -145,7 +153,8 @@ public sealed class MainWindow : Window
         PenumbraIpcService penumbraIpc,
         Action reloadAction,
         Action saveConfiguration,
-        Func<bool> isGposing)
+        Func<bool> isGposing,
+        string pluginConfigDirectory)
         : base("Yourcraft##YourcraftMain")
     {
         this.configuration = configuration;
@@ -172,6 +181,7 @@ public sealed class MainWindow : Window
         this.reloadAction = reloadAction;
         this.saveConfiguration = saveConfiguration;
         this.isGposing = isGposing;
+        this.pluginConfigDirectory = pluginConfigDirectory;
         this.SizeConstraints = new WindowSizeConstraints
         {
             MinimumSize = new Vector2(860, 680),
@@ -306,7 +316,177 @@ public sealed class MainWindow : Window
 
         ImGui.TextDisabled(T("语言切换会立即保存并在当前窗口刷新。", "Language changes are saved immediately and refresh this window."));
         ImGui.Separator();
+        if (ImGui.Button(T("打开插件配置目录", "Open plugin config folder")))
+            this.OpenPluginConfigDirectory();
+        if (!string.IsNullOrWhiteSpace(this.pluginConfigDirectoryOpenStatus))
+            ImGui.TextDisabled(this.pluginConfigDirectoryOpenStatus);
+        ImGui.Separator();
+        DrawYellowSectionLabel("危险操作", "Danger Zone");
+        if (ImGui.Button(T("清除所有地图Actor生成", "Clear All Map Actor Spawns")))
+        {
+            this.clearAllMapActorSpawnsConfirmChecked = false;
+            this.OpenConfirmPopupAtMouse("ConfirmClearAllMapActorSpawns");
+        }
+
+        if (ImGui.Button(T("清除所有地图Bgparts修改", "Clear All Map Bgparts Edits")))
+        {
+            this.clearAllMapBgpartsEditsConfirmChecked = false;
+            this.OpenConfirmPopupAtMouse("ConfirmClearAllMapBgpartsEdits");
+        }
+
+        if (ImGui.Button(T("清除所有地图灯光生成", "Clear All Map Light Spawns")))
+        {
+            this.clearAllMapLightSpawnsConfirmChecked = false;
+            this.OpenConfirmPopupAtMouse("ConfirmClearAllMapLightSpawns");
+        }
+
+        if (!string.IsNullOrWhiteSpace(this.recordCleanupStatus))
+            ImGui.TextWrapped(this.recordCleanupStatus);
+
+        this.DrawGlobalCleanupConfirmationPopups();
+        ImGui.Separator();
         this.DrawMapPresetImportExportSettings();
+    }
+
+    private void OpenPluginConfigDirectory()
+    {
+        try
+        {
+            Directory.CreateDirectory(this.pluginConfigDirectory);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = this.pluginConfigDirectory,
+                UseShellExecute = true,
+            });
+            this.pluginConfigDirectoryOpenStatus = T("已打开插件配置目录。", "Opened plugin config folder.");
+        }
+        catch (Exception ex)
+        {
+            this.pluginConfigDirectoryOpenStatus = T($"打开配置目录失败：{ex.Message}", $"Failed to open config folder: {ex.Message}");
+        }
+    }
+
+    private void DrawGlobalCleanupConfirmationPopups()
+    {
+        if (this.DrawCheckedConfirmPopup(
+            "ConfirmClearAllMapActorSpawns",
+            T("注意：这将清除插件保存的所有地图 Actor 生成记录，并尝试移除当前地图中由插件生成的 Actor。此操作不可撤销。",
+                "Warning: this clears every saved map Actor spawn record and tries to remove Actors spawned by this plugin on the current map. This cannot be undone."),
+            T("我确认清除所有地图 Actor 生成记录", "I confirm clearing all map Actor spawn records"),
+            ref this.clearAllMapActorSpawnsConfirmChecked))
+        {
+            this.ClearAllMapActorSpawns();
+        }
+
+        if (this.DrawCheckedConfirmPopup(
+            "ConfirmClearAllMapBgpartsEdits",
+            T("注意：这将清除插件保存的所有地图 Bgparts 修改记录，并将当前地图中由插件管理的 Bgparts 修改初始化。此操作不可撤销。",
+                "Warning: this clears every saved map Bgparts edit record and initializes Bgparts edits managed by this plugin on the current map. This cannot be undone."),
+            T("我确认清除所有地图 Bgparts 修改记录", "I confirm clearing all map Bgparts edit records"),
+            ref this.clearAllMapBgpartsEditsConfirmChecked))
+        {
+            this.ClearAllMapBgpartsEdits();
+        }
+
+        if (this.DrawCheckedConfirmPopup(
+            "ConfirmClearAllMapLightSpawns",
+            T("注意：这将清除插件保存的所有地图灯光生成记录，并尝试移除当前地图中由插件生成的灯光。此操作不可撤销。",
+                "Warning: this clears every saved map light spawn record and tries to remove lights spawned by this plugin on the current map. This cannot be undone."),
+            T("我确认清除所有地图灯光生成记录", "I confirm clearing all map light spawn records"),
+            ref this.clearAllMapLightSpawnsConfirmChecked))
+        {
+            this.ClearAllMapLightSpawns();
+        }
+    }
+
+    private void ClearAllMapActorSpawns()
+    {
+        var configCount = this.database.ActorConfigs.Count;
+        var restoreRecordCount = this.configuration.SceneEditorLocalActors.Count;
+        this.realNpcSpawn.DespawnAll(deleteConfigs: true);
+        this.configuration.SceneEditorLocalActors.Clear();
+        this.saveConfiguration();
+        this.selectedActorRuntimeId = string.Empty;
+        this.sceneEditorSelection.Clear(SceneEditorSelectionSource.MainUi);
+        this.recordCleanupStatus = T(
+            $"已清除所有地图 Actor 生成记录：ActorConfig={configCount}，恢复记录={restoreRecordCount}。",
+            $"Cleared all map Actor spawn records: ActorConfig={configCount}, restore records={restoreRecordCount}.");
+    }
+
+    private void ClearAllMapBgpartsEdits()
+    {
+        var localRecordCount = this.configuration.SceneEditorLocalBgParts.Count;
+        var nativeRecordCount = this.configuration.SceneEditorNativeModifications.Count(item => item.Kind == SceneEditableKind.NativeBgPart);
+        var restoreWarning = string.Empty;
+
+        try
+        {
+            this.localLayoutObjects.RestoreAll(
+                removeAfterRestore: true,
+                bgParts: this.AllBgParts(),
+                unsafeEnabled: this.realNpcSpawn.EnableUnsafeNativeWrites,
+                fullLayoutConfirmed: this.confirmFullLayoutCollisionMode);
+            this.sceneEditor.RestoreCurrentTerritoryNativeBgParts();
+        }
+        catch (Exception ex)
+        {
+            restoreWarning = T(
+                $"清除 Bgparts 记录时，当前地图恢复尝试失败：{ex.Message}。记录仍会清除，可能需要重进地图或重启游戏生效。",
+                $"Bgparts restore attempt failed while clearing records: {ex.Message}. Records will still be cleared; re-entering the map or restarting the game may be required.");
+        }
+
+        var runtimeRecordCount = this.localLayoutObjects.ForceClearAllRecords("Clear all map Bgparts edit records.");
+        this.configuration.SceneEditorLocalBgParts.Clear();
+        this.configuration.SceneEditorNativeModifications.RemoveAll(item => item.Kind == SceneEditableKind.NativeBgPart);
+        this.saveConfiguration();
+        this.selectedLocalLayoutObjectId = string.Empty;
+        this.lastWorldTransformReadLocalLayoutObjectId = string.Empty;
+        this.sceneEditorSelection.Clear(SceneEditorSelectionSource.MainUi);
+
+        var warning = T("如果当前地图仍显示旧修改，请重进地图或重启游戏后再确认。",
+            "If the current map still shows old edits, re-enter the map or restart the game and check again.");
+        if (!string.IsNullOrWhiteSpace(restoreWarning))
+            warning = $"{restoreWarning} {warning}";
+        this.recordCleanupStatus = T(
+            $"已清除所有地图 Bgparts 修改记录：复制体记录={localRecordCount}，原生 BgPart 记录={nativeRecordCount}，运行时引用={runtimeRecordCount}。{warning}",
+            $"Cleared all map Bgparts edit records: copy records={localRecordCount}, native BgPart records={nativeRecordCount}, runtime references={runtimeRecordCount}. {warning}");
+    }
+
+    private void ClearAllMapLightSpawns()
+    {
+        var lightCount = this.configuration.LocalLights.Count;
+        this.localLights.DestroyAllNative("clear-all-map-light-spawns", keepInstances: false);
+        this.selectedLocalLightId = string.Empty;
+        this.sceneEditorSelection.Clear(SceneEditorSelectionSource.MainUi);
+        this.recordCleanupStatus = T(
+            $"已清除所有地图灯光生成记录：灯光={lightCount}。",
+            $"Cleared all map light spawn records: lights={lightCount}.");
+    }
+
+    private void DeleteLocalLayoutRecordOnly(string instanceId)
+    {
+        if (string.IsNullOrWhiteSpace(instanceId))
+            return;
+
+        var hadRuntimeRecord = this.localLayoutObjects.GetById(instanceId) != null;
+        if (hadRuntimeRecord)
+            this.localLayoutObjects.ForceRemoveInstance(instanceId);
+
+        var persistentRemoved = this.configuration.SceneEditorLocalBgParts.RemoveAll(item =>
+            string.Equals(item.InstanceId, instanceId, StringComparison.OrdinalIgnoreCase));
+        this.saveConfiguration();
+
+        if (string.Equals(this.selectedLocalLayoutObjectId, instanceId, StringComparison.OrdinalIgnoreCase))
+        {
+            this.selectedLocalLayoutObjectId = string.Empty;
+            this.lastWorldTransformReadLocalLayoutObjectId = string.Empty;
+            this.sceneEditorSelection.Clear(SceneEditorSelectionSource.MainUi);
+        }
+
+        this.recordCleanupStatus = T(
+            $"已删除复制体编辑记录 {ShortId(instanceId)}。仅清除插件记录，没有移动、恢复或删除游戏里的实际物体。持久化记录={persistentRemoved}。",
+            $"Deleted copy edit record {ShortId(instanceId)}. Only the plugin record was removed; the in-game object was not moved, restored, or deleted. persisted={persistentRemoved}.");
+        this.pendingLocalLayoutRecordDeleteId = string.Empty;
     }
 
     private static string T(string chinese, string english) => Localization.T(chinese, english);
@@ -1391,7 +1571,10 @@ public sealed class MainWindow : Window
             var requested = this.sceneEditorTransformEdit.ToWorldTransform();
             var after = this.sceneEditor.MergeWorldTransformForComponents(selected.Kind, selected.RuntimeId, requested, components);
             if (this.sceneEditor.ApplyWorldTransform(selected.Kind, selected.RuntimeId, requested, components))
+            {
+                this.sceneEditorTransformEdit.LastSyncedGeneration = this.sceneEditorSelection.Generation + this.sceneEditor.TransformGeneration;
                 this.sceneEditor.PushTransformUndo(selected.Kind, selected.RuntimeId, selected.DisplayName, before, after, "TransformInput");
+            }
         }
         ImGui.EndDisabled();
     }
@@ -1898,6 +2081,35 @@ public sealed class MainWindow : Window
         ImGui.SameLine();
         if (ImGui.Button(T("取消", "Cancel")))
             ImGui.CloseCurrentPopup();
+
+        ImGui.EndPopup();
+        return confirmed;
+    }
+
+    private bool DrawCheckedConfirmPopup(string popupId, string message, string checkboxLabel, ref bool confirmChecked)
+    {
+        var confirmed = false;
+        ImGui.SetNextWindowPos(this.confirmationPopupPosition, ImGuiCond.Appearing);
+        if (!ImGui.BeginPopupModal(popupId, ImGuiWindowFlags.AlwaysAutoResize))
+            return false;
+
+        ImGui.TextWrapped(message);
+        ImGui.Separator();
+        ImGui.Checkbox(checkboxLabel, ref confirmChecked);
+        ImGui.BeginDisabled(!confirmChecked);
+        if (ImGui.Button(T("确认", "OK")))
+        {
+            confirmed = true;
+            confirmChecked = false;
+            ImGui.CloseCurrentPopup();
+        }
+        ImGui.EndDisabled();
+        ImGui.SameLine();
+        if (ImGui.Button(T("取消", "Cancel")))
+        {
+            confirmChecked = false;
+            ImGui.CloseCurrentPopup();
+        }
 
         ImGui.EndPopup();
         return confirmed;
@@ -3411,6 +3623,7 @@ public sealed class MainWindow : Window
         DrawYellowSectionLabel("复制体管理", "Copy Management");
         if (!ImGui.BeginTable("LocalLayoutObjects", 8, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(-1f, 300f)))
             return;
+        var deleteRecordRequested = false;
         ImGui.TableSetupColumn(T("选择", "Select"), ImGuiTableColumnFlags.WidthFixed, 42f);
         ImGui.TableSetupColumn(T("原模型", "Original Model"));
         ImGui.TableSetupColumn(T("当前模型", "Current Model"));
@@ -3459,9 +3672,30 @@ public sealed class MainWindow : Window
             if (ImGui.Button(T("恢复", "Restore")))
                 this.localLayoutObjects.RestoreModelAndTransform(instance.Id, this.FilteredBgParts(), this.realNpcSpawn.EnableUnsafeNativeWrites, this.confirmFullLayoutCollisionMode);
             ImGui.EndDisabled();
+            if (ImGui.Button(T("删除记录", "Delete Record")))
+            {
+                this.pendingLocalLayoutRecordDeleteId = instance.Id;
+                this.deleteLocalLayoutRecordConfirmChecked = false;
+                deleteRecordRequested = true;
+            }
             ImGui.PopID();
         }
         ImGui.EndTable();
+        if (deleteRecordRequested)
+            this.OpenConfirmPopupAtMouse("ConfirmDeleteLocalLayoutRecord");
+
+        if (this.DrawCheckedConfirmPopup(
+            "ConfirmDeleteLocalLayoutRecord",
+            T("注意：这将删除这条编辑记录，请确保你已将物体归位或再也不会编辑。",
+                "Warning: this deletes only this edit record. Make sure you have restored the object or will not edit it again."),
+            T("我确认删除这条编辑记录", "I confirm deleting this edit record"),
+            ref this.deleteLocalLayoutRecordConfirmChecked))
+        {
+            this.DeleteLocalLayoutRecordOnly(this.pendingLocalLayoutRecordDeleteId);
+        }
+
+        if (!string.IsNullOrWhiteSpace(this.recordCleanupStatus))
+            ImGui.TextWrapped(this.recordCleanupStatus);
     }
 
     private void DrawProtectedBgPartControls(LayoutProbeInstance candidate)
