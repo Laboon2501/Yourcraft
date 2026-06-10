@@ -1291,6 +1291,8 @@ public sealed unsafe class SceneEditorService
         }
 
         SetRecordCurrentTransform(record, hiddenTransform);
+        if (selected.Kind == SceneEditableKind.NativeLight)
+            SetRecordCurrentLightState(record, CaptureNativeLightState(selected, hiddenTransform, visible: false));
         SetVector3Data(record.HiddenPosition, hiddenTransform.WorldPosition);
         SetVector3Data(record.HiddenRotationEuler, hiddenTransform.WorldEulerRadians);
         SetVector3Data(record.HiddenScale, hiddenTransform.WorldScale);
@@ -2468,6 +2470,8 @@ public sealed unsafe class SceneEditorService
         if (before.Kind == SceneEditableKind.NativeBgPart)
             record.UseFullLayoutTransform = this.NativeFullLayoutTransformConfirmed;
         SetRecordCurrentTransform(record, after);
+        if (before.Kind == SceneEditableKind.NativeLight)
+            SetRecordCurrentLightState(record, CaptureNativeLightState(before, after));
         record.IsModified = !TransformsApproximatelyEqual(GetOriginalTransform(record), after) || record.IsHidden;
         if (!record.IsHidden)
             record.Status = record.IsModified ? "Modified" : "Restored";
@@ -2529,6 +2533,12 @@ public sealed unsafe class SceneEditorService
         };
         SetRecordOriginalTransform(record, original);
         SetRecordCurrentTransform(record, original);
+        if (selected.Kind == SceneEditableKind.NativeLight)
+        {
+            var originalLightState = CaptureNativeLightState(selected, original);
+            SetRecordOriginalLightState(record, originalLightState);
+            SetRecordCurrentLightState(record, originalLightState);
+        }
         this.UpdateNativeRecordLocator(record, selected);
         this.NativeRecords.Add(record);
         return record;
@@ -2631,6 +2641,9 @@ public sealed unsafe class SceneEditorService
         if (record.Kind == SceneEditableKind.NativeBgPart)
             return this.RestoreNativeBgPartViaPersistedPath(record, original, out reason);
 
+        if (record.Kind == SceneEditableKind.NativeLight)
+            return this.RestoreNativeLightViaOriginalState(record, original, out reason);
+
         if (!this.ApplyNativeRecordTransform(record, original))
         {
             reason = this.LastStatus;
@@ -2640,6 +2653,26 @@ public sealed unsafe class SceneEditorService
         if (!this.VerifyNativeRestoreApplied(record, original, out reason))
             return false;
 
+        return true;
+    }
+
+    private bool RestoreNativeLightViaOriginalState(SceneEditorNativeModificationRecord record, WorldTransform fallbackOriginal, out string reason)
+    {
+        var originalState = record.OriginalLightState ?? new SceneEditorNativeLightState();
+        var originalTransform = originalState.HasState
+            ? NativeLightStateToWorldTransform(originalState)
+            : fallbackOriginal;
+
+        if (!this.ApplyNativeRecordTransformViaPersistedPath(record, originalTransform, "manual native Light restore to original"))
+        {
+            reason = this.LastStatus;
+            return false;
+        }
+
+        SetRecordCurrentTransform(record, originalTransform);
+        if (originalState.HasState)
+            SetRecordCurrentLightState(record, originalState);
+        reason = string.Empty;
         return true;
     }
 
@@ -3979,6 +4012,52 @@ public sealed unsafe class SceneEditorService
         SetVector3Data(record.CurrentRotationEuler, transform.WorldEulerRadians);
         SetVector3Data(record.CurrentScale, WorldTransformUtil.NormalizeScale(transform.WorldScale));
     }
+
+    private static SceneEditorNativeLightState CaptureNativeLightState(
+        SceneEditableRef selected,
+        WorldTransform transform,
+        bool? visible = null)
+    {
+        var state = new SceneEditorNativeLightState
+        {
+            HasState = true,
+            Visible = visible ?? !selected.IsHidden,
+            Enabled = visible ?? !selected.IsHidden,
+        };
+        SetVector3Data(state.Position, transform.WorldPosition);
+        SetVector3Data(state.RotationEuler, transform.WorldEulerRadians);
+        SetVector3Data(state.Scale, WorldTransformUtil.NormalizeScale(transform.WorldScale));
+        return state;
+    }
+
+    private static void SetRecordOriginalLightState(SceneEditorNativeModificationRecord record, SceneEditorNativeLightState state)
+        => CopyNativeLightState(state, record.OriginalLightState ??= new SceneEditorNativeLightState());
+
+    private static void SetRecordCurrentLightState(SceneEditorNativeModificationRecord record, SceneEditorNativeLightState state)
+        => CopyNativeLightState(state, record.CurrentLightState ??= new SceneEditorNativeLightState());
+
+    private static void CopyNativeLightState(SceneEditorNativeLightState source, SceneEditorNativeLightState target)
+    {
+        target.HasState = source.HasState;
+        SetVector3Data(target.Position, ToVector3(source.Position));
+        SetVector3Data(target.RotationEuler, ToVector3(source.RotationEuler));
+        SetVector3Data(target.Scale, WorldTransformUtil.NormalizeScale(ToVector3(source.Scale)));
+        target.Visible = source.Visible;
+        target.Enabled = source.Enabled;
+        target.HasRenderState = source.HasRenderState;
+        SetVector3Data(target.Color, ToVector3(source.Color));
+        target.Intensity = source.Intensity;
+        target.Range = source.Range;
+        target.Falloff = source.Falloff;
+        target.SpotAngle = source.SpotAngle;
+        target.FalloffAngle = source.FalloffAngle;
+    }
+
+    private static WorldTransform NativeLightStateToWorldTransform(SceneEditorNativeLightState state)
+        => WorldTransform.FromEuler(
+            ToVector3(state.Position),
+            ToVector3(state.RotationEuler),
+            WorldTransformUtil.NormalizeScale(ToVector3(state.Scale)));
 
     private static Vector3 ToVector3(Vector3Data data)
         => new(data.X, data.Y, data.Z);

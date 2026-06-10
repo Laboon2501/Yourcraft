@@ -101,4 +101,37 @@ public sealed class SceneEditorNativeModificationRecord
     public Vector3Data HiddenRotationEuler { get; set; } = new();
 
     public Vector3Data HiddenScale { get; set; } = new() { X = 1f, Y = 1f, Z = 1f };
+
+    public SceneEditorNativeLightState OriginalLightState { get; set; } = new();
+
+    public SceneEditorNativeLightState CurrentLightState { get; set; } = new();
+}
+
+public sealed class SceneEditorNativeLightState
+{
+    public bool HasState { get; set; }
+
+    public Vector3Data Position { get; set; } = new();
+
+    public Vector3Data RotationEuler { get; set; } = new();
+
+    public Vector3Data Scale { get; set; } = new() { X = 1f, Y = 1f, Z = 1f };
+
+    public bool Visible { get; set; } = true;
+
+    public bool Enabled { get; set; } = true;
+
+    public bool HasRenderState { get; set; }
+
+    public Vector3Data Color { get; set; } = new() { X = 1f, Y = 1f, Z = 1f };
+
+    public float Intensity { get; set; }
+
+    public float Range { get; set; }
+
+    public float Falloff { get; set; }
+
+    public float SpotAngle { get; set; }
+
+    public float FalloffAngle { get; set; }
 }
