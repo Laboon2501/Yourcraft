@@ -4,6 +4,7 @@ using FFXIVClientStructs.FFXIV.Client.LayoutEngine.Layer;
 using FFXIVClientStructs.FFXIV.Client.LayoutEngine.Terrain;
 using Yourcraft.Models;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using SceneObject = FFXIVClientStructs.FFXIV.Client.Graphics.Scene.Object;
 using SceneBgObject = FFXIVClientStructs.FFXIV.Client.Graphics.Scene.BgObject;
 
@@ -12,6 +13,9 @@ namespace Yourcraft.Services;
 public sealed unsafe class LocalLayoutObjectService
 {
     private const int VisualMatrixOffset = 0x20;
+    private const uint MemCommit = 0x1000;
+    private const uint PageNoAccess = 0x01;
+    private const uint PageGuard = 0x100;
     private const string DynamicObjectBlockedMessage = "该物体疑似由地图 controller / SharedGroup / 动态材质驱动，当前版本不支持本地移动。为避免闪退已阻止创建。";
 
     private readonly LayoutObjectTransformService transformService = new();
@@ -366,6 +370,12 @@ public sealed unsafe class LocalLayoutObjectService
         if (candidateSlotAddress != 0 && this.reservedSlots.Contains(candidateSlotAddress) && !allowReservedSlot)
         {
             this.LastStatus = $"该 BgPart slot 已被批量创建队列预留：0x{candidateSlotAddress:X}。";
+            return null;
+        }
+
+        if (!TryValidateCurrentBgPartSlot(candidate.Address, out var pointerReason))
+        {
+            this.LastStatus = $"Candidate BgPart native pointer unavailable: address={candidate.Address}; reason={pointerReason}";
             return null;
         }
 
@@ -1868,6 +1878,8 @@ public sealed unsafe class LocalLayoutObjectService
             return "custom mdl path 必须以 .mdl 结尾。";
         if (!IsSupportedMdlPath(modelPath.Trim()))
             return "custom mdl path 只支持 bg/...mdl 或 bgcommon/...mdl。";
+        if (!TryValidateCurrentBgPartSlot(instance.OccupiedSlotAddress, out var pointerReason))
+            return $"slot native pointer unavailable: address={instance.OccupiedSlotAddress}; reason={pointerReason}";
         if (instance.TransformMode == LocalLayoutTransformMode.FullLayoutWithCollision && !fullLayoutConfirmed)
             return "FullLayoutWithCollision 需要二次确认。";
         return string.Empty;
@@ -3639,6 +3651,51 @@ public sealed unsafe class LocalLayoutObjectService
         this.LastStatus = $"{action} 完成：FullLayoutWithCollision 会移动碰撞体。readback={FormatVector(after.Value.Position)}";
     }
 
+    private static bool TryValidateCurrentBgPartSlot(string? raw, out string reason)
+    {
+        reason = string.Empty;
+        if (!TryGetPointer(raw, out var pointer) || pointer == null)
+        {
+            reason = $"slot address invalid: {raw}";
+            return false;
+        }
+
+        if (!IsLikelyReadablePointer(pointer, 0x80))
+        {
+            reason = $"slot pointer unreadable: {raw}";
+            return false;
+        }
+
+        try
+        {
+            if (pointer->Id.Type != InstanceType.BgPart)
+            {
+                reason = $"layout instance type is {pointer->Id.Type}; expected BgPart";
+                return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            reason = $"layout instance type read failed: {ex.Message}";
+            return false;
+        }
+
+        var layout = ReadLayoutTransform(pointer);
+        if (layout == null)
+        {
+            reason = "layout transform readback failed";
+            return false;
+        }
+
+        if (!IsTransformNormal(layout.Value.Position, layout.Value.Rotation, layout.Value.Scale))
+        {
+            reason = $"layout transform abnormal: {FormatSnapshot(layout.Value)}";
+            return false;
+        }
+
+        return true;
+    }
+
     private static bool TryGetPointer(string? raw, out ILayoutInstance* pointer)
     {
         pointer = null;
@@ -3654,11 +3711,11 @@ public sealed unsafe class LocalLayoutObjectService
         graphicsObjectAddress = 0;
         try
         {
-            if (pointer == null || pointer->Id.Type != InstanceType.BgPart)
+            if (pointer == null || !IsLikelyReadablePointer(pointer, 0x80) || pointer->Id.Type != InstanceType.BgPart)
                 return false;
 
             var bgPart = (BgPartsLayoutInstance*)pointer;
-            if (bgPart->GraphicsObject == null)
+            if (bgPart->GraphicsObject == null || !IsLikelyReadablePointer(bgPart->GraphicsObject, 0x100))
                 return false;
 
             graphicsObjectAddress = (nint)bgPart->GraphicsObject;
@@ -3672,13 +3729,15 @@ public sealed unsafe class LocalLayoutObjectService
 
     private static LayoutTransformSnapshot? ReadLayoutTransform(ILayoutInstance* pointer)
     {
-        if (pointer == null)
+        if (pointer == null || !IsLikelyReadablePointer(pointer, 0x80))
             return null;
 
         try
         {
             var transform = pointer->GetTransformImpl();
-            return transform == null ? null : new LayoutTransformSnapshot(transform->Translation, transform->Rotation, transform->Scale);
+            return transform == null || !IsLikelyReadablePointer(transform, 0x30)
+                ? null
+                : new LayoutTransformSnapshot(transform->Translation, transform->Rotation, transform->Scale);
         }
         catch
         {
@@ -3688,7 +3747,7 @@ public sealed unsafe class LocalLayoutObjectService
 
     private static string ReadPrimaryPath(ILayoutInstance* pointer)
     {
-        if (pointer == null)
+        if (pointer == null || !IsLikelyReadablePointer(pointer, 0x80))
             return string.Empty;
 
         try
@@ -3704,7 +3763,7 @@ public sealed unsafe class LocalLayoutObjectService
 
     private static string ReadSecondaryPath(ILayoutInstance* pointer)
     {
-        if (pointer == null)
+        if (pointer == null || !IsLikelyReadablePointer(pointer, 0x80))
             return string.Empty;
 
         try
@@ -3720,7 +3779,7 @@ public sealed unsafe class LocalLayoutObjectService
 
     private static bool WriteLayoutTransform(ILayoutInstance* pointer, LayoutTransformSnapshot snapshot)
     {
-        if (pointer == null)
+        if (pointer == null || !IsLikelyReadablePointer(pointer, 0x80))
             return false;
 
         try
@@ -3808,6 +3867,55 @@ public sealed unsafe class LocalLayoutObjectService
         }
 
         return false;
+    }
+
+    private static bool IsLikelyReadablePointer(void* pointer, nuint minimumBytes = 1)
+        => pointer != null && IsLikelyReadableAddress((nint)pointer, minimumBytes);
+
+    private static bool IsLikelyReadableAddress(nint address, nuint minimumBytes = 1)
+    {
+        if (address == 0)
+            return false;
+        if (!OperatingSystem.IsWindows())
+            return true;
+
+        try
+        {
+            if (VirtualQuery(address, out var info, (nuint)Marshal.SizeOf<MemoryBasicInformation>()) == 0)
+                return false;
+            if (info.State != MemCommit)
+                return false;
+            if ((info.Protect & (PageNoAccess | PageGuard)) != 0)
+                return false;
+
+            var target = unchecked((ulong)(long)address);
+            var baseAddress = unchecked((ulong)(long)info.BaseAddress);
+            var regionSize = unchecked((ulong)info.RegionSize);
+            var bytes = unchecked((ulong)minimumBytes);
+            if (target < baseAddress || regionSize < bytes)
+                return false;
+
+            return target - baseAddress <= regionSize - bytes;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    [DllImport("kernel32.dll")]
+    private static extern nuint VirtualQuery(nint lpAddress, out MemoryBasicInformation lpBuffer, nuint dwLength);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MemoryBasicInformation
+    {
+        public nint BaseAddress;
+        public nint AllocationBase;
+        public uint AllocationProtect;
+        public nuint RegionSize;
+        public uint State;
+        public uint Protect;
+        public uint Type;
     }
 
     private IEnumerable<(LocalLayoutObjectInstance Instance, int Index, ulong SlotAddress)> GetActiveInstances()

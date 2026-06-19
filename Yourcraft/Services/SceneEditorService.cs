@@ -42,6 +42,7 @@ public sealed unsafe class SceneEditorService
     private int restoreGeneration;
     private int sceneStableTicks;
     private uint lastSeenTerritory;
+    private uint restoreTerritory;
     private string restoreReason = string.Empty;
     private int restoreWaitTicks;
     private int restoreStage;
@@ -241,6 +242,7 @@ public sealed unsafe class SceneEditorService
         this.restoreLightRecords.Clear();
         this.activeBgPartRestore = null;
         this.restoreActorsRequested = false;
+        this.restoreTerritory = 0;
         this.nativeCache.Clear();
         this.lastNativeScanUtc = DateTime.MinValue;
         this.RestoreStatus = $"[Restore] Scene invalidated: {reason}";
@@ -1550,6 +1552,7 @@ public sealed unsafe class SceneEditorService
         this.restoreLightRecords.Clear();
         this.activeBgPartRestore = null;
         this.restoreActorsRequested = false;
+        this.restoreTerritory = 0;
         this.RestoreStatus = $"[Restore] Cancelled: {reason}";
         this.log.Information("[Restore] Cancel reason={Reason}", reason);
     }
@@ -1566,6 +1569,16 @@ public sealed unsafe class SceneEditorService
         this.restoreActorsRequested = false;
 
         var territory = this.getTerritoryType();
+        if (territory == 0)
+        {
+            this.restoreRunning = false;
+            this.restorePending = true;
+            this.RestoreStatus = "[Restore] Start skipped: territory invalid";
+            this.log.Warning("[Restore] Start skipped reason=territory invalid generation={Generation}", this.sceneGeneration);
+            return;
+        }
+
+        this.restoreTerritory = territory;
         var nativeTotal = this.NativeRecords.Count;
         var nativeLegacy = this.NativeRecords.Count(item => item.TerritoryId == 0);
         var nativeWrongTerritory = this.NativeRecords.Count(item => item.TerritoryId != 0 && item.TerritoryId != territory);
@@ -1654,6 +1667,12 @@ public sealed unsafe class SceneEditorService
             return;
         }
 
+        if (!this.IsRestoreSceneCurrent(null, out var staleSceneReason))
+        {
+            this.CancelRestore(staleSceneReason);
+            return;
+        }
+
         switch (this.restoreStage)
         {
             case 0:
@@ -1701,7 +1720,9 @@ public sealed unsafe class SceneEditorService
                         WorldTransform.FromEuler(
                             ToVector3(record.WorldPosition),
                             ToVector3(record.WorldRotationEuler),
-                            WorldTransformUtil.NormalizeScale(ToVector3(record.WorldScale))));
+                            WorldTransformUtil.NormalizeScale(ToVector3(record.WorldScale))),
+                        this.sceneGeneration,
+                        this.restoreTerritory);
                     this.RestoreStatus = $"[RestoreBgPart] state=Pending order={record.SortOrder} path={FirstNonEmpty(record.CurrentMdlPath, record.SourceMdlPath, record.InstanceId)}";
                     this.log.Information("[RestoreBgPart] state=Pending order={Order} path={Path}", record.SortOrder, FirstNonEmpty(record.CurrentMdlPath, record.SourceMdlPath, record.InstanceId));
                     return;
@@ -1760,6 +1781,7 @@ public sealed unsafe class SceneEditorService
 
             default:
                 this.restoreRunning = false;
+                this.restoreTerritory = 0;
                 this.RestoreStatus = $"[Restore] Complete reason={this.restoreReason}";
                 this.log.Information("[Restore] Complete reason={Reason}", this.restoreReason);
                 if (this.restorePending)
@@ -1791,6 +1813,55 @@ public sealed unsafe class SceneEditorService
         if (this.actors.IsBusy)
         {
             reason = $"actor spawn/apply queue busy: {this.actors.BusyStatus}";
+            return false;
+        }
+
+        reason = string.Empty;
+        return true;
+    }
+
+    private bool IsRestoreSceneCurrent(LocalBgPartRestoreItem? item, out string reason)
+    {
+        var territory = this.getTerritoryType();
+        if (territory == 0)
+        {
+            reason = "scene changed: territory invalid";
+            return false;
+        }
+
+        if (this.restoreGeneration != this.sceneGeneration)
+        {
+            reason = $"scene changed: restoreGeneration={this.restoreGeneration}, currentGeneration={this.sceneGeneration}";
+            return false;
+        }
+
+        if (this.restoreTerritory != 0 && this.restoreTerritory != territory)
+        {
+            reason = $"scene changed: restoreTerritory={this.restoreTerritory}, currentTerritory={territory}";
+            return false;
+        }
+
+        if (item == null)
+        {
+            reason = string.Empty;
+            return true;
+        }
+
+        if (item.SceneGeneration != this.sceneGeneration)
+        {
+            reason = $"scene changed: itemGeneration={item.SceneGeneration}, currentGeneration={this.sceneGeneration}";
+            return false;
+        }
+
+        if (item.TerritoryId != 0 && item.TerritoryId != territory)
+        {
+            reason = $"scene changed: itemTerritory={item.TerritoryId}, currentTerritory={territory}";
+            return false;
+        }
+
+        if (item.Record.TerritoryId != 0 && item.Record.TerritoryId != territory)
+        {
+            reason = $"scene changed: recordTerritory={item.Record.TerritoryId}, currentTerritory={territory}";
             return false;
         }
 
@@ -1913,6 +1984,9 @@ public sealed unsafe class SceneEditorService
             record.RestoreStatus = "LegacyNoTerritory: restoring on current map.";
             this.MarkPersistDirty("LocalBgPart legacy territory backfilled");
         }
+
+        if (!this.IsRestoreSceneCurrent(item, out var staleSceneReason))
+            return this.FailActiveLocalBgPartRestore(item, staleSceneReason);
 
         switch (item.State)
         {
@@ -4349,16 +4423,22 @@ public sealed unsafe class SceneEditorService
 
     private sealed class LocalBgPartRestoreItem
     {
-        public LocalBgPartRestoreItem(SceneEditorLocalBgPartRecord record, WorldTransform target)
+        public LocalBgPartRestoreItem(SceneEditorLocalBgPartRecord record, WorldTransform target, int sceneGeneration, uint territoryId)
         {
             this.Record = record;
             this.Target = target;
+            this.SceneGeneration = sceneGeneration;
+            this.TerritoryId = territoryId;
             this.InstanceId = record.InstanceId;
         }
 
         public SceneEditorLocalBgPartRecord Record { get; }
 
         public WorldTransform Target { get; }
+
+        public int SceneGeneration { get; }
+
+        public uint TerritoryId { get; }
 
         public LocalBgPartRestoreState State { get; set; } = LocalBgPartRestoreState.Pending;
 

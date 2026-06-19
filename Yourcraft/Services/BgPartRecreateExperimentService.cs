@@ -21,6 +21,9 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
     private const int AnimationDataOffset = 0xB8;
     private const int PendingVisualTransformFrames = 3;
     private const float MaxReasonableCoordinate = 1_000_000f;
+    private const uint MemCommit = 0x1000;
+    private const uint PageNoAccess = 0x01;
+    private const uint PageGuard = 0x100;
 
     private readonly Dictionary<string, RecreatePathPin> pinnedPathBuffers = [];
 
@@ -32,13 +35,16 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
         if (!string.IsNullOrWhiteSpace(blockReason))
             return this.Fail(instance, blockReason);
 
+        if (!this.TryResolveCurrentBgPartPointer(instance, requireGraphicsObject: true, out _, out var resolveReason))
+            return this.Fail(instance, resolveReason);
+
         if (!TryGetPointer(instance.OccupiedSlotAddress, out var pointer))
             return this.Fail(instance, $"slot 地址解析失败：{instance.OccupiedSlotAddress}");
 
         if (pointer == null || pointer->Id.Type != InstanceType.BgPart)
             return this.Fail(instance, pointer == null ? "layout pointer is null; recreate is unsafe." : $"layout instance type is {pointer->Id.Type}; recreate expects BgPart.");
         var currentTransform = pointer->GetTransformImpl();
-        if (currentTransform == null)
+        if (currentTransform == null || !IsLikelyReadablePointer(currentTransform, 0x30))
             return this.Fail(instance, "GetTransformImpl returned null; recreate is unsafe.");
         if (!IsTransformNormal(currentTransform->Translation, currentTransform->Rotation, currentTransform->Scale))
             return this.Fail(instance, "Current layout transform is abnormal; recreate is unsafe.");
@@ -104,6 +110,9 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
         if (!string.IsNullOrWhiteSpace(blockReason))
             return this.Fail(instance, blockReason);
 
+        if (!this.TryResolveCurrentBgPartPointer(instance, requireGraphicsObject: true, out _, out var initialResolveReason))
+            return this.Fail(instance, initialResolveReason);
+
         if (!TryGetPointer(instance.OccupiedSlotAddress, out var pointer))
             return this.Fail(instance, $"slot 地址解析失败：{instance.OccupiedSlotAddress}");
 
@@ -112,7 +121,7 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
             if (pointer == null || pointer->Id.Type != InstanceType.BgPart)
                 return this.Fail(instance, pointer == null ? "layout pointer is null; recreate is unsafe." : $"layout instance type is {pointer->Id.Type}; recreate expects BgPart.");
             var currentTransform = pointer->GetTransformImpl();
-            if (currentTransform == null)
+            if (currentTransform == null || !IsLikelyReadablePointer(currentTransform, 0x30))
                 return this.Fail(instance, "GetTransformImpl returned null; recreate is unsafe.");
             if (!IsTransformNormal(currentTransform->Translation, currentTransform->Rotation, currentTransform->Scale))
                 return this.Fail(instance, "Current layout transform is abnormal; recreate is unsafe.");
@@ -125,11 +134,14 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
                     return false;
             }
 
+            if (!this.TryResolveCurrentBgPartPointer(instance, requireGraphicsObject: true, out pointer, out var resolveReason))
+                return this.Fail(instance, resolveReason);
+
             if (!this.pinnedPathBuffers.TryGetValue(instance.Id, out var pin) || !pin.IsAllocated)
                 return this.Fail(instance, "target path buffer 未固定，禁止调用 CreatePrimary。");
 
             var transformPointer = pointer->GetTransformImpl();
-            if (transformPointer == null)
+            if (transformPointer == null || !IsLikelyReadablePointer(transformPointer, 0x30))
                 return this.Fail(instance, "GetTransformImpl 返回 null，无法传入 CreatePrimary。");
 
             var createTransform = instance.TransformMode == LocalLayoutTransformMode.VisualOnly
@@ -143,7 +155,12 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
             var beforeCollider = ReadColliderAddress((BgPartsLayoutInstance*)pointer);
 
             pointer->DestroyPrimary();
+            if (!this.TryResolveCurrentBgPartPointer(instance, requireGraphicsObject: false, out pointer, out var postDestroyReason))
+                return this.Fail(instance, postDestroyReason);
+
             pointer->CreatePrimary(&createTransform, (void*)pin.PathPointerStorage);
+            if (!this.TryResolveCurrentBgPartPointer(instance, requireGraphicsObject: false, out pointer, out var postCreateReason))
+                return this.Fail(instance, postCreateReason);
 
             var after = ReadGraphicsInfo((BgPartsLayoutInstance*)pointer);
             var afterCollider = ReadColliderAddress((BgPartsLayoutInstance*)pointer);
@@ -467,6 +484,79 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
             $"VisualOnly：未调用 CreateSecondary，未写 Collider；Layout transform 已恢复到原始 slot。Collider={ReadColliderAddress((BgPartsLayoutInstance*)pointer)}";
     }
 
+    private bool TryResolveCurrentBgPartPointer(
+        LocalLayoutObjectInstance instance,
+        bool requireGraphicsObject,
+        out ILayoutInstance* pointer,
+        out string reason)
+    {
+        pointer = null;
+        reason = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(instance.OccupiedSlotAddress))
+        {
+            reason = "occupiedSlotAddress is empty.";
+            return false;
+        }
+
+        if (!TryGetPointer(instance.OccupiedSlotAddress, out pointer) || pointer == null)
+        {
+            reason = $"slot address invalid or unreadable: {instance.OccupiedSlotAddress}";
+            return false;
+        }
+
+        if (!IsLikelyReadablePointer(pointer, 0x80))
+        {
+            reason = $"layout pointer unreadable: {instance.OccupiedSlotAddress}";
+            return false;
+        }
+
+        try
+        {
+            if (pointer->Id.Type != InstanceType.BgPart)
+            {
+                reason = $"layout instance type is {pointer->Id.Type}; expected BgPart.";
+                return false;
+            }
+
+            var transform = pointer->GetTransformImpl();
+            if (transform == null || !IsLikelyReadablePointer(transform, 0x30))
+            {
+                reason = "layout transform pointer is null or unreadable.";
+                return false;
+            }
+
+            if (!IsTransformNormal(transform->Translation, transform->Rotation, transform->Scale))
+            {
+                reason = $"layout transform is abnormal: position=({FormatVector(transform->Translation)}), rotation={transform->Rotation}, scale=({FormatVector(transform->Scale)})";
+                return false;
+            }
+
+            if (requireGraphicsObject)
+            {
+                var info = ReadGraphicsInfo((BgPartsLayoutInstance*)pointer);
+                if (string.Equals(info.GraphicsObjectAddress, "0x0", StringComparison.OrdinalIgnoreCase))
+                {
+                    reason = $"GraphicsObject unavailable: {info.SafetyDump}";
+                    return false;
+                }
+
+                if (string.Equals(info.ModelResourceHandleAddress, "0x0", StringComparison.OrdinalIgnoreCase))
+                {
+                    reason = $"ModelResourceHandle unavailable: {info.SafetyDump}";
+                    return false;
+                }
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            reason = $"layout pointer validation failed: {ex.Message}";
+            return false;
+        }
+    }
+
     private string GetSharedBlockReason(LocalLayoutObjectInstance? instance, string targetPath)
     {
         if (instance == null)
@@ -487,16 +577,22 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
             return "target path 只支持 bg/...mdl 或 bgcommon/...mdl。";
         if (!TryGetPointer(instance.OccupiedSlotAddress, out var pointer))
             return $"slot 地址解析失败：{instance.OccupiedSlotAddress}";
+        if (pointer == null || !IsLikelyReadablePointer(pointer, 0x80))
+            return $"layout pointer unreadable: {instance.OccupiedSlotAddress}";
         if (pointer->Id.Type != InstanceType.BgPart)
             return $"当前实例不是 BgPart：{pointer->Id.Type}";
 
         try
         {
-            var graphicsObject = ((BgPartsLayoutInstance*)pointer)->GraphicsObject;
-            if (graphicsObject == null)
+            var bgPart = (BgPartsLayoutInstance*)pointer;
+            if (!IsLikelyReadablePointer(bgPart, 0x80))
+                return $"BgPart layout pointer unreadable: {instance.OccupiedSlotAddress}";
+
+            var graphicsObject = bgPart->GraphicsObject;
+            if (graphicsObject == null || !IsLikelyReadablePointer(graphicsObject, 0x100))
                 return "当前 GraphicsObject=null，无法保存完整快照。";
 
-            if (graphicsObject->ModelResourceHandle == null)
+            if (graphicsObject->ModelResourceHandle == null || !IsLikelyReadablePointer(graphicsObject->ModelResourceHandle, 0x80))
                 return "当前 ModelResourceHandle=null。";
 
             _ = (ResourceCategory)(ushort)graphicsObject->ModelResourceHandle->Type.Category;
@@ -582,9 +678,9 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
     private static bool WriteLayoutTransform(ILayoutInstance* pointer, Transform transform, out string readback)
     {
         readback = string.Empty;
-        if (pointer == null)
+        if (pointer == null || !IsLikelyReadablePointer(pointer, 0x80))
         {
-            readback = "pointer=null";
+            readback = "pointer null or unreadable";
             return false;
         }
 
@@ -596,9 +692,9 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
     private static bool WriteSceneObjectTransform(nint graphicsObjectAddress, Vector3 position, Quaternion rotation, Vector3 scale, out string readback)
     {
         readback = string.Empty;
-        if (graphicsObjectAddress == 0)
+        if (graphicsObjectAddress == 0 || !IsLikelyReadableAddress(graphicsObjectAddress, 0x100))
         {
-            readback = "graphicsObjectAddress=0";
+            readback = "graphicsObjectAddress=0 or unreadable";
             return false;
         }
 
@@ -612,7 +708,7 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
         {
             var obj = (SceneObject*)graphicsObjectAddress;
             var bg = (SceneBgObject*)graphicsObjectAddress;
-            if (bg->ModelResourceHandle == null)
+            if (bg->ModelResourceHandle == null || !IsLikelyReadablePointer(bg->ModelResourceHandle, 0x80))
             {
                 readback = "ModelResourceHandle=null";
                 return false;
@@ -649,15 +745,20 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
 
     private static string ReadLayoutTransform(ILayoutInstance* pointer)
     {
+        if (pointer == null || !IsLikelyReadablePointer(pointer, 0x80))
+            return "pointer null or unreadable";
+
         var transform = pointer->GetTransformImpl();
-        return transform == null
+        return transform == null || !IsLikelyReadablePointer(transform, 0x30)
             ? "transform=null"
             : $"position=({FormatVector(transform->Translation)}), rotation={transform->Rotation}, scale=({FormatVector(transform->Scale)})";
     }
 
     private static GraphicsInfo ReadGraphicsInfo(BgPartsLayoutInstance* bgPart)
     {
-        if (bgPart == null || bgPart->GraphicsObject == null)
+        if (bgPart == null || !IsLikelyReadablePointer(bgPart, 0x80))
+            return GraphicsInfo.Empty("BgPartsLayoutInstance pointer unreadable");
+        if (bgPart->GraphicsObject == null || !IsLikelyReadablePointer(bgPart->GraphicsObject, 0x100))
             return GraphicsInfo.Empty("GraphicsObject=null");
 
         var bgObject = (SceneBgObject*)bgPart->GraphicsObject;
@@ -681,7 +782,7 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
 
         try
         {
-            if (bgObject->ModelResourceHandle != null)
+            if (bgObject->ModelResourceHandle != null && IsLikelyReadablePointer(bgObject->ModelResourceHandle, 0x80))
             {
                 handleAvailable = true;
                 handleAddress = $"0x{(nint)bgObject->ModelResourceHandle:X}";
@@ -758,7 +859,7 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
 
     private static string ReadColliderAddress(BgPartsLayoutInstance* bgPart)
     {
-        if (bgPart == null)
+        if (bgPart == null || !IsLikelyReadablePointer(bgPart, 0x80))
             return "0x0";
 
         try
@@ -776,6 +877,8 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
     {
         pointer = null;
         if (!TryParseAddress(raw, out var address) || address == 0)
+            return false;
+        if (!IsLikelyReadableAddress(address, 0x80))
             return false;
 
         pointer = (ILayoutInstance*)address;
@@ -803,6 +906,55 @@ public sealed unsafe class BgPartRecreateExperimentService : IDisposable
         }
 
         return false;
+    }
+
+    private static bool IsLikelyReadablePointer(void* pointer, nuint minimumBytes = 1)
+        => pointer != null && IsLikelyReadableAddress((nint)pointer, minimumBytes);
+
+    private static bool IsLikelyReadableAddress(nint address, nuint minimumBytes = 1)
+    {
+        if (address == 0)
+            return false;
+        if (!OperatingSystem.IsWindows())
+            return true;
+
+        try
+        {
+            if (VirtualQuery(address, out var info, (nuint)Marshal.SizeOf<MemoryBasicInformation>()) == 0)
+                return false;
+            if (info.State != MemCommit)
+                return false;
+            if ((info.Protect & (PageNoAccess | PageGuard)) != 0)
+                return false;
+
+            var target = unchecked((ulong)(long)address);
+            var baseAddress = unchecked((ulong)(long)info.BaseAddress);
+            var regionSize = unchecked((ulong)info.RegionSize);
+            var bytes = unchecked((ulong)minimumBytes);
+            if (target < baseAddress || regionSize < bytes)
+                return false;
+
+            return target - baseAddress <= regionSize - bytes;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    [DllImport("kernel32.dll")]
+    private static extern nuint VirtualQuery(nint lpAddress, out MemoryBasicInformation lpBuffer, nuint dwLength);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MemoryBasicInformation
+    {
+        public nint BaseAddress;
+        public nint AllocationBase;
+        public uint AllocationProtect;
+        public nuint RegionSize;
+        public uint State;
+        public uint Protect;
+        public uint Type;
     }
 
     private static Quaternion NormalizeRotation(Quaternion rotation)
